@@ -1,6 +1,7 @@
 package com.playerbrowser.app.ui
 
 import androidx.compose.runtime.Composable
+import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
@@ -9,6 +10,7 @@ object Routes {
     const val BROWSER = "browser"
     const val BOOKMARKS = "bookmarks"
     const val HISTORY = "history"
+    const val SETTINGS = "settings"
 }
 
 @Composable
@@ -19,7 +21,8 @@ fun RootNavigation(viewModel: BrowserViewModel) {
             BrowserScreen(
                 viewModel = viewModel,
                 onOpenBookmarks = { navController.navigate(Routes.BOOKMARKS) },
-                onOpenHistory = { navController.navigate(Routes.HISTORY) }
+                onOpenHistory = { navController.navigate(Routes.HISTORY) },
+                onOpenSettings = { navController.navigate(Routes.SETTINGS) }
             )
         }
         composable(Routes.BOOKMARKS) {
@@ -40,6 +43,13 @@ fun RootNavigation(viewModel: BrowserViewModel) {
                     viewModel.requestLoad(url)
                     navController.popBackStack()
                 }
+            )
+        }
+        composable(Routes.SETTINGS) {
+            val settingsViewModel: SettingsViewModel = viewModel()
+            SettingsScreen(
+                viewModel = settingsViewModel,
+                onBack = { navController.popBackStack() }
             )
         }
     }

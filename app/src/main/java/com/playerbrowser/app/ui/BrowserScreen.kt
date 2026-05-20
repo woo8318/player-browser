@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -52,7 +53,8 @@ import com.playerbrowser.app.web.UrlUtils
 fun BrowserScreen(
     viewModel: BrowserViewModel,
     onOpenBookmarks: () -> Unit,
-    onOpenHistory: () -> Unit
+    onOpenHistory: () -> Unit,
+    onOpenSettings: () -> Unit
 ) {
     val context = LocalContext.current
     val state by viewModel.state.collectAsState()
@@ -154,6 +156,11 @@ fun BrowserScreen(
                                         }
                                     }
                                 }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("설정") },
+                                leadingIcon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                                onClick = { menuOpen = false; onOpenSettings() }
                             )
                             DropdownMenuItem(
                                 text = { Text("업데이트 확인") },

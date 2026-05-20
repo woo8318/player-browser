@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -57,6 +58,7 @@ fun BrowserScreen(
     val state by viewModel.state.collectAsState()
     val isBookmarked by viewModel.isCurrentBookmarked.collectAsState()
     val pendingUrl by viewModel.pendingLoadUrl.collectAsState()
+    val updateState by viewModel.updateState.collectAsState()
 
     val webState = remember {
         buildBrowserWebView(context, object : WebViewCallbacks {
@@ -68,6 +70,7 @@ fun BrowserScreen(
 
     LaunchedEffect(Unit) {
         webState.load(BrowserUiState.HOME_URL)
+        viewModel.checkForUpdates(silent = true)
     }
     LaunchedEffect(pendingUrl) {
         pendingUrl?.let {
@@ -152,6 +155,11 @@ fun BrowserScreen(
                                     }
                                 }
                             )
+                            DropdownMenuItem(
+                                text = { Text("업데이트 확인") },
+                                leadingIcon = { Icon(Icons.Filled.SystemUpdate, contentDescription = null) },
+                                onClick = { menuOpen = false; viewModel.checkForUpdates(silent = false) }
+                            )
                         }
                     }
                 }
@@ -162,4 +170,12 @@ fun BrowserScreen(
         }
         BrowserWebViewHost(state = webState, modifier = Modifier.fillMaxSize())
     }
+
+    UpdateDialog(
+        state = updateState,
+        onDownload = { viewModel.startDownload() },
+        onInstall = { viewModel.launchInstall() },
+        onCancelDownload = { viewModel.cancelDownload() },
+        onDismiss = { viewModel.dismissUpdate() }
+    )
 }

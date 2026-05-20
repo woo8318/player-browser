@@ -57,9 +57,9 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             // Use Chrome's default UA — appending a custom suffix triggered anti-bot
             // rules on some sites and caused ERR_CONNECTION_RESET.
         }
-        CookieManager.getInstance().apply {
-            setAcceptCookie(true)
-            setAcceptThirdPartyCookies(this@apply, true)
+        CookieManager.getInstance().also { cm ->
+            cm.setAcceptCookie(true)
+            cm.setAcceptThirdPartyCookies(this, true)
         }
         val gestureScript = WebAssetLoader.gestureScript(context)
         webViewClient = object : WebViewClient() {

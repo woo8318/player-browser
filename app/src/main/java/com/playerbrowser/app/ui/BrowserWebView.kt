@@ -3,8 +3,12 @@ package com.playerbrowser.app.ui
 import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.os.Message
 import android.view.ViewGroup
+import android.webkit.CookieManager
 import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -48,8 +52,14 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             mediaPlaybackRequiresUserGesture = false
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             cacheMode = WebSettings.LOAD_DEFAULT
-            userAgentString = userAgentString +
-                " PlayerBrowser/1.0"
+            setSupportMultipleWindows(true)
+            javaScriptCanOpenWindowsAutomatically = true
+            // Use Chrome's default UA — appending a custom suffix triggered anti-bot
+            // rules on some sites and caused ERR_CONNECTION_RESET.
+        }
+        CookieManager.getInstance().apply {
+            setAcceptCookie(true)
+            setAcceptThirdPartyCookies(this@apply, true)
         }
         val gestureScript = WebAssetLoader.gestureScript(context)
         webViewClient = object : WebViewClient() {
@@ -69,8 +79,36 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                     )
                 }
             }
+            override fun onReceivedError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                error: WebResourceError?
+            ) {
+                super.onReceivedError(view, request, error)
+                if (view == null || request == null || error == null) return
+                if (!request.isForMainFrame) return
+                val failingUrl = request.url?.toString().orEmpty()
+                val code = error.errorCode
+                val desc = error.description?.toString().orEmpty()
+                val html = ErrorPage.build(failingUrl, code, desc)
+                view.loadDataWithBaseURL(failingUrl, html, "text/html", "UTF-8", failingUrl)
+            }
         }
-        webChromeClient = WebChromeClient()
+        webChromeClient = object : WebChromeClient() {
+            override fun onCreateWindow(
+                view: WebView?,
+                isDialog: Boolean,
+                isUserGesture: Boolean,
+                resultMsg: Message?
+            ): Boolean {
+                // Open popups in the same WebView instead of dropping them.
+                if (view == null || resultMsg == null) return false
+                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+                transport.webView = view
+                resultMsg.sendToTarget()
+                return true
+            }
+        }
     }
     return BrowserWebViewState(webView, callbacks)
 }

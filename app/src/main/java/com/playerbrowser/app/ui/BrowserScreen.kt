@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import android.content.Intent
+import android.net.Uri
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
@@ -19,6 +21,7 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -133,6 +136,21 @@ fun BrowserScreen(
                                 text = { Text("홈") },
                                 leadingIcon = { Icon(Icons.Filled.Home, contentDescription = null) },
                                 onClick = { menuOpen = false; webState.load(BrowserUiState.HOME_URL) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("외부 브라우저로 열기") },
+                                leadingIcon = { Icon(Icons.Filled.OpenInBrowser, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    val url = state.currentUrl
+                                    if (url.startsWith("http", ignoreCase = true)) {
+                                        runCatching {
+                                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url))
+                                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                            context.startActivity(intent)
+                                        }
+                                    }
+                                }
                             )
                         }
                     }

@@ -8,6 +8,9 @@ import com.playerbrowser.app.PlayerBrowserApp
 import com.playerbrowser.app.data.Bookmark
 import com.playerbrowser.app.data.BrowserRepository
 import com.playerbrowser.app.data.HistoryEntry
+import com.playerbrowser.app.data.PersistedSession
+import com.playerbrowser.app.data.PersistedTab
+import com.playerbrowser.app.data.TabPersistence
 import com.playerbrowser.app.update.DownloadStep
 import com.playerbrowser.app.update.UpdateClient
 import com.playerbrowser.app.update.UpdateInstaller
@@ -21,10 +24,15 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class TabState(
     val id: String,
@@ -56,17 +64,50 @@ data class BrowserUiState(
 class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     private val repository: BrowserRepository = (app as PlayerBrowserApp).repository
     private val installer: UpdateInstaller = UpdateInstaller(app)
+    private val tabPersistence: TabPersistence = TabPersistence(app)
 
-    private val initialTab = TabState.blank()
-    private val _tabs = MutableStateFlow(listOf(initialTab))
+    private val restored: PersistedSession? = tabPersistence.load()
+    private val restoredTabs: List<TabState> = restored?.tabs
+        ?.map { p ->
+            TabState(
+                id = p.id,
+                currentUrl = p.url.ifBlank { BrowserUiState.HOME_URL },
+                currentTitle = p.title
+            )
+        }
+        ?.takeIf { it.isNotEmpty() }
+        ?: listOf(TabState.blank())
+
+    private val _tabs = MutableStateFlow(restoredTabs)
     val tabs: StateFlow<List<TabState>> = _tabs.asStateFlow()
 
-    private val _activeTabId = MutableStateFlow(initialTab.id)
+    private val _activeTabId = MutableStateFlow(
+        restored?.activeTabId?.takeIf { id -> restoredTabs.any { it.id == id } }
+            ?: restoredTabs.first().id
+    )
     val activeTabId: StateFlow<String> = _activeTabId.asStateFlow()
 
     val activeTab: StateFlow<TabState> =
         combine(_tabs, _activeTabId) { tabs, id -> tabs.firstOrNull { it.id == id } ?: tabs.first() }
-            .stateIn(viewModelScope, SharingStarted.Eagerly, initialTab)
+            .stateIn(viewModelScope, SharingStarted.Eagerly, restoredTabs.first())
+
+    init {
+        viewModelScope.launch {
+            combine(_tabs, _activeTabId) { tabs, id -> snapshotForPersist(tabs, id) }
+                .distinctUntilChanged()
+                .debounce(500)
+                .onEach { session ->
+                    withContext(Dispatchers.IO) { tabPersistence.save(session) }
+                }
+                .collect {}
+        }
+    }
+
+    private fun snapshotForPersist(tabs: List<TabState>, activeId: String): PersistedSession =
+        PersistedSession(
+            tabs = tabs.map { PersistedTab(id = it.id, url = it.currentUrl, title = it.currentTitle) },
+            activeTabId = activeId
+        )
 
     val state: StateFlow<BrowserUiState> = activeTab.map {
         BrowserUiState(

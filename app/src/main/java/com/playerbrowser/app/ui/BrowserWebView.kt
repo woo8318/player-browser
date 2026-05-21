@@ -9,6 +9,7 @@ import android.net.Uri
 import android.os.Message
 import android.provider.Settings
 import android.view.ViewGroup
+import android.widget.FrameLayout
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -144,7 +145,22 @@ fun BrowserWebViewHost(
 ) {
     AndroidView(
         modifier = modifier,
-        factory = { state.webView }
+        factory = { ctx ->
+            FrameLayout(ctx).apply {
+                layoutParams = ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.MATCH_PARENT
+                )
+            }
+        },
+        update = { container ->
+            val wv = state.webView
+            if (wv.parent !== container) {
+                (wv.parent as? ViewGroup)?.removeView(wv)
+                container.removeAllViews()
+                container.addView(wv)
+            }
+        }
     )
 }
 

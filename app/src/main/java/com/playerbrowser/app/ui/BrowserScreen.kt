@@ -94,6 +94,9 @@ fun BrowserScreen(
         // Capture the tab id by value so this WebView's callbacks always
         // attribute events to its own tab, even after the user switches away.
         val ownerId = tabIdForCreation
+        val initialUrl = tabs.firstOrNull { it.id == ownerId }?.currentUrl
+            ?.takeIf { it.startsWith("http", ignoreCase = true) }
+            ?: BrowserUiState.HOME_URL
         buildBrowserWebView(context, object : WebViewCallbacks {
             override fun onStarted(url: String) = viewModel.onPageStarted(ownerId, url)
             override fun onFinished(
@@ -103,7 +106,7 @@ fun BrowserScreen(
                 canGoForward: Boolean
             ) = viewModel.onPageFinished(ownerId, url, title, canGoBack, canGoForward)
             override fun onOpenAppSettings() = onOpenSettings()
-        }).also { it.load(BrowserUiState.HOME_URL) }
+        }).also { it.load(initialUrl) }
     }
 
     LaunchedEffect(pendingUrl) {

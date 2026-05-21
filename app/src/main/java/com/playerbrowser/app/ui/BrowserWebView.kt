@@ -125,7 +125,7 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 view.loadDataWithBaseURL(failingUrl, html, "text/html", "UTF-8", failingUrl)
             }
         }
-        webChromeClient = FullscreenAwareChromeClient(webView)
+        webChromeClient = FullscreenAwareChromeClient(this)
     }
     return BrowserWebViewState(webView, callbacks)
 }

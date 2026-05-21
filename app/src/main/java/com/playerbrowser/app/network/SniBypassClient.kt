@@ -6,8 +6,10 @@ import android.webkit.WebResourceResponse
 import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import java.io.ByteArrayInputStream
+import okhttp3.Response
+import java.io.FilterInputStream
 import java.io.IOException
+import java.io.InputStream
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
@@ -45,8 +47,8 @@ object SniBypassClient {
             .dns(DohClient())
             .socketFactory(fragmenting)
             .connectionPool(pool)
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(20, TimeUnit.SECONDS)
+            .connectTimeout(6, TimeUnit.SECONDS)
+            .readTimeout(15, TimeUnit.SECONDS)
             .followRedirects(false)
             .followSslRedirects(false)
             .retryOnConnectionFailure(true)
@@ -56,7 +58,7 @@ object SniBypassClient {
     fun intercept(request: WebResourceRequest): WebResourceResponse? {
         if (!SniBypassSwitch.enabled) return null
         val method = request.method?.uppercase() ?: "GET"
-        if (method != "GET") return null
+        if (method != "GET" && method != "HEAD") return null
         val url = request.url ?: return null
         val scheme = url.scheme?.lowercase() ?: return null
         if (scheme != "https") return null
@@ -69,60 +71,80 @@ object SniBypassClient {
 
         val urlString = url.toString()
         val builder = Request.Builder().url(urlString)
+        if (method == "HEAD") builder.head()
         request.requestHeaders?.forEach { (k, v) ->
             if (k.equals("host", ignoreCase = true)) return@forEach
             if (k.equals("connection", ignoreCase = true)) return@forEach
             if (k.equals("cookie", ignoreCase = true)) return@forEach
+            if (k.equals("accept-encoding", ignoreCase = true)) return@forEach
             if (k.startsWith(":")) return@forEach
             runCatching { builder.header(k, v) }
         }
-        builder.header("Accept-Encoding", "identity")
 
         val cookieManager = runCatching { CookieManager.getInstance() }.getOrNull()
         cookieManager?.getCookie(urlString)?.takeIf { it.isNotBlank() }?.let {
             builder.header("Cookie", it)
         }
 
+        var resp: Response? = null
         return try {
-            client.newCall(builder.build()).execute().use { resp ->
-                val body = resp.body ?: return null
-                val bytes = body.bytes()
-                val contentType = resp.header("Content-Type")
-                val mime = contentType?.substringBefore(';')?.trim().orEmpty().ifBlank { "text/html" }
-                val charset = contentType
-                    ?.substringAfter("charset=", "")
-                    ?.substringBefore(';')
-                    ?.trim()
-                    ?.ifBlank { null } ?: "UTF-8"
+            resp = client.newCall(builder.build()).execute()
+            val contentType = resp.header("Content-Type")
+            val mime = contentType?.substringBefore(';')?.trim()?.ifBlank { null }
+                ?: "application/octet-stream"
+            val charset = contentType
+                ?.substringAfter("charset=", "")
+                ?.substringBefore(';')
+                ?.trim()
+                ?.ifBlank { null } ?: "UTF-8"
 
-                val headers = LinkedHashMap<String, String>()
-                resp.headers.forEach { (name, value) ->
-                    if (name.equals("Content-Encoding", true)) return@forEach
-                    if (name.equals("Content-Length", true)) return@forEach
-                    if (name.equals("Transfer-Encoding", true)) return@forEach
-                    if (name.equals("Set-Cookie", true)) {
-                        cookieManager?.setCookie(urlString, value)
-                        return@forEach
-                    }
-                    headers[name] = value
+            val headers = LinkedHashMap<String, String>()
+            resp.headers.forEach { (name, value) ->
+                if (name.equals("Content-Encoding", true)) return@forEach
+                if (name.equals("Content-Length", true)) return@forEach
+                if (name.equals("Transfer-Encoding", true)) return@forEach
+                if (name.equals("Set-Cookie", true)) {
+                    cookieManager?.setCookie(urlString, value)
+                    return@forEach
                 }
-                val reason = resp.message.ifBlank { reasonFor(resp.code) }
-                if (request.isForMainFrame && host.isNotBlank() && resp.code in 200..399) {
-                    bypassedHosts.add(host)
-                }
-                WebResourceResponse(
-                    mime,
-                    charset,
-                    resp.code,
-                    reason,
-                    headers,
-                    ByteArrayInputStream(bytes)
-                )
+                headers[name] = value
             }
+            if (request.isForMainFrame && host.isNotBlank() && resp.code in 200..399) {
+                bypassedHosts.add(host)
+            }
+            val reason = resp.message.ifBlank { reasonFor(resp.code) }
+            // Stream the body through to the WebView instead of buffering the
+            // entire response in memory. The wrapper closes the OkHttp
+            // Response (which releases the socket back to the pool) when the
+            // WebView is done reading.
+            val body = resp.body
+            val stream: InputStream = if (body == null || method == "HEAD") {
+                resp.close()
+                EMPTY_STREAM
+            } else {
+                ResponseClosingInputStream(body.byteStream(), resp)
+            }
+            WebResourceResponse(mime, charset, resp.code, reason, headers, stream)
         } catch (e: IOException) {
+            resp?.close()
             null
         } catch (t: Throwable) {
+            resp?.close()
             null
+        }
+    }
+
+    private val EMPTY_STREAM: InputStream = object : InputStream() {
+        override fun read(): Int = -1
+    }
+
+    private class ResponseClosingInputStream(
+        delegate: InputStream,
+        private val response: Response
+    ) : FilterInputStream(delegate) {
+        override fun close() {
+            runCatching { super.close() }
+            runCatching { response.close() }
         }
     }
 

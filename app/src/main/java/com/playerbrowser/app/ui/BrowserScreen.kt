@@ -67,6 +67,7 @@ fun BrowserScreen(
             override fun onStarted(url: String) = viewModel.onPageStarted(url)
             override fun onFinished(url: String, title: String, canGoBack: Boolean, canGoForward: Boolean) =
                 viewModel.onPageFinished(url, title, canGoBack, canGoForward)
+            override fun onOpenAppSettings() = onOpenSettings()
         })
     }
 

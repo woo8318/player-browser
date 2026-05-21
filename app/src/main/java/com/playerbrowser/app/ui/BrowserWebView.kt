@@ -1,9 +1,13 @@
 package com.playerbrowser.app.ui
 
 import android.annotation.SuppressLint
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
+import android.net.Uri
 import android.os.Message
+import android.provider.Settings
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
@@ -12,6 +16,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
@@ -32,6 +37,7 @@ class BrowserWebViewState(
 interface WebViewCallbacks {
     fun onStarted(url: String)
     fun onFinished(url: String, title: String, canGoBack: Boolean, canGoForward: Boolean)
+    fun onOpenAppSettings()
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -63,6 +69,14 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
         }
         val gestureScript = WebAssetLoader.gestureScript(context)
         webViewClient = object : WebViewClient() {
+            override fun shouldOverrideUrlLoading(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): Boolean {
+                val uri = request?.url ?: return false
+                return UrlIntentRouter.route(view?.context ?: context, uri, callbacks)
+            }
+
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
                 url?.let { callbacks.onStarted(it) }
@@ -122,4 +136,81 @@ fun BrowserWebViewHost(
         modifier = modifier,
         factory = { state.webView }
     )
+}
+
+private object UrlIntentRouter {
+    private const val INTERNAL_SCHEME = "playerbrowser"
+
+    fun route(context: Context, uri: Uri, callbacks: WebViewCallbacks): Boolean {
+        val scheme = uri.scheme?.lowercase() ?: return false
+        return when {
+            scheme == INTERNAL_SCHEME -> handleInternal(context, uri, callbacks)
+            scheme == "http" || scheme == "https" || scheme == "about" || scheme == "data" ||
+                scheme == "javascript" || scheme == "file" -> false
+            else -> handleExternal(context, uri)
+        }
+    }
+
+    private fun handleInternal(context: Context, uri: Uri, callbacks: WebViewCallbacks): Boolean {
+        when (uri.host?.lowercase()) {
+            "settings" -> callbacks.onOpenAppSettings()
+            "private-dns" -> openPrivateDnsSettings(context)
+            else -> {
+                Toast.makeText(context, "지원하지 않는 동작: $uri", Toast.LENGTH_SHORT).show()
+            }
+        }
+        return true
+    }
+
+    private fun openPrivateDnsSettings(context: Context) {
+        val attempts = listOf(
+            Intent("android.settings.WIRELESS_SETTINGS"),
+            Intent(Settings.ACTION_SETTINGS)
+        )
+        for (intent in attempts) {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            val ok = runCatching { context.startActivity(intent) }.isSuccess
+            if (ok) {
+                Toast.makeText(
+                    context,
+                    "설정 → 연결/네트워크 → 비공개 DNS(Private DNS) → " +
+                        "'1dot1dot1dot1.cloudflare-dns.com' 입력",
+                    Toast.LENGTH_LONG
+                ).show()
+                return
+            }
+        }
+        Toast.makeText(context, "시스템 설정 화면을 열 수 없습니다", Toast.LENGTH_SHORT).show()
+    }
+
+    private fun handleExternal(context: Context, uri: Uri): Boolean {
+        val intent = parseIntent(uri) ?: return false
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            context.startActivity(intent)
+            true
+        } catch (e: ActivityNotFoundException) {
+            val fallback = intent.getStringExtra("browser_fallback_url")
+            if (!fallback.isNullOrBlank()) {
+                runCatching {
+                    context.startActivity(
+                        Intent(Intent.ACTION_VIEW, Uri.parse(fallback))
+                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                    )
+                }
+                true
+            } else {
+                Toast.makeText(context, "이 링크를 열 수 있는 앱이 없습니다", Toast.LENGTH_SHORT).show()
+                true
+            }
+        }
+    }
+
+    private fun parseIntent(uri: Uri): Intent? = runCatching {
+        if (uri.scheme.equals("intent", ignoreCase = true)) {
+            Intent.parseUri(uri.toString(), Intent.URI_INTENT_SCHEME)
+        } else {
+            Intent(Intent.ACTION_VIEW, uri)
+        }
+    }.getOrNull()
 }

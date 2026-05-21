@@ -138,6 +138,7 @@ private class FullscreenAwareChromeClient(
     private val webView: WebView
 ) : WebChromeClient() {
     private var customView: View? = null
+    private var customViewContainer: ViewGroup? = null
     private var customViewCallback: CustomViewCallback? = null
     private var savedOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
 
@@ -170,21 +171,28 @@ private class FullscreenAwareChromeClient(
         savedOrientation = activity.requestedOrientation
 
         val decor = activity.window.decorView as ViewGroup
-        decor.addView(
+        val container = GestureCapturingFrame(activity, webView)
+        container.addView(
             view,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
         )
+        decor.addView(
+            container,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+        customViewContainer = container
 
         WindowCompat.setDecorFitsSystemWindows(activity.window, false)
         val controller = WindowInsetsControllerCompat(activity.window, decor)
         controller.hide(WindowInsetsCompat.Type.systemBars())
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-
-        installFullscreenGestures(view)
 
         // Default to landscape immediately so most videos rotate without waiting on JS.
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
@@ -200,15 +208,17 @@ private class FullscreenAwareChromeClient(
     }
 
     override fun onHideCustomView() {
-        val view = customView ?: return
+        customView ?: return
         val activity = webView.context as? Activity
+        val container = customViewContainer
         customView = null
+        customViewContainer = null
         customViewCallback?.onCustomViewHidden()
         customViewCallback = null
 
         if (activity != null) {
             val decor = activity.window.decorView as ViewGroup
-            decor.removeView(view)
+            if (container != null) decor.removeView(container)
             WindowCompat.setDecorFitsSystemWindows(activity.window, true)
             WindowInsetsControllerCompat(activity.window, decor)
                 .show(WindowInsetsCompat.Type.systemBars())
@@ -217,74 +227,7 @@ private class FullscreenAwareChromeClient(
         savedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 
-    @SuppressLint("ClickableViewAccessibility")
-    private fun installFullscreenGestures(target: View) {
-        val ctx = target.context
-        val density = ctx.resources.displayMetrics.density
-        val swipeThresholdPx = 40f * density
-        val touchSlopPx = ViewConfiguration.get(ctx).scaledTouchSlop.toFloat()
-        val maxSwipeMs = 800L
-
-        val detector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
-            override fun onDown(e: MotionEvent): Boolean = true
-            override fun onDoubleTap(e: MotionEvent): Boolean {
-                webView.evaluateJavascript("window.__pb && window.__pb.togglePlay && window.__pb.togglePlay();", null)
-                return true
-            }
-        })
-
-        var startX = 0f
-        var startY = 0f
-        var startT = 0L
-        var moved = false
-        var maxPointers = 1
-
-        target.setOnTouchListener { v, ev ->
-            val consumedByDetector = detector.onTouchEvent(ev)
-            when (ev.actionMasked) {
-                MotionEvent.ACTION_DOWN -> {
-                    startX = ev.x
-                    startY = ev.y
-                    startT = System.currentTimeMillis()
-                    moved = false
-                    maxPointers = 1
-                }
-                MotionEvent.ACTION_POINTER_DOWN -> {
-                    if (ev.pointerCount > maxPointers) maxPointers = ev.pointerCount
-                }
-                MotionEvent.ACTION_MOVE -> {
-                    if (!moved &&
-                        (abs(ev.x - startX) > touchSlopPx || abs(ev.y - startY) > touchSlopPx)
-                    ) {
-                        moved = true
-                    }
-                }
-                MotionEvent.ACTION_UP -> {
-                    val dx = ev.x - startX
-                    val dy = ev.y - startY
-                    val dt = System.currentTimeMillis() - startT
-                    if (moved && dt <= maxSwipeMs &&
-                        abs(dx) >= swipeThresholdPx && abs(dx) > abs(dy)
-                    ) {
-                        val js = if (maxPointers >= 2) {
-                            val dir = if (dx > 0) -1 else 1
-                            "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);"
-                        } else {
-                            val delta = if (dx > 0) SEEK_SECONDS else -SEEK_SECONDS
-                            "window.__pb && window.__pb.seek && window.__pb.seek($delta);"
-                        }
-                        webView.evaluateJavascript(js, null)
-                        v.performClick()
-                        return@setOnTouchListener true
-                    }
-                }
-            }
-            consumedByDetector
-        }
-    }
-
     companion object {
-        private const val SEEK_SECONDS = 10
         private const val DETECT_VIDEO_ORIENTATION_JS = """
             (function () {
               var v = document.fullscreenElement || document.webkitFullscreenElement;
@@ -300,6 +243,93 @@ private class FullscreenAwareChromeClient(
               return 'land';
             })();
         """
+    }
+}
+
+/**
+ * Wraps the WebView's native-fullscreen CustomView so we can observe every
+ * touch event regardless of which child view consumes it.
+ *
+ * Why: WebView hands the video surface to onShowCustomView as an arbitrary
+ * ViewGroup. If we attach an OnTouchListener directly to that view, any
+ * child that returns true from onTouchEvent (e.g. an HTML5 controls overlay)
+ * stops the event from ever reaching our listener. By overriding
+ * dispatchTouchEvent here we run our gesture detection in parallel with —
+ * not after — the child view tree, while still allowing the player's own
+ * touch handling to proceed.
+ */
+private class GestureCapturingFrame(
+    context: Context,
+    private val webView: WebView
+) : FrameLayout(context) {
+
+    private val swipeThresholdPx = 40f * resources.displayMetrics.density
+    private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
+    private val maxSwipeMs = 800L
+
+    private var startX = 0f
+    private var startY = 0f
+    private var startT = 0L
+    private var moved = false
+    private var maxPointers = 1
+    private var swipeHandled = false
+
+    private val detector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
+        override fun onDown(e: MotionEvent): Boolean = true
+        override fun onDoubleTap(e: MotionEvent): Boolean {
+            webView.evaluateJavascript(
+                "window.__pb && window.__pb.togglePlay && window.__pb.togglePlay();",
+                null
+            )
+            return true
+        }
+    })
+
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        detector.onTouchEvent(ev)
+        when (ev.actionMasked) {
+            MotionEvent.ACTION_DOWN -> {
+                startX = ev.x
+                startY = ev.y
+                startT = System.currentTimeMillis()
+                moved = false
+                maxPointers = 1
+                swipeHandled = false
+            }
+            MotionEvent.ACTION_POINTER_DOWN -> {
+                if (ev.pointerCount > maxPointers) maxPointers = ev.pointerCount
+            }
+            MotionEvent.ACTION_MOVE -> {
+                if (!moved &&
+                    (abs(ev.x - startX) > touchSlopPx || abs(ev.y - startY) > touchSlopPx)
+                ) {
+                    moved = true
+                }
+            }
+            MotionEvent.ACTION_UP -> {
+                val dx = ev.x - startX
+                val dy = ev.y - startY
+                val dt = System.currentTimeMillis() - startT
+                if (!swipeHandled && moved && dt <= maxSwipeMs &&
+                    abs(dx) >= swipeThresholdPx && abs(dx) > abs(dy)
+                ) {
+                    swipeHandled = true
+                    val js = if (maxPointers >= 2) {
+                        val dir = if (dx > 0) -1 else 1
+                        "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);"
+                    } else {
+                        val delta = if (dx > 0) SEEK_SECONDS else -SEEK_SECONDS
+                        "window.__pb && window.__pb.seek && window.__pb.seek($delta);"
+                    }
+                    webView.evaluateJavascript(js, null)
+                }
+            }
+        }
+        return super.dispatchTouchEvent(ev)
+    }
+
+    companion object {
+        private const val SEEK_SECONDS = 10
     }
 }
 

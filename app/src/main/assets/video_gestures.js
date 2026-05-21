@@ -3,8 +3,8 @@
   window.__pbGestureInstalled = true;
 
   var SEEK_SEC = 10;
-  var SWIPE_THRESHOLD = 50;        // px
-  var SWIPE_TIME_LIMIT_MS = 600;
+  var SWIPE_THRESHOLD = 40;        // px
+  var SWIPE_TIME_LIMIT_MS = 800;
 
   function allVideos() {
     var nodes = document.querySelectorAll('video');
@@ -14,13 +14,31 @@
     });
   }
 
+  function fullscreenVideo() {
+    var fe = document.fullscreenElement || document.webkitFullscreenElement;
+    if (fe && fe.tagName === 'VIDEO') return fe;
+    return null;
+  }
+
+  function activeVideo() {
+    var vids = document.querySelectorAll('video');
+    for (var i = 0; i < vids.length; i++) {
+      if (!vids[i].paused && vids[i].readyState >= 2) return vids[i];
+    }
+    return vids[0] || null;
+  }
+
   function videoAtPoint(x, y) {
+    // In native fullscreen the video surface is composited outside the DOM;
+    // hit-testing by rect fails, so prefer the fullscreen element when present.
+    var fs = fullscreenVideo();
+    if (fs) return fs;
     var vids = allVideos();
     for (var i = 0; i < vids.length; i++) {
       var r = vids[i].getBoundingClientRect();
       if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return vids[i];
     }
-    return null;
+    return activeVideo();
   }
 
   function showToast(msg) {

@@ -1,13 +1,16 @@
 package com.playerbrowser.app.ui
 
 import android.annotation.SuppressLint
+import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Message
 import android.provider.Settings
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import android.webkit.CookieManager
@@ -18,6 +21,9 @@ import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import com.playerbrowser.app.network.SniBypassClient
 import android.widget.Toast
 import androidx.compose.runtime.Composable
@@ -119,23 +125,109 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 view.loadDataWithBaseURL(failingUrl, html, "text/html", "UTF-8", failingUrl)
             }
         }
-        webChromeClient = object : WebChromeClient() {
-            override fun onCreateWindow(
-                view: WebView?,
-                isDialog: Boolean,
-                isUserGesture: Boolean,
-                resultMsg: Message?
-            ): Boolean {
-                // Open popups in the same WebView instead of dropping them.
-                if (view == null || resultMsg == null) return false
-                val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
-                transport.webView = view
-                resultMsg.sendToTarget()
-                return true
-            }
-        }
+        webChromeClient = FullscreenAwareChromeClient(webView)
     }
     return BrowserWebViewState(webView, callbacks)
+}
+
+private class FullscreenAwareChromeClient(
+    private val webView: WebView
+) : WebChromeClient() {
+    private var customView: View? = null
+    private var customViewCallback: CustomViewCallback? = null
+    private var savedOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+
+    override fun onCreateWindow(
+        view: WebView?,
+        isDialog: Boolean,
+        isUserGesture: Boolean,
+        resultMsg: Message?
+    ): Boolean {
+        // Open popups in the same WebView instead of dropping them.
+        if (view == null || resultMsg == null) return false
+        val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
+        transport.webView = view
+        resultMsg.sendToTarget()
+        return true
+    }
+
+    override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
+        if (view == null) {
+            callback?.onCustomViewHidden()
+            return
+        }
+        if (customView != null) {
+            callback?.onCustomViewHidden()
+            return
+        }
+        val activity = webView.context as? Activity ?: return
+        customView = view
+        customViewCallback = callback
+        savedOrientation = activity.requestedOrientation
+
+        val decor = activity.window.decorView as ViewGroup
+        decor.addView(
+            view,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+        )
+
+        WindowCompat.setDecorFitsSystemWindows(activity.window, false)
+        val controller = WindowInsetsControllerCompat(activity.window, decor)
+        controller.hide(WindowInsetsCompat.Type.systemBars())
+        controller.systemBarsBehavior =
+            WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+
+        // Default to landscape immediately so most videos rotate without waiting on JS.
+        activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        webView.evaluateJavascript(DETECT_VIDEO_ORIENTATION_JS) { result ->
+            if (customView == null) return@evaluateJavascript
+            val orientation = when (result?.trim('"')) {
+                "port" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                "land" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                else -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            }
+            activity.requestedOrientation = orientation
+        }
+    }
+
+    override fun onHideCustomView() {
+        val view = customView ?: return
+        val activity = webView.context as? Activity
+        customView = null
+        customViewCallback?.onCustomViewHidden()
+        customViewCallback = null
+
+        if (activity != null) {
+            val decor = activity.window.decorView as ViewGroup
+            decor.removeView(view)
+            WindowCompat.setDecorFitsSystemWindows(activity.window, true)
+            WindowInsetsControllerCompat(activity.window, decor)
+                .show(WindowInsetsCompat.Type.systemBars())
+            activity.requestedOrientation = savedOrientation
+        }
+        savedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    }
+
+    companion object {
+        private const val DETECT_VIDEO_ORIENTATION_JS = """
+            (function () {
+              var v = document.fullscreenElement || document.webkitFullscreenElement;
+              if (!v || v.tagName !== 'VIDEO') {
+                var vs = document.querySelectorAll('video');
+                for (var i = 0; i < vs.length; i++) {
+                  if (vs[i].videoWidth && vs[i].videoHeight) { v = vs[i]; break; }
+                }
+              }
+              if (v && v.videoWidth && v.videoHeight) {
+                return v.videoWidth >= v.videoHeight ? 'land' : 'port';
+              }
+              return 'land';
+            })();
+        """
+    }
 }
 
 @Composable

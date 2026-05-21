@@ -47,17 +47,33 @@ $sniBlock
     private fun sniBlockHtml(): String = """
 <div class="sni">
   <h2>🚧 한국 통신사의 사이트 차단으로 보입니다</h2>
-  <p>이 사이트는 한국 인터넷 사업자가 도메인 단위로 차단했을 가능성이 높습니다. 다음 중 하나를 시도해 보세요.</p>
+  <p>이 사이트는 한국 인터넷 사업자가 도메인 단위로 차단했을 가능성이 높습니다. 효과 큰 순서대로:</p>
+
+  <p><b>① 가장 확실 — Cloudflare 1.1.1.1 + WARP 설치 (무료, 1분).</b><br/>
+  시스템 VPN처럼 동작하며 모든 앱의 차단을 한꺼번에 우회합니다.</p>
   <div class="row">
-    <a class="btn" href="playerbrowser://private-dns">시스템 Private DNS 설정 열기</a>
+    <a class="btn" href="playerbrowser://install-warp">Play 스토어에서 WARP 설치</a>
+  </div>
+
+  <p style="margin-top:20px"><b>② 차선 — 앱 내 프록시.</b><br/>
+  본인이 소유한 해외 프록시 서버가 있다면 사용하세요.</p>
+  <div class="row">
     <a class="btn secondary" href="playerbrowser://settings">앱 프록시 설정 열기</a>
   </div>
+
+  <p style="margin-top:20px"><b>③ 가벼운 시도 — WebView 업데이트 + Private DNS.</b><br/>
+  일부 사이트에는 효과가 있지만 한국의 SNI 차단 대부분에는 부족합니다.</p>
+  <div class="row">
+    <a class="btn secondary" href="playerbrowser://update-webview">WebView 업데이트</a>
+    <a class="btn secondary" href="playerbrowser://private-dns">Private DNS 설정 열기</a>
+  </div>
+
   <details>
-    <summary>설명: 왜 막혔고 어떻게 풀리나요?</summary>
-    <p><b>원인.</b> KT·SKT·LGU+ 등 ISP는 사용자가 어떤 도메인에 접속하는지(SNI)를 평문으로 들여다보고, 차단 목록에 있으면 연결을 끊습니다. Chrome은 최신 버전에서 이 신호를 암호화(ECH)해서 우회하지만, 기기에 깔린 WebView 엔진이 더 오래된 경우 풀리지 않습니다.</p>
-    <p><b>방법 1 — Private DNS (권장).</b> 안드로이드 설정 → 비공개 DNS → <code>1dot1dot1dot1.cloudflare-dns.com</code> 입력. 이 한 줄이 도메인 조회를 암호화하고, 그 부산물로 ECH 키도 받아와서 SNI까지 가립니다. 한국 SNI 차단 사이트 상당수가 풀립니다.</p>
-    <p><b>방법 2 — 앱 프록시.</b> 해외 HTTP 프록시를 거치면 ISP는 프록시 IP만 보게 되어 차단이 무력화됩니다. 신뢰할 수 있는 프록시만 쓰세요.</p>
-    <p><b>참고.</b> 통신사·국가의 정책에 따라 일부 사이트는 사이드로드 가능한 어떤 방법으로도 열리지 않을 수 있습니다.</p>
+    <summary>왜 막히는지 / 왜 Private DNS만으로는 부족한지</summary>
+    <p><b>차단 원리.</b> KT·SKT·LGU+ 등은 사용자가 어떤 도메인에 접속하는지(TLS의 SNI 필드)를 평문 그대로 들여다보고, 차단 목록에 있으면 연결을 끊습니다. DNS 조회 단계가 아니라 TLS 핸드셰이크 단계에서 일어나는 일입니다.</p>
+    <p><b>그래서 Private DNS만으로는 보통 부족합니다.</b> DoH(Private DNS)는 "어떤 IP인지 묻는 과정"만 가립니다. 실제 연결 시 SNI가 평문으로 나가는 건 그대로라서 ISP는 여전히 봅니다. ECH가 추가로 활성화돼야 SNI까지 가려지는데, 기기에 깔린 WebView 엔진 버전·사이트의 CDN 지원 여부에 따라 갈립니다.</p>
+    <p><b>그래서 VPN/프록시가 확실합니다.</b> 트래픽 자체가 다른 IP로 빠지면 ISP는 SNI를 볼 기회조차 없습니다. WARP는 Cloudflare가 무료로 운영하는 서비스로, 시스템 VPN 권한만 한 번 허용하면 끝납니다.</p>
+    <p><b>참고.</b> 통신사·국가 정책에 따라 어떤 방법으로도 안 풀리는 사이트가 있을 수 있습니다.</p>
   </details>
 </div>
     """.trimIndent()

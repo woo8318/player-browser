@@ -155,11 +155,27 @@ private object UrlIntentRouter {
         when (uri.host?.lowercase()) {
             "settings" -> callbacks.onOpenAppSettings()
             "private-dns" -> openPrivateDnsSettings(context)
+            "install-warp" -> openPlayStore(context, "com.cloudflare.onedotonedotonedotone")
+            "update-webview" -> openPlayStore(context, "com.google.android.webview")
             else -> {
                 Toast.makeText(context, "지원하지 않는 동작: $uri", Toast.LENGTH_SHORT).show()
             }
         }
         return true
+    }
+
+    private fun openPlayStore(context: Context, packageName: String) {
+        val market = Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=$packageName"))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (runCatching { context.startActivity(market) }.isSuccess) return
+        val web = Intent(
+            Intent.ACTION_VIEW,
+            Uri.parse("https://play.google.com/store/apps/details?id=$packageName")
+        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        runCatching { context.startActivity(web) }
+            .onFailure {
+                Toast.makeText(context, "Play 스토어를 열 수 없습니다", Toast.LENGTH_SHORT).show()
+            }
     }
 
     private fun openPrivateDnsSettings(context: Context) {

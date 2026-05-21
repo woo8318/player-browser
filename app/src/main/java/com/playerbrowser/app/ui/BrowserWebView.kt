@@ -10,9 +10,13 @@ import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Message
 import android.provider.Settings
+import android.view.GestureDetector
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.ViewGroup
 import android.widget.FrameLayout
+import kotlin.math.abs
 import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -180,6 +184,8 @@ private class FullscreenAwareChromeClient(
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
+        installFullscreenGestures(view)
+
         // Default to landscape immediately so most videos rotate without waiting on JS.
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         webView.evaluateJavascript(DETECT_VIDEO_ORIENTATION_JS) { result ->
@@ -211,7 +217,74 @@ private class FullscreenAwareChromeClient(
         savedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
 
+    @SuppressLint("ClickableViewAccessibility")
+    private fun installFullscreenGestures(target: View) {
+        val ctx = target.context
+        val density = ctx.resources.displayMetrics.density
+        val swipeThresholdPx = 40f * density
+        val touchSlopPx = ViewConfiguration.get(ctx).scaledTouchSlop.toFloat()
+        val maxSwipeMs = 800L
+
+        val detector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean = true
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                webView.evaluateJavascript("window.__pb && window.__pb.togglePlay && window.__pb.togglePlay();", null)
+                return true
+            }
+        })
+
+        var startX = 0f
+        var startY = 0f
+        var startT = 0L
+        var moved = false
+        var maxPointers = 1
+
+        target.setOnTouchListener { v, ev ->
+            val consumedByDetector = detector.onTouchEvent(ev)
+            when (ev.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    startX = ev.x
+                    startY = ev.y
+                    startT = System.currentTimeMillis()
+                    moved = false
+                    maxPointers = 1
+                }
+                MotionEvent.ACTION_POINTER_DOWN -> {
+                    if (ev.pointerCount > maxPointers) maxPointers = ev.pointerCount
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    if (!moved &&
+                        (abs(ev.x - startX) > touchSlopPx || abs(ev.y - startY) > touchSlopPx)
+                    ) {
+                        moved = true
+                    }
+                }
+                MotionEvent.ACTION_UP -> {
+                    val dx = ev.x - startX
+                    val dy = ev.y - startY
+                    val dt = System.currentTimeMillis() - startT
+                    if (moved && dt <= maxSwipeMs &&
+                        abs(dx) >= swipeThresholdPx && abs(dx) > abs(dy)
+                    ) {
+                        val js = if (maxPointers >= 2) {
+                            val dir = if (dx > 0) -1 else 1
+                            "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);"
+                        } else {
+                            val delta = if (dx > 0) SEEK_SECONDS else -SEEK_SECONDS
+                            "window.__pb && window.__pb.seek && window.__pb.seek($delta);"
+                        }
+                        webView.evaluateJavascript(js, null)
+                        v.performClick()
+                        return@setOnTouchListener true
+                    }
+                }
+            }
+            consumedByDetector
+        }
+    }
+
     companion object {
+        private const val SEEK_SECONDS = 10
         private const val DETECT_VIDEO_ORIENTATION_JS = """
             (function () {
               var v = document.fullscreenElement || document.webkitFullscreenElement;

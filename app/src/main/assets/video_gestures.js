@@ -67,6 +67,26 @@
     } catch (e) {}
   }
 
+  function togglePlay(video) {
+    try {
+      if (video.paused) { video.play(); showToast('재생'); }
+      else { video.pause(); showToast('일시정지'); }
+    } catch (e) {}
+  }
+
+  // Android-callable hooks. Used by the native fullscreen gesture overlay
+  // since touch events on the CustomView never reach the WebView document.
+  window.__pb = window.__pb || {};
+  window.__pb.seek = function (delta) {
+    var v = fullscreenVideo() || activeVideo();
+    if (v) seekBy(v, delta);
+  };
+  window.__pb.togglePlay = function () {
+    var v = fullscreenVideo() || activeVideo();
+    if (v) togglePlay(v);
+  };
+  window.__pb.switchVideo = function (dir) { switchVideo(dir); };
+
   function switchVideo(direction) {
     var vids = allVideos();
     if (vids.length === 0) return;
@@ -143,10 +163,7 @@
     if (now - lastTap.t < 300 &&
         Math.abs(t.clientX - lastTap.x) < 30 &&
         Math.abs(t.clientY - lastTap.y) < 30) {
-      try {
-        if (v.paused) { v.play(); showToast('재생'); }
-        else { v.pause(); showToast('일시정지'); }
-      } catch (e2) {}
+      togglePlay(v);
       lastTap.t = 0;
     } else {
       lastTap = { t: now, x: t.clientX, y: t.clientY };

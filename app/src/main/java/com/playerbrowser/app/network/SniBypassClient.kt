@@ -3,8 +3,8 @@ package com.playerbrowser.app.network
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import okhttp3.ConnectionPool
 import okhttp3.OkHttpClient
-import okhttp3.Protocol
 import okhttp3.Request
 import java.io.ByteArrayInputStream
 import java.io.IOException
@@ -36,14 +36,15 @@ object SniBypassClient {
 
     private fun build(): OkHttpClient {
         val fragmenting = FragmentingSocketFactory()
+        // Tiny pool with a 5-second keep-alive. Fresh main-frame loads still
+        // benefit from reusing a warm connection for the immediate burst of
+        // subresources, but a connection that the middlebox silently RSTs
+        // can't sit around long enough to poison the next page navigation.
+        val pool = ConnectionPool(4, 5, TimeUnit.SECONDS)
         return OkHttpClient.Builder()
             .dns(DohClient())
             .socketFactory(fragmenting)
-            // Pin to HTTP/1.1 — h2 multiplexing over a pooled connection can
-            // hand a second tab a stream on a connection that the middlebox
-            // has already RST'd, producing ERR_CONNECTION_RESET. HTTP/1.1 +
-            // retryOnConnectionFailure recovers cleanly.
-            .protocols(listOf(Protocol.HTTP_1_1))
+            .connectionPool(pool)
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .followRedirects(false)

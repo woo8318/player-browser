@@ -4,9 +4,11 @@ import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 import okhttp3.Request
 import java.io.ByteArrayInputStream
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 /**
@@ -24,11 +26,24 @@ object SniBypassClient {
 
     private val client: OkHttpClient by lazy { build() }
 
+    /**
+     * Hosts that previously needed an OkHttp main-frame fetch. Subresource
+     * requests to these hosts are also routed through OkHttp so the rest of
+     * the page (CSS / JS / images / XHR / iframes) doesn't get blocked by
+     * the same ISP DPI that blocked the main frame.
+     */
+    private val bypassedHosts: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
     private fun build(): OkHttpClient {
         val fragmenting = FragmentingSocketFactory()
         return OkHttpClient.Builder()
             .dns(DohClient())
             .socketFactory(fragmenting)
+            // Pin to HTTP/1.1 — h2 multiplexing over a pooled connection can
+            // hand a second tab a stream on a connection that the middlebox
+            // has already RST'd, producing ERR_CONNECTION_RESET. HTTP/1.1 +
+            // retryOnConnectionFailure recovers cleanly.
+            .protocols(listOf(Protocol.HTTP_1_1))
             .connectTimeout(10, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .followRedirects(false)
@@ -39,12 +54,17 @@ object SniBypassClient {
 
     fun intercept(request: WebResourceRequest): WebResourceResponse? {
         if (!SniBypassSwitch.enabled) return null
-        if (!request.isForMainFrame) return null
         val method = request.method?.uppercase() ?: "GET"
         if (method != "GET") return null
         val url = request.url ?: return null
         val scheme = url.scheme?.lowercase() ?: return null
         if (scheme != "https") return null
+        val host = url.host?.lowercase().orEmpty()
+
+        // Main-frame requests are always intercepted (cheap insurance for any
+        // host that turns out to be DPI-blocked). Subresource requests are
+        // only intercepted if we've already seen this host need bypass.
+        if (!request.isForMainFrame && (host.isBlank() || host !in bypassedHosts)) return null
 
         val urlString = url.toString()
         val builder = Request.Builder().url(urlString)
@@ -86,6 +106,9 @@ object SniBypassClient {
                     headers[name] = value
                 }
                 val reason = resp.message.ifBlank { reasonFor(resp.code) }
+                if (request.isForMainFrame && host.isNotBlank() && resp.code in 200..399) {
+                    bypassedHosts.add(host)
+                }
                 WebResourceResponse(
                     mime,
                     charset,

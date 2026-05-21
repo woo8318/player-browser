@@ -13,16 +13,32 @@ import com.playerbrowser.app.update.UpdateClient
 import com.playerbrowser.app.update.UpdateInstaller
 import com.playerbrowser.app.update.UpdateState
 import com.playerbrowser.app.update.Version
+import java.util.UUID
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+
+data class TabState(
+    val id: String,
+    val currentUrl: String = BrowserUiState.HOME_URL,
+    val currentTitle: String = "",
+    val loading: Boolean = false,
+    val canGoBack: Boolean = false,
+    val canGoForward: Boolean = false
+) {
+    companion object {
+        fun blank(initialUrl: String = BrowserUiState.HOME_URL): TabState =
+            TabState(id = UUID.randomUUID().toString(), currentUrl = initialUrl)
+    }
+}
 
 data class BrowserUiState(
     val currentUrl: String = HOME_URL,
@@ -41,8 +57,26 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     private val repository: BrowserRepository = (app as PlayerBrowserApp).repository
     private val installer: UpdateInstaller = UpdateInstaller(app)
 
-    private val _state = MutableStateFlow(BrowserUiState())
-    val state: StateFlow<BrowserUiState> = _state.asStateFlow()
+    private val initialTab = TabState.blank()
+    private val _tabs = MutableStateFlow(listOf(initialTab))
+    val tabs: StateFlow<List<TabState>> = _tabs.asStateFlow()
+
+    private val _activeTabId = MutableStateFlow(initialTab.id)
+    val activeTabId: StateFlow<String> = _activeTabId.asStateFlow()
+
+    val activeTab: StateFlow<TabState> =
+        combine(_tabs, _activeTabId) { tabs, id -> tabs.firstOrNull { it.id == id } ?: tabs.first() }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, initialTab)
+
+    val state: StateFlow<BrowserUiState> = activeTab.map {
+        BrowserUiState(
+            currentUrl = it.currentUrl,
+            currentTitle = it.currentTitle,
+            loading = it.loading,
+            canGoBack = it.canGoBack,
+            canGoForward = it.canGoForward
+        )
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, BrowserUiState())
 
     private val _pendingLoadUrl = MutableStateFlow<String?>(null)
     val pendingLoadUrl: StateFlow<String?> = _pendingLoadUrl.asStateFlow()
@@ -57,7 +91,7 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     val visitedUrls: StateFlow<Set<String>> =
         repository.visitedUrls().map { it.toSet() }.stateInOnViewModel(emptySet())
     val isCurrentBookmarked: StateFlow<Boolean> =
-        _state.map { it.currentUrl }
+        activeTab.map { it.currentUrl }
             .flatMapLatest { url -> repository.isBookmarked(url) }
             .stateInOnViewModel(false)
 
@@ -67,25 +101,73 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     fun requestLoad(url: String) { _pendingLoadUrl.value = url }
     fun consumePendingLoad() { _pendingLoadUrl.value = null }
 
-    fun onPageStarted(url: String) {
-        _state.value = _state.value.copy(currentUrl = url, loading = true)
+    // ----- Tab management -----
+
+    fun newTab(initialUrl: String = BrowserUiState.HOME_URL): String {
+        val tab = TabState.blank(initialUrl)
+        _tabs.value = _tabs.value + tab
+        _activeTabId.value = tab.id
+        _pendingLoadUrl.value = initialUrl
+        return tab.id
     }
 
-    fun onPageFinished(url: String, title: String, canGoBack: Boolean, canGoForward: Boolean) {
-        _state.value = _state.value.copy(
-            currentUrl = url,
-            currentTitle = title,
-            loading = false,
-            canGoBack = canGoBack,
-            canGoForward = canGoForward
-        )
+    fun selectTab(id: String) {
+        if (_tabs.value.any { it.id == id }) _activeTabId.value = id
+    }
+
+    fun closeTab(id: String) {
+        val current = _tabs.value
+        if (current.size <= 1) {
+            // Keep at least one tab — reset it to a blank home tab instead.
+            val replacement = TabState.blank()
+            _tabs.value = listOf(replacement)
+            _activeTabId.value = replacement.id
+            _pendingLoadUrl.value = BrowserUiState.HOME_URL
+            return
+        }
+        val index = current.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val next = current.toMutableList().also { it.removeAt(index) }
+        _tabs.value = next
+        if (_activeTabId.value == id) {
+            val newActive = next[index.coerceAtMost(next.lastIndex)]
+            _activeTabId.value = newActive.id
+        }
+    }
+
+    private fun updateTab(id: String, transform: (TabState) -> TabState) {
+        _tabs.value = _tabs.value.map { if (it.id == id) transform(it) else it }
+    }
+
+    // ----- Page lifecycle (per tab) -----
+
+    fun onPageStarted(tabId: String, url: String) {
+        updateTab(tabId) { it.copy(currentUrl = url, loading = true) }
+    }
+
+    fun onPageFinished(
+        tabId: String,
+        url: String,
+        title: String,
+        canGoBack: Boolean,
+        canGoForward: Boolean
+    ) {
+        updateTab(tabId) {
+            it.copy(
+                currentUrl = url,
+                currentTitle = title,
+                loading = false,
+                canGoBack = canGoBack,
+                canGoForward = canGoForward
+            )
+        }
         if (url.startsWith("http", ignoreCase = true)) {
             viewModelScope.launch { repository.recordVisit(url, title.ifBlank { url }) }
         }
     }
 
     fun toggleBookmark() {
-        val s = _state.value
+        val s = activeTab.value
         if (!s.currentUrl.startsWith("http", ignoreCase = true)) return
         viewModelScope.launch {
             if (isCurrentBookmarked.value) repository.removeBookmark(s.currentUrl)

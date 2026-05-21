@@ -34,9 +34,18 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveAndApply(next: NetworkSettings) {
         viewModelScope.launch {
-            repository.update { next }
+            repository.update { current -> next.copy(sniBypassEnabled = current.sniBypassEnabled) }
             val result = ProxyManager.apply(next)
             _event.value = ProxyApplyEvent.Message(result.toMessage())
+        }
+    }
+
+    fun setSniBypassEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(sniBypassEnabled = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "자동 SNI 우회 켜짐" else "자동 SNI 우회 꺼짐"
+            )
         }
     }
 

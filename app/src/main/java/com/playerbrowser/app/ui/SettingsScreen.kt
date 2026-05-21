@@ -182,6 +182,29 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
+            SectionTitle("자동 SNI 우회 (실험적)")
+            Text(
+                text = "별도 설정 없이 일부 한국 ISP의 SNI 차단을 자동 우회합니다. " +
+                    "DoH(Cloudflare)로 DNS를 우회하고, TLS ClientHello를 단편화해 단순 패턴 매칭 DPI를 피합니다. " +
+                    "통신사·사이트에 따라 효과 차이가 있으며, 일부 사이트는 호환성 문제로 깨질 수 있습니다. " +
+                    "문제가 있으면 끄세요.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("자동 SNI 우회 사용", modifier = Modifier.padding(end = 12.dp))
+                Spacer(modifier = Modifier.fillMaxWidth(0.6f))
+                Switch(
+                    checked = saved.sniBypassEnabled,
+                    onCheckedChange = { viewModel.setSniBypassEnabled(it) }
+                )
+            }
         }
     }
 }

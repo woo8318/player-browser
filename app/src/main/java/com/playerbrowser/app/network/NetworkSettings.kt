@@ -5,7 +5,8 @@ data class NetworkSettings(
     val proxyHost: String = "",
     val proxyPort: Int = 0,
     val proxyUsername: String = "",
-    val proxyPassword: String = ""
+    val proxyPassword: String = "",
+    val sniBypassEnabled: Boolean = true
 ) {
     fun isValid(): Boolean =
         proxyHost.isNotBlank() && proxyPort in 1..65535

@@ -13,9 +13,11 @@ import android.webkit.CookieManager
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import com.playerbrowser.app.network.SniBypassClient
 import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -75,6 +77,14 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             ): Boolean {
                 val uri = request?.url ?: return false
                 return UrlIntentRouter.route(view?.context ?: context, uri, callbacks)
+            }
+
+            override fun shouldInterceptRequest(
+                view: WebView?,
+                request: WebResourceRequest?
+            ): WebResourceResponse? {
+                if (request == null) return null
+                return SniBypassClient.intercept(request)
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {

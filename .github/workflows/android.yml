@@ -58,3 +58,26 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           files: release-artifacts/*.apk
+
+      - name: Prune old releases (keep latest 3)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          KEEP=3
+          OLD_TAGS=$(gh release list --limit 100 \
+            --json tagName,createdAt,isDraft \
+            --jq "map(select(.isDraft|not)) | sort_by(.createdAt) | reverse | .[${KEEP}:] | .[].tagName")
+          if [ -z "$OLD_TAGS" ]; then
+            echo "No old releases to delete (<=${KEEP} total)."
+            exit 0
+          fi
+          echo "Deleting releases beyond the latest ${KEEP}:"
+          echo "$OLD_TAGS"
+          while IFS= read -r tag; do
+            [ -z "$tag" ] && continue
+            echo "  -> deleting release $tag (tag retained)"
+            gh release delete "$tag" --yes
+          done <<< "$OLD_TAGS"

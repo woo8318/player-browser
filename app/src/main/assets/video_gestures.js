@@ -6,22 +6,74 @@
   var SWIPE_THRESHOLD = 40;        // px
   var SWIPE_TIME_LIMIT_MS = 800;
 
+  // Walk the main document plus every same-origin iframe we can reach.
+  // Cross-origin iframes throw on contentDocument access and are skipped.
+  function reachableDocuments() {
+    var docs = [document];
+    var i = 0;
+    while (i < docs.length) {
+      var d = docs[i++];
+      var frames;
+      try { frames = d.querySelectorAll('iframe, frame'); } catch (e) { continue; }
+      for (var j = 0; j < frames.length; j++) {
+        try {
+          var cd = frames[j].contentDocument;
+          if (cd && docs.indexOf(cd) === -1) docs.push(cd);
+        } catch (e) { /* cross-origin — unreachable */ }
+      }
+    }
+    return docs;
+  }
+
+  function allVideosRaw() {
+    var out = [];
+    var docs = reachableDocuments();
+    for (var di = 0; di < docs.length; di++) {
+      var nodes;
+      try { nodes = docs[di].querySelectorAll('video'); } catch (e) { continue; }
+      for (var i = 0; i < nodes.length; i++) out.push(nodes[i]);
+    }
+    return out;
+  }
+
   function allVideos() {
-    var nodes = document.querySelectorAll('video');
-    return Array.prototype.slice.call(nodes).filter(function (v) {
+    return allVideosRaw().filter(function (v) {
       var r = v.getBoundingClientRect();
       return r.width > 80 && r.height > 60;
     });
   }
 
   function fullscreenVideo() {
-    var fe = document.fullscreenElement || document.webkitFullscreenElement;
-    if (fe && fe.tagName === 'VIDEO') return fe;
+    var docs = reachableDocuments();
+    // Direct: a <video> is the fullscreen element.
+    for (var i = 0; i < docs.length; i++) {
+      var fe = docs[i].fullscreenElement || docs[i].webkitFullscreenElement;
+      if (fe && fe.tagName === 'VIDEO') return fe;
+    }
+    // Container fullscreen: find any <video> inside the fullscreen element.
+    for (var k = 0; k < docs.length; k++) {
+      var fe2 = docs[k].fullscreenElement || docs[k].webkitFullscreenElement;
+      if (fe2 && fe2.querySelector) {
+        var v = fe2.querySelector('video');
+        if (v) return v;
+      }
+    }
+    // Iframe-as-fullscreen: parent doc shows the iframe as fullscreen element;
+    // the actual <video> lives inside that iframe's document.
+    for (var m = 0; m < docs.length; m++) {
+      var fe3 = docs[m].fullscreenElement || docs[m].webkitFullscreenElement;
+      if (fe3 && (fe3.tagName === 'IFRAME' || fe3.tagName === 'FRAME')) {
+        try {
+          var inner = fe3.contentDocument && fe3.contentDocument.querySelector('video');
+          if (inner) return inner;
+        } catch (e) { /* cross-origin */ }
+      }
+    }
     return null;
   }
 
   function activeVideo() {
-    var vids = document.querySelectorAll('video');
+    var vids = allVideosRaw();
     for (var i = 0; i < vids.length; i++) {
       if (!vids[i].paused && vids[i].readyState >= 2) return vids[i];
     }

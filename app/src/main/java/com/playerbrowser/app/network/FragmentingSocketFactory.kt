@@ -6,13 +6,26 @@ import java.net.Socket
 import javax.net.SocketFactory
 
 /**
- * Wraps a plain SocketFactory and returns Sockets whose first OutputStream.write()
- * is split into two TCP segments. The split happens AFTER the 5-byte TLS record
- * header so that DPI engines doing naive SNI substring matching on a single
- * packet fail to reassemble the SNI extension.
+ * Wraps a plain SocketFactory so the very first OutputStream.write() — which
+ * for an HTTPS connection carries the TLS ClientHello — is split into
+ * multiple TCP segments designed to defeat Korean-ISP SNI inspection.
  *
- * This is an alpha-quality bypass. It works against some Korean ISPs that do
- * single-packet pattern matching; it will NOT defeat full TCP reassembly.
+ * Two strategies, applied in order:
+ *
+ *  1. SNI-aware split. If the buffer looks like a TLS ClientHello and we can
+ *     locate the server_name extension's host_name bytes, we split inside
+ *     the host_name string. Reassembling DPI engines often parse the SNI
+ *     extension from the first TCP segment only; if the host_name length
+ *     prefix lies in segment 1 but the bytes it points at lie in segment 2,
+ *     SNI parsing fails on the first inspection pass and the match is missed.
+ *
+ *  2. Fallback record-header split (legacy behavior). If parsing fails for
+ *     any reason, we still send the 5-byte TLS record header on its own,
+ *     which defeats the older single-packet substring matchers.
+ *
+ * Still alpha-quality. Some ISPs/middleboxes do full streaming reassembly
+ * with deeper state tracking and will see the SNI either way; those
+ * connections will need a real VPN (e.g. Cloudflare WARP).
  */
 class FragmentingSocketFactory(
     private val delegate: SocketFactory = getDefault()
@@ -93,20 +106,113 @@ private class FragmentingOutputStream(
     }
 
     override fun write(b: ByteArray, off: Int, len: Int) {
-        if (!firstWriteCheck() && len > 10) {
-            // Split after the 5-byte TLS record header. The second flush ensures
-            // the kernel doesn't coalesce both writes into a single TCP segment.
-            val splitAt = 5
-            delegate.write(b, off, splitAt)
-            delegate.flush()
-            delegate.write(b, off + splitAt, len - splitAt)
-            delegate.flush()
-            onFirstWriteDone()
-        } else {
+        if (firstWriteCheck() || len <= 10) {
             delegate.write(b, off, len)
+            return
         }
+
+        val sniRange = runCatching { findSniHostnameRange(b, off, len) }.getOrNull()
+        if (sniRange != null && (sniRange.last - sniRange.first) >= 4) {
+            // Cut inside the host_name. The cut is placed one byte after the
+            // start so the first segment carries the SNI length prefix but
+            // none of the host_name characters that DPI matches against.
+            // A second cut further along splits the host_name itself across
+            // segments — defeats stream-reassembly engines that scan each
+            // accumulated buffer for the blocked host string.
+            val firstCut = sniRange.first + 1
+            val secondCut = sniRange.first + (sniRange.last - sniRange.first) / 2 + 1
+            val segments = listOf(
+                off to firstCut,
+                firstCut to secondCut,
+                secondCut to (off + len)
+            ).filter { it.second > it.first }
+            for ((start, end) in segments) {
+                delegate.write(b, start, end - start)
+                delegate.flush()
+            }
+            onFirstWriteDone()
+            return
+        }
+
+        // Fallback: 5-byte TLS record header in its own segment.
+        delegate.write(b, off, 5)
+        delegate.flush()
+        delegate.write(b, off + 5, len - 5)
+        delegate.flush()
+        onFirstWriteDone()
     }
 
     override fun flush() = delegate.flush()
     override fun close() = delegate.close()
+
+    /**
+     * Locates the absolute offsets `[start, end)` of the SNI `host_name` bytes
+     * inside a buffer that begins with a TLS Handshake record containing a
+     * ClientHello. Returns null if the buffer doesn't parse or no SNI
+     * extension is present.
+     */
+    private fun findSniHostnameRange(b: ByteArray, off: Int, len: Int): IntRange? {
+        val end = off + len
+        var p = off
+        if (end - p < 43) return null
+
+        // TLS record header: type=0x16, version major=0x03, version minor, length(2)
+        if ((b[p].toInt() and 0xFF) != 0x16) return null
+        if ((b[p + 1].toInt() and 0xFF) != 0x03) return null
+        val recordLen = u16(b, p + 3)
+        if (recordLen > end - (p + 5)) return null
+        p += 5
+
+        // Handshake header: type=0x01 (client_hello), length(3)
+        if ((b[p].toInt() and 0xFF) != 0x01) return null
+        p += 4
+
+        // ClientHello body
+        if (end - p < 34) return null
+        p += 2 // legacy_version
+        p += 32 // random
+
+        if (p >= end) return null
+        val sidLen = b[p].toInt() and 0xFF
+        p += 1 + sidLen
+        if (p + 2 > end) return null
+
+        val csLen = u16(b, p)
+        p += 2 + csLen
+        if (p >= end) return null
+
+        val cmLen = b[p].toInt() and 0xFF
+        p += 1 + cmLen
+        if (p + 2 > end) return null
+
+        val extsLen = u16(b, p)
+        p += 2
+        val extsEnd = p + extsLen
+        if (extsEnd > end) return null
+
+        while (p + 4 <= extsEnd) {
+            val extType = u16(b, p)
+            val extLen = u16(b, p + 2)
+            val dataStart = p + 4
+            val dataEnd = dataStart + extLen
+            if (dataEnd > extsEnd) return null
+
+            if (extType == 0x0000) {
+                // server_name_list_length(2) + name_type(1) + host_name_length(2) + host_name
+                if (dataStart + 5 > dataEnd) return null
+                val nameType = b[dataStart + 2].toInt() and 0xFF
+                if (nameType != 0x00) return null
+                val hostnameLen = u16(b, dataStart + 3)
+                val hostnameStart = dataStart + 5
+                val hostnameEnd = hostnameStart + hostnameLen
+                if (hostnameEnd > dataEnd) return null
+                return hostnameStart until hostnameEnd
+            }
+            p = dataEnd
+        }
+        return null
+    }
+
+    private fun u16(b: ByteArray, off: Int): Int =
+        ((b[off].toInt() and 0xFF) shl 8) or (b[off + 1].toInt() and 0xFF)
 }

@@ -113,20 +113,21 @@ private class FragmentingOutputStream(
     }
 
     override fun write(b: ByteArray, off: Int, len: Int) {
-        if (firstWriteCheck() || len <= 10) {
+        if (firstWriteCheck() || len < 6) {
             delegate.write(b, off, len)
             return
         }
 
+        if (runCatching { writeFragmentedClientHello(b, off, len) }.getOrNull() == true) {
+            onFirstWriteDone()
+            return
+        }
+
+        // Couldn't split at TLS layer (not a ClientHello, malformed, or write
+        // failed). Try TCP-layer split inside the SNI hostname bytes.
         val sniRange = runCatching { findSniHostnameRange(b, off, len) }.getOrNull()
-        DebugLog.d(TAG, "FragOut.write: len=$len sniRange=$sniRange")
+        DebugLog.d(TAG, "FragOut.write: len=$len sniRange=$sniRange (tcp-layer)")
         if (sniRange != null && (sniRange.last - sniRange.first) >= 4) {
-            // Cut inside the host_name. The cut is placed one byte after the
-            // start so the first segment carries the SNI length prefix but
-            // none of the host_name characters that DPI matches against.
-            // A second cut further along splits the host_name itself across
-            // segments — defeats stream-reassembly engines that scan each
-            // accumulated buffer for the blocked host string.
             val firstCut = sniRange.first + 1
             val secondCut = sniRange.first + (sniRange.last - sniRange.first) / 2 + 1
             val segments = listOf(
@@ -138,7 +139,7 @@ private class FragmentingOutputStream(
                 delegate.write(b, start, end - start)
                 delegate.flush()
             }
-            DebugLog.d(TAG, "FragOut.write: SNI split into ${segments.size} segments")
+            DebugLog.d(TAG, "FragOut.write: TCP-layer SNI split into ${segments.size} segments")
             onFirstWriteDone()
             return
         }
@@ -150,6 +151,72 @@ private class FragmentingOutputStream(
         delegate.flush()
         DebugLog.d(TAG, "FragOut.write: fallback 5-byte header split")
         onFirstWriteDone()
+    }
+
+    /**
+     * Splits a ClientHello at the TLS record layer into two records: the first
+     * carries just the handshake type byte (0x01), the second carries the rest
+     * of the handshake. RFC 5246 §6.2.1 explicitly allows handshake messages
+     * to span multiple records — Cloudflare and all major servers handle this
+     * fine. The win: a DPI engine that locates ClientHello by parsing TLS
+     * records will not find a complete handshake header in record 1, and
+     * record 2 alone has no record-prefixed handshake header to anchor on.
+     * A 60ms gap between records also defeats engines with a fixed
+     * reassembly time window.
+     *
+     * Returns true on a successful split write, false if the buffer doesn't
+     * look like a single fragmentable ClientHello.
+     */
+    private fun writeFragmentedClientHello(b: ByteArray, off: Int, len: Int): Boolean {
+        if (len < 7) return false
+        val type = b[off].toInt() and 0xFF
+        val verMajor = b[off + 1].toInt() and 0xFF
+        val verMinor = b[off + 2].toInt() and 0xFF
+        if (type != 0x16 || verMajor != 0x03) return false
+        val recordLen = ((b[off + 3].toInt() and 0xFF) shl 8) or (b[off + 4].toInt() and 0xFF)
+        if (recordLen < 5 || 5 + recordLen > len) return false
+        // First byte of record payload must be the ClientHello handshake type.
+        if ((b[off + 5].toInt() and 0xFF) != 0x01) return false
+
+        val splitAt = 1 // bytes from record payload that go in record A
+        val recordA = ByteArray(5 + splitAt).also {
+            it[0] = 0x16
+            it[1] = verMajor.toByte()
+            it[2] = verMinor.toByte()
+            it[3] = ((splitAt ushr 8) and 0xFF).toByte()
+            it[4] = (splitAt and 0xFF).toByte()
+            System.arraycopy(b, off + 5, it, 5, splitAt)
+        }
+        val bLen = recordLen - splitAt
+        val recordB = ByteArray(5 + bLen).also {
+            it[0] = 0x16
+            it[1] = verMajor.toByte()
+            it[2] = verMinor.toByte()
+            it[3] = ((bLen ushr 8) and 0xFF).toByte()
+            it[4] = (bLen and 0xFF).toByte()
+            System.arraycopy(b, off + 5 + splitAt, it, 5, bLen)
+        }
+
+        delegate.write(recordA)
+        delegate.flush()
+        runCatching { Thread.sleep(60) }
+        delegate.write(recordB)
+        delegate.flush()
+
+        // If the caller batched more bytes after the first TLS record (rare on
+        // a brand-new socket but possible), forward them as-is.
+        val tail = off + 5 + recordLen
+        val tailLen = (off + len) - tail
+        if (tailLen > 0) {
+            delegate.write(b, tail, tailLen)
+            delegate.flush()
+        }
+
+        DebugLog.d(
+            TAG,
+            "FragOut.write: TLS record split (A=${recordA.size}B, B=${recordB.size}B, gap=60ms, tail=${tailLen}B)"
+        )
+        return true
     }
 
     override fun flush() = delegate.flush()

@@ -3,6 +3,7 @@ package com.playerbrowser.app
 import android.app.Application
 import com.google.android.gms.cast.framework.CastContext
 import com.playerbrowser.app.data.BrowserRepository
+import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.NetworkSettingsRepository
 import com.playerbrowser.app.network.ProxyManager
@@ -20,6 +21,8 @@ class PlayerBrowserApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Install crash recorder first so any subsequent init failure is captured.
+        CrashRecorder.install(this)
         applyStoredProxy()
         observeSniBypass()
         initCast()

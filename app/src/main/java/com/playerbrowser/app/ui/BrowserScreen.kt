@@ -110,6 +110,7 @@ fun BrowserScreen(
                 canGoForward: Boolean
             ) = viewModel.onPageFinished(ownerId, url, title, canGoBack, canGoForward)
             override fun onOpenAppSettings() = onOpenSettings()
+            override fun onOpenInNewTab(url: String) { viewModel.newTab(url) }
         }).also { it.load(initialUrl) }
     }
 

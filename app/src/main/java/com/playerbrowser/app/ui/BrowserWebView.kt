@@ -30,7 +30,11 @@ import android.webkit.WebViewClient
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import android.os.Build
+import android.webkit.RenderProcessGoneDetail
 import com.playerbrowser.app.cast.VideoStreamSniffer
+import com.playerbrowser.app.network.CrashRecorder
+import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.SniBypassClient
 import android.widget.Toast
 import androidx.compose.runtime.Composable
@@ -55,6 +59,7 @@ interface WebViewCallbacks {
     fun onStarted(url: String)
     fun onFinished(url: String, title: String, canGoBack: Boolean, canGoForward: Boolean)
     fun onOpenAppSettings()
+    fun onOpenInNewTab(url: String)
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -138,14 +143,47 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 val html = ErrorPage.build(failingUrl, code, desc)
                 view.loadDataWithBaseURL(failingUrl, html, "text/html", "UTF-8", failingUrl)
             }
+
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?
+            ): Boolean {
+                // The WebView renderer crashed (OOM, video-decoder fault, etc).
+                // Returning true keeps the host app alive; we surface an error
+                // page and record the event so the user can see what happened.
+                val didCrash = detail?.didCrash() == true
+                val priority = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+                    detail?.rendererPriorityAtExit() else null
+                val msg = "WebView renderer gone didCrash=$didCrash priority=$priority"
+                DebugLog.e("WebView", msg)
+                val ctx = view?.context
+                if (ctx != null) {
+                    CrashRecorder.record(ctx, "WebViewRenderer", msg)
+                    runCatching {
+                        Toast.makeText(
+                            ctx,
+                            "웹페이지가 종료되었습니다. 새로고침해 주세요.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                    }
+                }
+                if (view != null) {
+                    runCatching {
+                        val html = ErrorPage.build("about:blank", -1, "renderer crashed")
+                        view.loadDataWithBaseURL(null, html, "text/html", "UTF-8", null)
+                    }
+                }
+                return true
+            }
         }
-        webChromeClient = FullscreenAwareChromeClient(this)
+        webChromeClient = FullscreenAwareChromeClient(this, callbacks)
     }
     return BrowserWebViewState(webView, callbacks)
 }
 
 private class FullscreenAwareChromeClient(
-    private val webView: WebView
+    private val webView: WebView,
+    private val callbacks: WebViewCallbacks
 ) : WebChromeClient() {
     private var customView: View? = null
     private var customViewContainer: ViewGroup? = null
@@ -158,10 +196,38 @@ private class FullscreenAwareChromeClient(
         isUserGesture: Boolean,
         resultMsg: Message?
     ): Boolean {
-        // Open popups in the same WebView instead of dropping them.
+        // target="_blank" / window.open(): spin up a throwaway WebView purely
+        // to extract the resolved URL, then hand it to the host so it can spawn
+        // a real new tab. The older "transport.webView = view" trick silently
+        // dropped popups on some sites.
         if (view == null || resultMsg == null) return false
         val transport = resultMsg.obj as? WebView.WebViewTransport ?: return false
-        transport.webView = view
+        val popup = WebView(view.context).apply {
+            settings.javaScriptEnabled = true
+            var delivered = false
+            fun deliver(url: String?, v: WebView?) {
+                if (delivered) return
+                if (url.isNullOrEmpty() || url == "about:blank") return
+                delivered = true
+                callbacks.onOpenInNewTab(url)
+                v?.stopLoading()
+                v?.destroy()
+            }
+            webViewClient = object : WebViewClient() {
+                override fun shouldOverrideUrlLoading(
+                    v: WebView?,
+                    request: WebResourceRequest?
+                ): Boolean {
+                    deliver(request?.url?.toString(), v)
+                    return true
+                }
+
+                override fun onPageStarted(v: WebView?, url: String?, favicon: Bitmap?) {
+                    deliver(url, v)
+                }
+            }
+        }
+        transport.webView = popup
         resultMsg.sendToTarget()
         return true
     }

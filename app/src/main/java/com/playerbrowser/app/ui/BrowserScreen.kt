@@ -132,21 +132,13 @@ fun BrowserScreen(
     LaunchedEffect(Unit) { viewModel.checkForUpdates(silent = true) }
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // Top: URL bar + quick actions (bookmark, cast, menu).
         Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
             Column {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    IconButton(onClick = { if (!activeWebState.goBack()) Unit }, enabled = state.canGoBack) {
-                        Icon(Icons.Filled.ArrowBack, contentDescription = "back")
-                    }
-                    IconButton(onClick = { activeWebState.goForward() }, enabled = state.canGoForward) {
-                        Icon(Icons.Filled.ArrowForward, contentDescription = "forward")
-                    }
-                    IconButton(onClick = { activeWebState.reload() }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "reload")
-                    }
                     OutlinedTextField(
                         value = urlInput,
                         onValueChange = { urlInput = it },
@@ -167,10 +159,6 @@ fun BrowserScreen(
                         )
                     }
                     CastButton()
-                    TabCountButton(
-                        count = tabs.size,
-                        onClick = { tabSwitcherOpen = true }
-                    )
                     Box {
                         IconButton(onClick = { menuOpen = true }) {
                             Icon(Icons.Filled.MoreVert, contentDescription = "menu")
@@ -188,11 +176,6 @@ fun BrowserScreen(
                             DropdownMenuItem(
                                 text = { Text("방문 기록") },
                                 onClick = { menuOpen = false; onOpenHistory() }
-                            )
-                            DropdownMenuItem(
-                                text = { Text("홈") },
-                                leadingIcon = { Icon(Icons.Filled.Home, contentDescription = null) },
-                                onClick = { menuOpen = false; activeWebState.load(BrowserUiState.HOME_URL) }
                             )
                             DropdownMenuItem(
                                 text = { Text("외부 브라우저로 열기") },
@@ -227,7 +210,42 @@ fun BrowserScreen(
                 }
             }
         }
-        BrowserWebViewHost(state = activeWebState, modifier = Modifier.fillMaxSize())
+        // Middle: web content fills remaining space between the two bars.
+        BrowserWebViewHost(
+            state = activeWebState,
+            modifier = Modifier.weight(1f).fillMaxWidth()
+        )
+        // Bottom: Opera-style navigation bar (back / forward / reload / home / tabs).
+        Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                IconButton(
+                    onClick = { if (!activeWebState.goBack()) Unit },
+                    enabled = state.canGoBack
+                ) {
+                    Icon(Icons.Filled.ArrowBack, contentDescription = "back")
+                }
+                IconButton(
+                    onClick = { activeWebState.goForward() },
+                    enabled = state.canGoForward
+                ) {
+                    Icon(Icons.Filled.ArrowForward, contentDescription = "forward")
+                }
+                IconButton(onClick = { activeWebState.reload() }) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "reload")
+                }
+                IconButton(onClick = { activeWebState.load(BrowserUiState.HOME_URL) }) {
+                    Icon(Icons.Filled.Home, contentDescription = "home")
+                }
+                TabCountButton(
+                    count = tabs.size,
+                    onClick = { tabSwitcherOpen = true }
+                )
+            }
+        }
     }
 
     if (tabSwitcherOpen) {

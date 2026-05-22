@@ -1,7 +1,9 @@
 package com.playerbrowser.app
 
 import android.app.Application
+import com.google.android.gms.cast.framework.CastContext
 import com.playerbrowser.app.data.BrowserRepository
+import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.NetworkSettingsRepository
 import com.playerbrowser.app.network.ProxyManager
 import com.playerbrowser.app.network.SniBypassSwitch
@@ -20,6 +22,15 @@ class PlayerBrowserApp : Application() {
         super.onCreate()
         applyStoredProxy()
         observeSniBypass()
+        initCast()
+    }
+
+    private fun initCast() {
+        // Cast framework requires Google Play Services. Devices without GMS
+        // (e.g. some China-region ROMs, emulators) would otherwise crash on
+        // startup, so initialization is best-effort and silently skipped.
+        runCatching { CastContext.getSharedInstance(this) }
+            .onFailure { DebugLog.w("Cast", "Cast init failed (Play Services missing?)", it) }
     }
 
     private fun applyStoredProxy() {

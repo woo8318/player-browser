@@ -7,6 +7,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ActivityInfo
 import android.graphics.Bitmap
+import android.media.AudioManager
 import android.net.Uri
 import android.os.Message
 import android.provider.Settings
@@ -15,6 +16,7 @@ import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.FrameLayout
 import kotlin.math.abs
 import android.webkit.CookieManager
@@ -28,6 +30,7 @@ import android.webkit.WebViewClient
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.network.SniBypassClient
 import android.widget.Toast
 import androidx.compose.runtime.Composable
@@ -97,12 +100,16 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 request: WebResourceRequest?
             ): WebResourceResponse? {
                 if (request == null) return null
+                VideoStreamSniffer.observe(request, view?.tag as? String)
                 val bypassed = SniBypassClient.intercept(request)
                 return IframeScriptInjector.process(request, bypassed)
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 super.onPageStarted(view, url, favicon)
+                // Track host so the sniffer attributes captured stream URLs to
+                // the right page even when subresources come from CDNs.
+                view?.tag = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
                 url?.let { callbacks.onStarted(it) }
             }
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -226,6 +233,11 @@ private class FullscreenAwareChromeClient(
             WindowInsetsControllerCompat(activity.window, decor)
                 .show(WindowInsetsCompat.Type.systemBars())
             activity.requestedOrientation = savedOrientation
+            // Restore system-default brightness in case the vertical-drag
+            // gesture overrode it during fullscreen playback.
+            val lp = activity.window.attributes
+            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            activity.window.attributes = lp
         }
         savedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
     }
@@ -266,6 +278,8 @@ private class GestureCapturingFrame(
     private val webView: WebView
 ) : FrameLayout(context) {
 
+    private enum class VbMode { Volume, Brightness }
+
     private val swipeThresholdPx = 40f * resources.displayMetrics.density
     private val scrubThresholdPx = 20f * resources.displayMetrics.density
     private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
@@ -279,10 +293,21 @@ private class GestureCapturingFrame(
     private var scrubbing = false
     private var lastScrubFireMs = 0L
 
+    private var vbAdjust: VbMode? = null
+    private var vbStartValue: Float = 0f
+    private var lastVbFireMs: Long = 0L
+
+    private val audioManager: AudioManager? by lazy {
+        context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
+    }
+    private val maxVolume: Int by lazy {
+        audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 0
+    }
+
     private val detector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
         override fun onDoubleTap(e: MotionEvent): Boolean {
-            if (scrubbing) return false
+            if (scrubbing || vbAdjust != null) return false
             // Side-aware: left third → -10s, right third → +10s, middle → play/pause.
             val w = width.coerceAtLeast(1)
             val ratio = (e.x / w).coerceIn(0f, 1f)
@@ -306,6 +331,7 @@ private class GestureCapturingFrame(
                 moved = false
                 maxPointers = 1
                 scrubbing = false
+                vbAdjust = null
                 webView.evaluateJavascript(
                     "window.__pb && window.__pb.scrubStart && window.__pb.scrubStart(${width.coerceAtLeast(1)});",
                     null
@@ -322,6 +348,13 @@ private class GestureCapturingFrame(
                         null
                     )
                 }
+                if (vbAdjust != null) {
+                    vbAdjust = null
+                    webView.evaluateJavascript(
+                        "window.__pb && window.__pb.hideVbOverlay && window.__pb.hideVbOverlay();",
+                        null
+                    )
+                }
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = ev.x - startX
@@ -332,8 +365,20 @@ private class GestureCapturingFrame(
                     moved = true
                 }
                 if (maxPointers >= 2) return super.dispatchTouchEvent(ev)
-                if (!scrubbing && abs(dx) > scrubThresholdPx && abs(dx) > abs(dy)) {
-                    scrubbing = true
+                // Mode selection — first qualifying motion wins, scrubbing and
+                // vbAdjust are mutually exclusive.
+                if (!scrubbing && vbAdjust == null) {
+                    if (abs(dx) > scrubThresholdPx && abs(dx) > abs(dy)) {
+                        scrubbing = true
+                    } else if (abs(dy) > scrubThresholdPx && abs(dy) > abs(dx)) {
+                        val w = width.coerceAtLeast(1)
+                        val mode = if (startX / w < 0.5f) VbMode.Brightness else VbMode.Volume
+                        vbAdjust = mode
+                        vbStartValue = when (mode) {
+                            VbMode.Volume -> currentVolumeIndex().toFloat()
+                            VbMode.Brightness -> currentBrightnessRatio()
+                        }
+                    }
                 }
                 if (scrubbing) {
                     val now = System.currentTimeMillis()
@@ -343,6 +388,33 @@ private class GestureCapturingFrame(
                             "window.__pb && window.__pb.scrubBy && window.__pb.scrubBy(${dx.toInt()});",
                             null
                         )
+                    }
+                } else {
+                    val mode = vbAdjust
+                    if (mode != null) {
+                        val h = height.coerceAtLeast(1)
+                        // Y grows downward — invert so dragging up increases.
+                        val deltaRatio = -dy / h
+                        when (mode) {
+                            VbMode.Volume -> {
+                                val maxVol = maxVolume
+                                if (maxVol > 0) {
+                                    val newIdx = (vbStartValue + deltaRatio * maxVol)
+                                        .coerceIn(0f, maxVol.toFloat())
+                                    audioManager?.setStreamVolume(
+                                        AudioManager.STREAM_MUSIC,
+                                        newIdx.toInt(),
+                                        0
+                                    )
+                                    fireVbOverlay("volume", newIdx / maxVol)
+                                }
+                            }
+                            VbMode.Brightness -> {
+                                val newRatio = (vbStartValue + deltaRatio).coerceIn(0f, 1f)
+                                applyBrightness(newRatio)
+                                fireVbOverlay("brightness", newRatio)
+                            }
+                        }
                     }
                 }
             }
@@ -358,6 +430,12 @@ private class GestureCapturingFrame(
                         null
                     )
                     scrubbing = false
+                } else if (vbAdjust != null) {
+                    vbAdjust = null
+                    webView.evaluateJavascript(
+                        "window.__pb && window.__pb.hideVbOverlay && window.__pb.hideVbOverlay();",
+                        null
+                    )
                 } else if (maxPointers >= 2 && moved && dt <= maxSwipeMs &&
                     abs(dx) >= swipeThresholdPx && abs(dx) > abs(dy)
                 ) {
@@ -377,9 +455,50 @@ private class GestureCapturingFrame(
                         null
                     )
                 }
+                if (vbAdjust != null) {
+                    vbAdjust = null
+                    webView.evaluateJavascript(
+                        "window.__pb && window.__pb.hideVbOverlay && window.__pb.hideVbOverlay();",
+                        null
+                    )
+                }
             }
         }
         return super.dispatchTouchEvent(ev)
+    }
+
+    private fun currentVolumeIndex(): Int =
+        audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0
+
+    private fun currentBrightnessRatio(): Float {
+        val window = (webView.context as? Activity)?.window ?: return 0.5f
+        val current = window.attributes.screenBrightness
+        if (current in 0f..1f) return current
+        return runCatching {
+            Settings.System.getInt(
+                context.contentResolver,
+                Settings.System.SCREEN_BRIGHTNESS
+            ) / 255f
+        }.getOrDefault(0.5f).coerceIn(0f, 1f)
+    }
+
+    private fun applyBrightness(ratio: Float) {
+        val window = (webView.context as? Activity)?.window ?: return
+        val lp = window.attributes
+        lp.screenBrightness = ratio
+        window.attributes = lp
+    }
+
+    private fun fireVbOverlay(kind: String, ratio: Float) {
+        val now = System.currentTimeMillis()
+        if (now - lastVbFireMs < 33) return
+        lastVbFireMs = now
+        val clamped = ratio.coerceIn(0f, 1f)
+        webView.evaluateJavascript(
+            "window.__pb && window.__pb.showVbOverlay && " +
+                "window.__pb.showVbOverlay('$kind', $clamped);",
+            null
+        )
     }
 
     companion object {

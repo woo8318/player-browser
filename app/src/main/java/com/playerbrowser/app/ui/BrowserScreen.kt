@@ -54,6 +54,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateMap
+import androidx.appcompat.view.ContextThemeWrapper
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -62,6 +63,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.mediarouter.app.MediaRouteButton
+import com.google.android.gms.cast.framework.CastButtonFactory
 import com.playerbrowser.app.web.UrlUtils
 
 @Composable
@@ -162,6 +166,7 @@ fun BrowserScreen(
                             contentDescription = "bookmark"
                         )
                     }
+                    CastButton()
                     TabCountButton(
                         count = tabs.size,
                         onClick = { tabSwitcherOpen = true }
@@ -248,6 +253,22 @@ fun BrowserScreen(
         onInstall = { viewModel.launchInstall() },
         onCancelDownload = { viewModel.cancelDownload() },
         onDismiss = { viewModel.dismissUpdate() }
+    )
+}
+
+@Composable
+private fun CastButton() {
+    // MediaRouteButton needs an AppCompat theme; rather than retrofit the
+    // whole app, wrap just this view's context. Setup is wrapped in
+    // runCatching so a missing-GMS device still renders the rest of the bar.
+    AndroidView(
+        modifier = Modifier.size(40.dp),
+        factory = { ctx ->
+            val themed = ContextThemeWrapper(ctx, androidx.appcompat.R.style.Theme_AppCompat_NoActionBar)
+            MediaRouteButton(themed).also { btn ->
+                runCatching { CastButtonFactory.setUpMediaRouteButton(themed, btn) }
+            }
+        }
     )
 }
 

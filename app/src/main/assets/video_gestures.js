@@ -224,6 +224,61 @@
     hideScrub();
   };
 
+  // Vertical-drag overlay for system volume (right side) / brightness (left
+  // side). Driven by GestureCapturingFrame during native fullscreen.
+  function ensureVbOverlay() {
+    var el = document.getElementById('__pb_vb');
+    if (el) return el;
+    el = document.createElement('div');
+    el.id = '__pb_vb';
+    el.style.cssText =
+      'position:fixed;top:50%;transform:translateY(-50%);' +
+      'background:rgba(0,0,0,0.78);color:#fff;font:600 13px/1.2 sans-serif;' +
+      'padding:12px 14px;border-radius:10px;z-index:2147483647;' +
+      'pointer-events:none;text-align:center;display:none;flex-direction:column;' +
+      'align-items:center;gap:8px;transition:opacity .2s;opacity:0;';
+    el.innerHTML =
+      '<div id="__pb_vb_label" style="font-size:12px;opacity:.85;"></div>' +
+      '<div style="width:8px;height:140px;background:rgba(255,255,255,0.22);' +
+      'border-radius:4px;overflow:hidden;display:flex;align-items:flex-end;">' +
+      '<div id="__pb_vb_fill" style="width:100%;background:#fff;"></div>' +
+      '</div>' +
+      '<div id="__pb_vb_pct" style="font-size:13px;"></div>';
+    document.documentElement.appendChild(el);
+    return el;
+  }
+
+  window.__pb.showVbOverlay = function (kind, ratio) {
+    var el = ensureVbOverlay();
+    var r = Math.max(0, Math.min(1, ratio || 0));
+    if (kind === 'volume') {
+      el.style.right = '24px';
+      el.style.left = '';
+    } else {
+      el.style.left = '24px';
+      el.style.right = '';
+    }
+    var label = document.getElementById('__pb_vb_label');
+    var fill = document.getElementById('__pb_vb_fill');
+    var pct = document.getElementById('__pb_vb_pct');
+    if (label) label.textContent = kind === 'volume' ? '음량' : '밝기';
+    if (fill) fill.style.height = (r * 100) + '%';
+    if (pct) pct.textContent = Math.round(r * 100) + '%';
+    el.style.display = 'flex';
+    el.style.opacity = '1';
+    clearTimeout(el.__t);
+  };
+
+  window.__pb.hideVbOverlay = function () {
+    var el = document.getElementById('__pb_vb');
+    if (!el) return;
+    el.style.opacity = '0';
+    clearTimeout(el.__t);
+    el.__t = setTimeout(function () {
+      if (el.style.opacity === '0') el.style.display = 'none';
+    }, 220);
+  };
+
   // ---- Suppress the site's own double-tap-to-fullscreen handlers ----
   //
   // Many sites attach dblclick / two-click handlers to the video element or

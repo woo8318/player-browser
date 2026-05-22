@@ -3,8 +3,20 @@
   window.__pbGestureInstalled = true;
 
   var SEEK_SEC = 10;
-  var SWIPE_THRESHOLD = 40;        // px
+  var SCRUB_THRESHOLD_PX = 20;
+  var SWIPE_THRESHOLD_PX = 40;
   var SWIPE_TIME_LIMIT_MS = 800;
+  var DOUBLE_TAP_MS = 300;
+  var DOUBLE_TAP_MAX_MOVE = 30;
+
+  // Disable the WebView's built-in double-tap-to-zoom on the whole document.
+  // Pinch-zoom still works; we just don't want it stealing our double-tap.
+  try {
+    var css = document.createElement('style');
+    css.id = '__pb_touch_css';
+    css.textContent = 'html, body { touch-action: manipulation; }';
+    (document.head || document.documentElement).appendChild(css);
+  } catch (e) {}
 
   // Walk the main document plus every same-origin iframe we can reach.
   // Cross-origin iframes throw on contentDocument access and are skipped.
@@ -45,12 +57,10 @@
 
   function fullscreenVideo() {
     var docs = reachableDocuments();
-    // Direct: a <video> is the fullscreen element.
     for (var i = 0; i < docs.length; i++) {
       var fe = docs[i].fullscreenElement || docs[i].webkitFullscreenElement;
       if (fe && fe.tagName === 'VIDEO') return fe;
     }
-    // Container fullscreen: find any <video> inside the fullscreen element.
     for (var k = 0; k < docs.length; k++) {
       var fe2 = docs[k].fullscreenElement || docs[k].webkitFullscreenElement;
       if (fe2 && fe2.querySelector) {
@@ -58,8 +68,6 @@
         if (v) return v;
       }
     }
-    // Iframe-as-fullscreen: parent doc shows the iframe as fullscreen element;
-    // the actual <video> lives inside that iframe's document.
     for (var m = 0; m < docs.length; m++) {
       var fe3 = docs[m].fullscreenElement || docs[m].webkitFullscreenElement;
       if (fe3 && (fe3.tagName === 'IFRAME' || fe3.tagName === 'FRAME')) {
@@ -81,8 +89,6 @@
   }
 
   function videoAtPoint(x, y) {
-    // In native fullscreen the video surface is composited outside the DOM;
-    // hit-testing by rect fails, so prefer the fullscreen element when present.
     var fs = fullscreenVideo();
     if (fs) return fs;
     var vids = allVideos();
@@ -91,6 +97,15 @@
       if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return vids[i];
     }
     return activeVideo();
+  }
+
+  function pad2(n) { return n < 10 ? '0' + n : '' + n; }
+  function formatTime(sec) {
+    sec = Math.max(0, Math.floor(sec || 0));
+    var h = Math.floor(sec / 3600);
+    var m = Math.floor((sec % 3600) / 60);
+    var s = sec % 60;
+    return (h > 0 ? h + ':' + pad2(m) : '' + m) + ':' + pad2(s);
   }
 
   function showToast(msg) {
@@ -111,6 +126,32 @@
     el.__t = setTimeout(function () { el.style.opacity = '0'; }, 700);
   }
 
+  function showScrub(currentSec, totalSec, deltaSec) {
+    var el = document.getElementById('__pb_scrub');
+    if (!el) {
+      el = document.createElement('div');
+      el.id = '__pb_scrub';
+      el.style.cssText =
+        'position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);' +
+        'background:rgba(0,0,0,0.78);color:#fff;font:600 18px/1.3 sans-serif;' +
+        'padding:12px 20px;border-radius:10px;z-index:2147483647;' +
+        'pointer-events:none;text-align:center;';
+      document.documentElement.appendChild(el);
+    }
+    var deltaTxt = '';
+    if (typeof deltaSec === 'number' && isFinite(deltaSec)) {
+      var sign = deltaSec >= 0 ? '+' : '−';
+      deltaTxt = '<div style="font:500 13px/1.2 sans-serif;opacity:.8;margin-top:4px;">' +
+        sign + formatTime(Math.abs(deltaSec)) + '</div>';
+    }
+    el.innerHTML = formatTime(currentSec) + ' / ' + formatTime(totalSec) + deltaTxt;
+    el.style.display = 'block';
+  }
+  function hideScrub() {
+    var el = document.getElementById('__pb_scrub');
+    if (el) el.style.display = 'none';
+  }
+
   function seekBy(video, delta) {
     try {
       var t = Math.max(0, Math.min((video.duration || 0) - 0.1, (video.currentTime || 0) + delta));
@@ -125,19 +166,6 @@
       else { video.pause(); showToast('일시정지'); }
     } catch (e) {}
   }
-
-  // Android-callable hooks. Used by the native fullscreen gesture overlay
-  // since touch events on the CustomView never reach the WebView document.
-  window.__pb = window.__pb || {};
-  window.__pb.seek = function (delta) {
-    var v = fullscreenVideo() || activeVideo();
-    if (v) seekBy(v, delta);
-  };
-  window.__pb.togglePlay = function () {
-    var v = fullscreenVideo() || activeVideo();
-    if (v) togglePlay(v);
-  };
-  window.__pb.switchVideo = function (dir) { switchVideo(dir); };
 
   function switchVideo(direction) {
     var vids = allVideos();
@@ -156,7 +184,81 @@
     } catch (e) {}
   }
 
+  // Android-callable hooks. Used by the native fullscreen gesture overlay
+  // since touch events on the CustomView never reach the WebView document.
+  window.__pb = window.__pb || {};
+  window.__pb.seek = function (delta) {
+    var v = fullscreenVideo() || activeVideo();
+    if (v) seekBy(v, delta);
+  };
+  window.__pb.togglePlay = function () {
+    var v = fullscreenVideo() || activeVideo();
+    if (v) togglePlay(v);
+  };
+  window.__pb.switchVideo = function (dir) { switchVideo(dir); };
+
+  var nativeScrub = null;
+  window.__pb.scrubStart = function (screenWidth) {
+    var v = fullscreenVideo() || activeVideo();
+    if (!v) { nativeScrub = null; return; }
+    nativeScrub = {
+      video: v,
+      startTime: v.currentTime || 0,
+      duration: v.duration || 0,
+      screenWidth: Math.max(1, screenWidth || window.innerWidth || 1)
+    };
+  };
+  window.__pb.scrubBy = function (deltaPx) {
+    var s = nativeScrub;
+    if (!s) return;
+    var dur = s.duration || s.video.duration || 0;
+    if (!isFinite(dur) || dur <= 0) return;
+    var newT = Math.max(0, Math.min(dur - 0.1, s.startTime + (deltaPx / s.screenWidth) * dur));
+    try {
+      s.video.currentTime = newT;
+      showScrub(newT, dur, newT - s.startTime);
+    } catch (e) {}
+  };
+  window.__pb.scrubEnd = function () {
+    nativeScrub = null;
+    hideScrub();
+  };
+
+  // ---- Suppress the site's own double-tap-to-fullscreen handlers ----
+  //
+  // Many sites attach dblclick / two-click handlers to the video element or
+  // an overlay div and toggle fullscreen on double-tap. When we handle a
+  // double-tap ourselves (for ±10s seek), we don't want the site's handler
+  // to also fire and yank the user into fullscreen.
+  //
+  // Strategy: in capture phase (runs before any site listener) we kill:
+  //   (a) every dblclick whose hit point is on a video, unconditionally;
+  //   (b) the synthesized click that follows our recognized double-tap.
+
+  var suppressClick = null; // { until, x, y }
+
+  document.addEventListener('click', function (e) {
+    var s = suppressClick;
+    if (!s) return;
+    if (Date.now() > s.until) { suppressClick = null; return; }
+    if (Math.abs(e.clientX - s.x) < 40 && Math.abs(e.clientY - s.y) < 40) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    }
+  }, { capture: true });
+
+  document.addEventListener('dblclick', function (e) {
+    if (!videoAtPoint(e.clientX, e.clientY)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+  }, { capture: true });
+
+  // ---- In-document (non-native-fullscreen) gesture handling ----
+
   var touchState = null;
+  var lastTap = { t: 0, x: 0, y: 0, video: null };
 
   document.addEventListener('touchstart', function (e) {
     if (!e.touches || e.touches.length === 0) return;
@@ -168,7 +270,9 @@
       startX: t0.clientX,
       startY: t0.clientY,
       startT: Date.now(),
+      startTime: v.currentTime || 0,
       pointers: e.touches.length,
+      scrubbing: false,
       moved: false
     };
   }, { passive: true, capture: true });
@@ -177,9 +281,24 @@
     if (!touchState || !e.touches || e.touches.length === 0) return;
     if (e.touches.length > touchState.pointers) touchState.pointers = e.touches.length;
     var t0 = e.touches[0];
-    if (Math.abs(t0.clientX - touchState.startX) > 8 ||
-        Math.abs(t0.clientY - touchState.startY) > 8) {
-      touchState.moved = true;
+    var dx = t0.clientX - touchState.startX;
+    var dy = t0.clientY - touchState.startY;
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) touchState.moved = true;
+    if (touchState.pointers >= 2) return;
+
+    if (!touchState.scrubbing &&
+        Math.abs(dx) > SCRUB_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+      touchState.scrubbing = true;
+    }
+    if (touchState.scrubbing) {
+      var dur = touchState.video.duration || 0;
+      if (!isFinite(dur) || dur <= 0) return;
+      var w = window.innerWidth || document.documentElement.clientWidth || 1;
+      var newT = Math.max(0, Math.min(dur - 0.1, touchState.startTime + (dx / w) * dur));
+      try {
+        touchState.video.currentTime = newT;
+        showScrub(newT, dur, newT - touchState.startTime);
+      } catch (err) {}
     }
   }, { passive: true, capture: true });
 
@@ -187,38 +306,50 @@
     if (!touchState) return;
     var s = touchState;
     touchState = null;
-    if (!s.moved) return;
-    if (Date.now() - s.startT > SWIPE_TIME_LIMIT_MS) return;
+    var dt = Date.now() - s.startT;
+    var et = (e.changedTouches && e.changedTouches[0]) || null;
+    var dx = et ? et.clientX - s.startX : 0;
+    var dy = et ? et.clientY - s.startY : 0;
 
-    var endTouch = (e.changedTouches && e.changedTouches[0]) || null;
-    if (!endTouch) return;
-    var dx = endTouch.clientX - s.startX;
-    var dy = endTouch.clientY - s.startY;
-    if (Math.abs(dx) < SWIPE_THRESHOLD) return;
-    if (Math.abs(dx) < Math.abs(dy)) return;
-
-    if (s.pointers >= 2) {
+    // 2-finger horizontal swipe → switch video.
+    if (s.pointers >= 2 && s.moved && dt <= SWIPE_TIME_LIMIT_MS &&
+        Math.abs(dx) >= SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
       switchVideo(dx > 0 ? -1 : 1);
+      return;
+    }
+
+    // Scrubbing already updated currentTime live; just hide the overlay.
+    if (s.scrubbing) { hideScrub(); return; }
+
+    if (!et) return;
+    var x = et.clientX, y = et.clientY;
+    var now = Date.now();
+    if (now - lastTap.t < DOUBLE_TAP_MS && lastTap.video === s.video &&
+        Math.abs(x - lastTap.x) < DOUBLE_TAP_MAX_MOVE &&
+        Math.abs(y - lastTap.y) < DOUBLE_TAP_MAX_MOVE) {
+      // Double-tap: side-aware. Left third → -10s, right third → +10s,
+      // middle → play/pause.
+      var r = s.video.getBoundingClientRect();
+      var left = r.left, width = r.width;
+      if (!width || width < 50) { left = 0; width = window.innerWidth || 1; }
+      var rel = (x - left) / width;
+      if (rel < 0.35) seekBy(s.video, -SEEK_SEC);
+      else if (rel > 0.65) seekBy(s.video, SEEK_SEC);
+      else togglePlay(s.video);
+      lastTap.t = 0;
+      // Block the site from also handling this tap (the synthesized click
+      // and the upcoming dblclick are what trigger fullscreen on most
+      // players).
+      suppressClick = { until: Date.now() + 500, x: x, y: y };
+      e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
     } else {
-      seekBy(s.video, dx > 0 ? SEEK_SEC : -SEEK_SEC);
+      lastTap = { t: now, x: x, y: y, video: s.video };
     }
   }, { passive: true, capture: true });
 
-  // Double-tap to toggle play/pause.
-  var lastTap = { t: 0, x: 0, y: 0 };
-  document.addEventListener('touchend', function (e) {
-    if (!e.changedTouches || e.changedTouches.length === 0) return;
-    var t = e.changedTouches[0];
-    var v = videoAtPoint(t.clientX, t.clientY);
-    if (!v) { lastTap.t = 0; return; }
-    var now = Date.now();
-    if (now - lastTap.t < 300 &&
-        Math.abs(t.clientX - lastTap.x) < 30 &&
-        Math.abs(t.clientY - lastTap.y) < 30) {
-      togglePlay(v);
-      lastTap.t = 0;
-    } else {
-      lastTap = { t: now, x: t.clientX, y: t.clientY };
-    }
+  document.addEventListener('touchcancel', function () {
+    if (touchState && touchState.scrubbing) hideScrub();
+    touchState = null;
   }, { passive: true, capture: true });
 })();

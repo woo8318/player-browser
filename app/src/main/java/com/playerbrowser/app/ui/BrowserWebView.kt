@@ -267,6 +267,7 @@ private class GestureCapturingFrame(
 ) : FrameLayout(context) {
 
     private val swipeThresholdPx = 40f * resources.displayMetrics.density
+    private val scrubThresholdPx = 20f * resources.displayMetrics.density
     private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val maxSwipeMs = 800L
 
@@ -275,15 +276,22 @@ private class GestureCapturingFrame(
     private var startT = 0L
     private var moved = false
     private var maxPointers = 1
-    private var swipeHandled = false
+    private var scrubbing = false
+    private var lastScrubFireMs = 0L
 
     private val detector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
         override fun onDoubleTap(e: MotionEvent): Boolean {
-            webView.evaluateJavascript(
-                "window.__pb && window.__pb.togglePlay && window.__pb.togglePlay();",
-                null
-            )
+            if (scrubbing) return false
+            // Side-aware: left third → -10s, right third → +10s, middle → play/pause.
+            val w = width.coerceAtLeast(1)
+            val ratio = (e.x / w).coerceIn(0f, 1f)
+            val js = when {
+                ratio < 0.35f -> "window.__pb && window.__pb.seek && window.__pb.seek(-$SEEK_SECONDS);"
+                ratio > 0.65f -> "window.__pb && window.__pb.seek && window.__pb.seek($SEEK_SECONDS);"
+                else -> "window.__pb && window.__pb.togglePlay && window.__pb.togglePlay();"
+            }
+            webView.evaluateJavascript(js, null)
             return true
         }
     })
@@ -297,34 +305,77 @@ private class GestureCapturingFrame(
                 startT = System.currentTimeMillis()
                 moved = false
                 maxPointers = 1
-                swipeHandled = false
+                scrubbing = false
+                webView.evaluateJavascript(
+                    "window.__pb && window.__pb.scrubStart && window.__pb.scrubStart(${width.coerceAtLeast(1)});",
+                    null
+                )
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (ev.pointerCount > maxPointers) maxPointers = ev.pointerCount
+                if (scrubbing) {
+                    // Second finger landed mid-scrub → cancel scrubbing so a
+                    // 2-finger switchVideo swipe can still be recognized.
+                    scrubbing = false
+                    webView.evaluateJavascript(
+                        "window.__pb && window.__pb.scrubEnd && window.__pb.scrubEnd();",
+                        null
+                    )
+                }
             }
             MotionEvent.ACTION_MOVE -> {
+                val dx = ev.x - startX
+                val dy = ev.y - startY
                 if (!moved &&
-                    (abs(ev.x - startX) > touchSlopPx || abs(ev.y - startY) > touchSlopPx)
+                    (abs(dx) > touchSlopPx || abs(dy) > touchSlopPx)
                 ) {
                     moved = true
+                }
+                if (maxPointers >= 2) return super.dispatchTouchEvent(ev)
+                if (!scrubbing && abs(dx) > scrubThresholdPx && abs(dx) > abs(dy)) {
+                    scrubbing = true
+                }
+                if (scrubbing) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastScrubFireMs >= 16) {
+                        lastScrubFireMs = now
+                        webView.evaluateJavascript(
+                            "window.__pb && window.__pb.scrubBy && window.__pb.scrubBy(${dx.toInt()});",
+                            null
+                        )
+                    }
                 }
             }
             MotionEvent.ACTION_UP -> {
                 val dx = ev.x - startX
                 val dy = ev.y - startY
                 val dt = System.currentTimeMillis() - startT
-                if (!swipeHandled && moved && dt <= maxSwipeMs &&
+                if (scrubbing) {
+                    // Final scrub position then end.
+                    webView.evaluateJavascript(
+                        "window.__pb && window.__pb.scrubBy && window.__pb.scrubBy(${dx.toInt()});" +
+                            "window.__pb && window.__pb.scrubEnd && window.__pb.scrubEnd();",
+                        null
+                    )
+                    scrubbing = false
+                } else if (maxPointers >= 2 && moved && dt <= maxSwipeMs &&
                     abs(dx) >= swipeThresholdPx && abs(dx) > abs(dy)
                 ) {
-                    swipeHandled = true
-                    val js = if (maxPointers >= 2) {
-                        val dir = if (dx > 0) -1 else 1
-                        "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);"
-                    } else {
-                        val delta = if (dx > 0) SEEK_SECONDS else -SEEK_SECONDS
-                        "window.__pb && window.__pb.seek && window.__pb.seek($delta);"
-                    }
-                    webView.evaluateJavascript(js, null)
+                    val dir = if (dx > 0) -1 else 1
+                    webView.evaluateJavascript(
+                        "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);",
+                        null
+                    )
+                }
+                // Single tap and double-tap are handled by GestureDetector above.
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                if (scrubbing) {
+                    scrubbing = false
+                    webView.evaluateJavascript(
+                        "window.__pb && window.__pb.scrubEnd && window.__pb.scrubEnd();",
+                        null
+                    )
                 }
             }
         }

@@ -33,6 +33,7 @@ import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import com.playerbrowser.app.web.IframeScriptInjector
 import com.playerbrowser.app.web.WebAssetLoader
 
 class BrowserWebViewState(
@@ -81,6 +82,7 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             cm.setAcceptThirdPartyCookies(this, true)
         }
         val gestureScript = WebAssetLoader.gestureScript(context)
+        IframeScriptInjector.setScript(gestureScript)
         webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
@@ -95,7 +97,8 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 request: WebResourceRequest?
             ): WebResourceResponse? {
                 if (request == null) return null
-                return SniBypassClient.intercept(request)
+                val bypassed = SniBypassClient.intercept(request)
+                return IframeScriptInjector.process(request, bypassed)
             }
 
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {

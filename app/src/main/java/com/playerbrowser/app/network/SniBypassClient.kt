@@ -69,6 +69,8 @@ object SniBypassClient {
         // only intercepted if we've already seen this host need bypass.
         if (!request.isForMainFrame && (host.isBlank() || host !in bypassedHosts)) return null
 
+        if (request.isForMainFrame) DebugLog.d("SniBypass", "intercept: $method $host (main frame)")
+
         val urlString = url.toString()
         val builder = Request.Builder().url(urlString)
         if (method == "HEAD") builder.head()
@@ -112,6 +114,7 @@ object SniBypassClient {
             if (request.isForMainFrame && host.isNotBlank() && resp.code in 200..399) {
                 bypassedHosts.add(host)
             }
+            if (request.isForMainFrame) DebugLog.d("SniBypass", "intercept ok: $host -> ${resp.code}")
             val reason = resp.message.ifBlank { reasonFor(resp.code) }
             // Stream the body through to the WebView instead of buffering the
             // entire response in memory. The wrapper closes the OkHttp
@@ -127,9 +130,11 @@ object SniBypassClient {
             WebResourceResponse(mime, charset, resp.code, reason, headers, stream)
         } catch (e: IOException) {
             resp?.close()
+            DebugLog.w("SniBypass", "intercept io: $host", e)
             null
         } catch (t: Throwable) {
             resp?.close()
+            DebugLog.w("SniBypass", "intercept err: $host", t)
             null
         }
     }

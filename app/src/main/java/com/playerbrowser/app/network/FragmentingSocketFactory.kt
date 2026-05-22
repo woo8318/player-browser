@@ -1,6 +1,5 @@
 package com.playerbrowser.app.network
 
-import android.util.Log
 import java.io.OutputStream
 import java.net.InetAddress
 import java.net.Socket
@@ -68,7 +67,7 @@ private class FragmentingSocket(private val inner: Socket) : Socket() {
         // into a single packet (which would defeat the whole point).
         runCatching { inner.tcpNoDelay = true }
         val out = inner.getOutputStream()
-        Log.d(TAG, "getOutputStream: wrapping socket ${inner.javaClass.simpleName} -> ${inner.remoteSocketAddress}")
+        DebugLog.d(TAG, "getOutputStream: wrapping ${inner.javaClass.simpleName} -> ${inner.remoteSocketAddress}")
         return FragmentingOutputStream(out) { firstWriteDone }.also {
             it.onFirstWriteDone = { firstWriteDone = true }
         }
@@ -120,7 +119,7 @@ private class FragmentingOutputStream(
         }
 
         val sniRange = runCatching { findSniHostnameRange(b, off, len) }.getOrNull()
-        Log.d(TAG, "FragOut.write: len=$len sniRange=$sniRange")
+        DebugLog.d(TAG, "FragOut.write: len=$len sniRange=$sniRange")
         if (sniRange != null && (sniRange.last - sniRange.first) >= 4) {
             // Cut inside the host_name. The cut is placed one byte after the
             // start so the first segment carries the SNI length prefix but
@@ -139,7 +138,7 @@ private class FragmentingOutputStream(
                 delegate.write(b, start, end - start)
                 delegate.flush()
             }
-            Log.d(TAG, "FragOut.write: SNI split into ${segments.size} segments")
+            DebugLog.d(TAG, "FragOut.write: SNI split into ${segments.size} segments")
             onFirstWriteDone()
             return
         }
@@ -149,7 +148,7 @@ private class FragmentingOutputStream(
         delegate.flush()
         delegate.write(b, off + 5, len - 5)
         delegate.flush()
-        Log.d(TAG, "FragOut.write: fallback 5-byte header split")
+        DebugLog.d(TAG, "FragOut.write: fallback 5-byte header split")
         onFirstWriteDone()
     }
 

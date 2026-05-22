@@ -14,6 +14,7 @@ object Routes {
     const val BOOKMARKS = "bookmarks"
     const val HISTORY = "history"
     const val SETTINGS = "settings"
+    const val DEBUG_LOG = "debug_log"
 }
 
 @Composable
@@ -65,8 +66,12 @@ fun RootNavigation(viewModel: BrowserViewModel) {
             val settingsViewModel: SettingsViewModel = viewModel()
             SettingsScreen(
                 viewModel = settingsViewModel,
-                onBack = { navController.popBackStack() }
+                onBack = { navController.popBackStack() },
+                onOpenDebugLog = { navController.navigate(Routes.DEBUG_LOG) }
             )
+        }
+        composable(Routes.DEBUG_LOG) {
+            DebugLogScreen(onBack = { navController.popBackStack() })
         }
     }
 }

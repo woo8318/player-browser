@@ -45,7 +45,8 @@ import com.playerbrowser.app.network.NetworkSettings
 @Composable
 fun SettingsScreen(
     viewModel: SettingsViewModel,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    onOpenDebugLog: () -> Unit
 ) {
     val saved by viewModel.settings.collectAsState()
     val event by viewModel.event.collectAsState()
@@ -205,6 +206,20 @@ fun SettingsScreen(
                     onCheckedChange = { viewModel.setSniBypassEnabled(it) }
                 )
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
+            SectionTitle("디버그")
+            Text(
+                text = "SNI 우회·네트워크 인터셉트 동작 로그를 인앱에서 확인합니다. " +
+                    "사이트 로드에 문제가 있을 때 어디서 막혔는지 빠르게 추적할 수 있습니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Button(
+                onClick = onOpenDebugLog,
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("디버그 로그 보기") }
         }
     }
 }

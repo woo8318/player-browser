@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.19.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.20.
 
 ## 빌드 / 배포
 
@@ -46,7 +46,7 @@ app/src/main/
       BrowserScreen.kt                  # 상단(주소+즐겨찾기+Cast+메뉴) + 중앙(WebView) + 하단(뒤로/앞/새로고침/홈/탭)
       BrowserWebView.kt                 # WebViewClient / WebChromeClient / GestureCapturingFrame
       BrowserViewModel.kt               # 탭 + 그룹 + 부모-자식 + isCurrentBookmarked + 업데이트 상태
-      TabSwitcher.kt                    # 탭 스위처 오버레이 (그룹 섹션 + 길게 누름 멀티 선택 + 일괄 닫기/이동)
+      TabSwitcher.kt                    # 탭 스위처 오버레이 (그룹 섹션 + 길게 누름 멀티 선택 + 카드 ⋮ 메뉴 1탭 이동 + 일괄 닫기/이동)
       BookmarksScreen.kt / HistoryScreen.kt
       SettingsScreen.kt / SettingsViewModel.kt
       DebugLogScreen.kt                 # 로그 + 충돌 기록 뷰어 (확장/복사/삭제)
@@ -69,7 +69,7 @@ app/src/main/
 - **멀티탭:** 탭 전환 시 WebView 자체를 swap (단일 WebView 재사용 X). `SnapshotStateMap<TabId, BrowserWebViewState>`로 보관. 탭 닫히면 `webView.destroy()`로 GC.
 - **탭 그룹 / 부모-자식:** `TabState`에 `groupId` + `parentTabId` 필드. `TabGroup`(id, name, color)은 `BrowserViewModel._groups` StateFlow + `TabPersistence`의 JSON에 함께 저장 (Room 마이그레이션 비용 회피). 그룹 삭제 시 탭은 살아남고 `groupId`만 null로 떨어짐.
 - **target=_blank / window.open → 부모 탭 복귀:** `WebChromeClient.onCreateWindow`가 throwaway WebView로 URL만 뽑아 `WebViewCallbacks.onOpenInNewTab(url)` 콜백 → `BrowserScreen`이 `viewModel.newTab(url, parentTabId = ownerId)`로 새 탭 생성 (부모의 `groupId`도 자동 상속). 자식 탭에서 뒤로가기 → 자체 history가 없으면 `viewModel.tryReturnToParent()`로 부모 탭으로 복귀 + 자식 탭 닫기. 부모 탭이 이미 사라진 자식은 `closeTabs`에서 `parentTabId`를 null로 정리해 댕글링 방지.
-- **탭 스위처 멀티 선택:** `TabSwitcher.kt`의 `TabSwitcherOverlay`(internal). `combinedClickable`(ExperimentalFoundationApi) 길게 누름 → `selectedIds` Set에 추가 → `derivedStateOf`로 선택 모드 진입. 선택 모드에서는 상단 액션 바가 morph(전체 / 그룹으로 이동 / 일괄 닫기). BackHandler가 선택 모드면 선택 해제, 아니면 오버레이 dismiss. 그룹별 섹션은 `LazyVerticalGrid` + `GridItemSpan(maxLineSpan)` 헤더로 렌더.
+- **탭 스위처 멀티 선택 + 카드 메뉴 1탭 이동:** `TabSwitcher.kt`의 `TabSwitcherOverlay`(internal). `combinedClickable`(ExperimentalFoundationApi) 길게 누름 → `selectedIds` Set에 추가 → `derivedStateOf`로 선택 모드 진입. 선택 모드에서는 상단 액션 바가 morph(전체 / 그룹으로 이동 / 일괄 닫기). BackHandler가 선택 모드면 선택 해제, 아니면 오버레이 dismiss. 그룹별 섹션은 `LazyVerticalGrid` + `GridItemSpan(maxLineSpan)` 헤더로 렌더. 단일 탭 이동은 카드 우측 ⋮ 메뉴 ("그룹으로 이동..." / "그룹에서 빼기") 로 멀티 선택 없이 처리 — `pendingMoveTargets: List<String>?` 상태가 단일/멀티 양쪽 흐름을 통일해 `GroupPickerDialog`/`NewGroupDialog`(create-then-move 원자 처리) 한 벌을 공유. 카드 메뉴는 `inSelectMode == false` 일 때만 노출해 선택 모드 액션과 충돌하지 않음.
 - **iframe 처리:** `IframeScriptInjector`가 cross-origin iframe HTML 응답에 `<script>`를 prepend해 제스처 JS 주입.
 - **광고 차단 (`AdBlocker`):** 약 50개 광고/트래커 host suffix + URL 패턴 매칭으로 빈 204 반환. 메인 프레임은 절대 차단 안 함. CSS 셀렉터로 same-domain 광고 슬롯 숨김. `AdBlockSwitch.enabled` volatile 플래그 (hot path).
 - **쿠키 동의 배너 자동 거부 (`CookieBannerKiller`):** OneTrust / Cookiebot / Quantcast(TCF) / Didomi / Sourcepoint / TrustArc / Google 컨센트의 "Reject All" 버튼 셀렉터 리스트를 들고 400ms 간격으로 최대 10회 폴링 클릭. 동시에 컨센트 컨테이너를 `display:none` + `html,body{overflow:auto}`로 CSS 숨김 (배너 dismiss 실패 시 콘텐츠/스크롤 락 같이 풀어주는 fallback). `window.__pbCookieKill` 플래그로 idempotent — 매 `onPageFinished`에서 재주입돼도 1회만 동작. `CookieBannerSwitch.enabled` volatile 플래그 (hot path).

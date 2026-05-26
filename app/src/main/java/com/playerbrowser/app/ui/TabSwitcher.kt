@@ -90,9 +90,12 @@ internal fun TabSwitcherOverlay(
     // tab is selected, taps toggle selection instead of activating the tab.
     var selectedIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     val inSelectMode by remember { derivedStateOf { selectedIds.isNotEmpty() } }
-    var groupPickerOpen by remember { mutableStateOf(false) }
     var renamingGroupId by remember { mutableStateOf<String?>(null) }
     var newGroupDialog by remember { mutableStateOf(false) }
+    // Holds the tab ids that should land in the next-picked group. Lets the
+    // single-card move menu and the select-mode action bar share one picker
+    // dialog + one "create then move" flow.
+    var pendingMoveTargets by remember { mutableStateOf<List<String>?>(null) }
 
     // Make sure the selection set never holds stale ids after a bulk-close.
     LaunchedEffect(tabs) {
@@ -121,7 +124,7 @@ internal fun TabSwitcherOverlay(
                         TextButton(onClick = {
                             selectedIds = tabs.map { it.id }.toSet()
                         }) { Text("전체") }
-                        IconButton(onClick = { groupPickerOpen = true }) {
+                        IconButton(onClick = { pendingMoveTargets = selectedIds.toList() }) {
                             Icon(Icons.Filled.Folder, contentDescription = "move to group")
                         }
                         IconButton(onClick = {
@@ -209,26 +212,33 @@ internal fun TabSwitcherOverlay(
                                 selectedIds = selectedIds - tab.id
                             }
                             onClose(tab.id)
-                        }
+                        },
+                        onMoveRequest = { pendingMoveTargets = listOf(tab.id) },
+                        onRemoveFromGroup = if (tab.groupId != null) {
+                            { onMoveToGroup(listOf(tab.id), null) }
+                        } else null
                     )
                 }
             }
         }
     }
 
-    if (groupPickerOpen) {
+    val movingTargets = pendingMoveTargets
+    if (movingTargets != null && !newGroupDialog) {
         GroupPickerDialog(
             groups = groups,
             onPick = { groupId ->
-                onMoveToGroup(selectedIds.toList(), groupId)
-                groupPickerOpen = false
-                selectedIds = emptySet()
+                onMoveToGroup(movingTargets, groupId)
+                pendingMoveTargets = null
+                if (inSelectMode) selectedIds = emptySet()
             },
             onCreateAndPick = {
-                groupPickerOpen = false
+                // Keep pendingMoveTargets set — NewGroupDialog will consume it
+                // after the new group is created, so the move happens atomically
+                // from the user's POV.
                 newGroupDialog = true
             },
-            onDismiss = { groupPickerOpen = false }
+            onDismiss = { pendingMoveTargets = null }
         )
     }
 
@@ -237,12 +247,20 @@ internal fun TabSwitcherOverlay(
             onCreate = { name, color ->
                 val id = onAddGroup(name, color)
                 newGroupDialog = false
-                if (inSelectMode) {
-                    onMoveToGroup(selectedIds.toList(), id)
-                    selectedIds = emptySet()
+                val targets = pendingMoveTargets
+                if (targets != null) {
+                    onMoveToGroup(targets, id)
+                    pendingMoveTargets = null
+                    if (inSelectMode) selectedIds = emptySet()
                 }
             },
-            onDismiss = { newGroupDialog = false }
+            onDismiss = {
+                newGroupDialog = false
+                // Top-bar "new group" entry leaves pendingMoveTargets null, so
+                // this clear is a no-op there; for the move-and-create flow it
+                // cancels the pending move if the user backs out.
+                pendingMoveTargets = null
+            }
         )
     }
 
@@ -369,13 +387,16 @@ private fun TabCard(
     inSelectMode: Boolean,
     onSelect: () -> Unit,
     onLongPress: () -> Unit,
-    onClose: () -> Unit
+    onClose: () -> Unit,
+    onMoveRequest: () -> Unit,
+    onRemoveFromGroup: (() -> Unit)?
 ) {
     val border = when {
         isSelected -> MaterialTheme.colorScheme.tertiary
         isActive -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.outlineVariant
     }
+    var menuOpen by remember { mutableStateOf(false) }
     Surface(
         shape = RoundedCornerShape(10.dp),
         tonalElevation = if (isActive || isSelected) 4.dp else 1.dp,
@@ -418,6 +439,38 @@ private fun TabCard(
                     maxLines = 1,
                     modifier = Modifier.weight(1f)
                 )
+                if (!inSelectMode) {
+                    Box {
+                        IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(28.dp)) {
+                            Icon(
+                                Icons.Filled.MoreVert,
+                                contentDescription = "tab menu",
+                                modifier = Modifier.size(16.dp)
+                            )
+                        }
+                        DropdownMenu(
+                            expanded = menuOpen,
+                            onDismissRequest = { menuOpen = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("그룹으로 이동...") },
+                                onClick = {
+                                    menuOpen = false
+                                    onMoveRequest()
+                                }
+                            )
+                            if (onRemoveFromGroup != null) {
+                                DropdownMenuItem(
+                                    text = { Text("그룹에서 빼기") },
+                                    onClick = {
+                                        menuOpen = false
+                                        onRemoveFromGroup()
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
                 IconButton(onClick = onClose, modifier = Modifier.size(28.dp)) {
                     Icon(
                         Icons.Filled.Close,

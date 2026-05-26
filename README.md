@@ -1,36 +1,59 @@
 # Player Browser
 
-URL 입력으로 웹을 탐색하고, **동영상에 제스처 컨트롤·즐겨찾기·방문 기록 표시** 기능을 더한 안드로이드 브라우저입니다.
+URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차단·SNI 우회·Chromecast 송출을 갖춘 안드로이드 브라우저입니다. WebView 기반 단일 액티비티 + Jetpack Compose UI.
 
 ## 주요 기능
 
-1. **주소창 브라우저** — 검색어/URL 자동 인식 (Google 검색 폴백)
-2. **동영상 제스처**
-   - 한 손가락 좌/우 스와이프 → **-10초 / +10초 시킹**
-   - 두 손가락 좌/우 스와이프 → **이전 / 다음 video 요소로 전환**
-   - 동영상 영역 더블탭 → 재생/일시정지
-3. **즐겨찾기** — 상단 북마크 아이콘으로 토글
-4. **방문 기록 표시** — 즐겨찾기 목록의 방문한 URL 앞에 ✓ 표시 + 회색 처리
-5. **방문 기록 페이지** — 메뉴 → 방문 기록에서 전체/개별 삭제 가능
+### 브라우징
+- **상하단 분리 레이아웃** — 상단: 주소창 + 즐겨찾기 + Cast + 메뉴, 하단: 뒤로/앞으로/새로고침/홈/탭 (Opera 스타일)
+- **멀티탭** — 탭별 WebView 인스턴스, 세션 영속화
+- **검색어/URL 자동 인식** — URL이 아니면 Google 검색으로 폴백
+- **즐겨찾기 / 방문 기록** — 방문한 URL은 즐겨찾기 목록에서 ✓ 표시
+- **새 창 링크** — `target="_blank"` / `window.open()`을 새 탭으로 열기
+- **외부 브라우저로 열기** — 메뉴에서 현재 URL을 시스템 브라우저로 전달
+- **자체 업데이트** — GitHub Releases에서 새 버전 감지 후 인앱 다운로드/설치
+
+### 동영상 제스처 (`<video>` 위에서 동작)
+- **1손가락 좌/우 스와이프** — -10초 / +10초 시킹
+- **사이드 인식 더블탭** — 좌측: -10초, 우측: +10초, 중앙: 재생/일시정지
+- **드래그 시킹 (수평)** — 손가락 위치에 비례해 정밀 시킹
+- **2손가락 좌/우 스와이프** — 이전 / 다음 `<video>` 요소로 전환
+- **세로 드래그 (풀스크린)** — 좌측: 화면 밝기, 우측: 시스템 볼륨 (MX Player / VLC 스타일)
+- **풀스크린 가로/세로 자동 회전** — 영상 비율 감지로 결정
+- **iframe / cross-origin 영상도 지원** — `IframeScriptInjector`가 자식 프레임 HTML에 제스처 JS 주입
+
+### 캐스트 / 미러링
+- **Chromecast 송출** — 툴바 Cast 버튼으로 현재 페이지의 HLS(`.m3u8`) / MP4 / WebM 스트림을 디스커버된 리시버로 송출
+- **VideoStreamSniffer** — `shouldInterceptRequest`에서 동영상 URL을 자동 캡처해 호스트별로 보관
+
+### 네트워크 / 프라이버시
+- **광고 차단** — 약 50개 광고/트래커 도메인 (Google Ads, DoubleClick, Taboola, Outbrain, Criteo, ExoClick 등) + URL 패턴(`/ads/`, `/pagead/`, `adsbygoogle` 등) 매칭으로 서브요청을 빈 204 응답으로 차단. CSS 셀렉터로 동일 도메인 광고 슬롯도 숨김. 설정에서 끌 수 있음.
+- **자동 SNI 우회** — DoH(Cloudflare)로 DNS 우회 + TLS ClientHello 단편화로 단순 패턴 매칭 DPI 회피 (KT/SKT의 일부 차단 사이트 접근)
+- **HTTP/HTTPS 프록시** — 인증 포함 외부 프록시 경유 (WebView 트래픽)
+- **크래시 로깅** — `Thread.setDefaultUncaughtExceptionHandler` + `WebViewClient.onRenderProcessGone`으로 메인 프로세스/WebView 렌더러 충돌을 `filesDir/crashes/`에 영구 저장. 디버그 로그 화면에서 조회/복사.
+- **인앱 디버그 로그** — `DebugLog`가 SNI 우회 / 광고 차단 / 캐스트 이벤트 등을 메모리 링버퍼 + 화면에 표시
 
 ## 갤럭시 S24에 설치하기
 
 ### 1. GitHub Actions로 APK 빌드
-- 이 저장소를 GitHub에 push하면 `.github/workflows/android.yml` 워크플로우가 자동 실행됩니다.
-- GitHub 저장소 → **Actions** 탭 → 최근 워크플로우 실행 → **Artifacts** 섹션의 `player-browser-debug-apk` 다운로드.
-- 압축을 풀면 `app-debug.apk` 파일이 나옵니다.
+- 이 저장소를 GitHub에 push하거나 `v1.x.x` 태그를 push하면 `.github/workflows/android.yml` 워크플로우가 자동 실행됩니다.
+- GitHub 저장소 → **Releases** 탭 → 최신 릴리스의 `app-debug.apk` 다운로드 (태그 push 시 자동 첨부, 최신 3개만 유지)
+- 또는 **Actions** 탭 → 워크플로우 실행 → **Artifacts** 섹션의 `player-browser-debug-apk`
 
 ### 2. S24에 설치
-1. 다운로드한 `app-debug.apk`를 S24로 전송 (USB / 카카오톡 나에게 보내기 / Google Drive 등).
-2. **설정 → 보안 및 개인정보 보호 → 출처를 알 수 없는 앱 설치** 에서 사용 중인 파일 관리자(또는 브라우저)에 권한 허용.
+1. 다운로드한 `app-debug.apk`를 S24로 전송 (USB / 메신저 / 클라우드).
+2. **설정 → 보안 및 개인정보 보호 → 출처를 알 수 없는 앱 설치** 에서 사용하는 파일 관리자(또는 브라우저)에 권한 허용.
 3. 파일 관리자에서 APK 탭 → 설치.
 4. 첫 실행 시 보안 경고가 뜨면 "그래도 설치" 선택.
 
-> ⚠️ 디버그 빌드는 디버그 키로 서명됩니다. 정식 배포는 release 빌드 + 자체 키스토어가 필요합니다.
+> 디버그 빌드는 디버그 키로 서명됩니다. 정식 배포는 release 빌드 + 자체 키스토어가 필요합니다.
+
+### 3. 인앱 업데이트
+설치 후에는 메뉴 → "업데이트 확인"으로 새 버전을 받을 수 있습니다. 자동으로도 GitHub Releases를 폴링하므로 새 태그가 push되면 다이얼로그가 뜹니다.
 
 ## 로컬 빌드 (선택)
 
-Android Studio Hedgehog 이상 + JDK 17 필요.
+Android Studio Hedgehog 이상 + JDK 17 필요. 로컬에 gradle wrapper가 없으면 한 번 생성:
 
 ```bash
 gradle wrapper --gradle-version 8.7 --distribution-type bin
@@ -43,20 +66,58 @@ gradle wrapper --gradle-version 8.7 --distribution-type bin
 ```
 app/src/main/
   AndroidManifest.xml
-  assets/video_gestures.js        # 동영상 제스처 JS (WebView에 주입)
+  assets/video_gestures.js              # WebView에 주입되는 제스처 JS
   java/com/playerbrowser/app/
-    MainActivity.kt
-    PlayerBrowserApp.kt
-    data/                          # Room: Bookmark / HistoryEntry / DAO / Repo
-    ui/                            # Compose 화면 (Browser / Bookmarks / History)
-    web/                           # WebView 유틸 (URL 정규화, JS 로더)
-.github/workflows/android.yml      # GitHub Actions APK 빌드
+    MainActivity.kt                     # 단일 액티비티 + Compose
+    PlayerBrowserApp.kt                 # Application — CrashRecorder / 프록시 / SNI / AdBlock 초기화
+    cast/                               # Chromecast 송출
+      CastOptionsProvider.kt
+      CastSessionBridge.kt
+      VideoStreamSniffer.kt             # 페이지 내 동영상 URL 캡처
+    data/                               # Room DB + 탭 영속화
+      AppDatabase.kt / Bookmark*.kt / HistoryEntry*.kt / BrowserRepository.kt
+      TabPersistence.kt
+    network/                            # 네트워크 인터셉트 / 프록시 / 진단
+      AdBlocker.kt / AdBlockSwitch.kt   # 광고 차단
+      SniBypassClient.kt / SniBypassSwitch.kt / FragmentingSocketFactory.kt / DohClient.kt
+      ProxyManager.kt / NetworkSettings*.kt
+      CrashRecorder.kt                  # 충돌 영속화
+      DebugLog.kt                       # 인앱 로그 링버퍼
+    ui/                                 # Jetpack Compose 화면
+      RootNavigation.kt
+      BrowserScreen.kt / BrowserWebView.kt / BrowserViewModel.kt
+      BookmarksScreen.kt / HistoryScreen.kt
+      SettingsScreen.kt / SettingsViewModel.kt
+      DebugLogScreen.kt                 # 로그 + 충돌 기록 뷰어
+      UpdateDialog.kt / ErrorPage.kt
+    update/                             # 자체 업데이트 (GitHub Releases)
+      UpdateClient.kt / UpdateInstaller.kt / UpdateModels.kt / Version.kt
+    web/                                # WebView 유틸
+      UrlUtils.kt / WebAssetLoader.kt / IframeScriptInjector.kt
+.github/workflows/android.yml           # APK 빌드 + 릴리스 + 오래된 릴리스 정리
 ```
 
 ## 동영상 제스처 동작 원리
 
-- WebView의 `onPageFinished`에서 `video_gestures.js`를 페이지에 주입합니다.
-- 페이지의 `<video>` 요소 위에서 발생하는 터치 이벤트(`touchstart` / `touchmove` / `touchend`)를 가로채 스와이프 방향과 손가락 개수에 따라 `currentTime` 조작 또는 다음/이전 video로 전환합니다.
-- 시킹/전환 시 화면 중앙 상단에 토스트가 잠시 표시됩니다.
+- `BrowserWebView`의 `onPageFinished`에서 `video_gestures.js`를 페이지에 주입.
+- 페이지의 `<video>` 요소 위 터치 이벤트(`touchstart` / `touchmove` / `touchend`)를 가로채 손가락 개수·방향·시작 위치로 동작 분기.
+- 풀스크린 모드에서는 `GestureCapturingFrame`이 `dispatchTouchEvent`를 래핑해 player 자체 컨트롤과 충돌 없이 동시 수신.
+- 시킹/전환 시 화면 상단/측면에 토스트 또는 진행바 표시.
+- iframe (cross-origin 포함) 내부 `<video>`도 `IframeScriptInjector`가 HTML 응답에 `<script>`를 prepend해 지원.
 
-YouTube처럼 자체 제스처를 가진 사이트에서는 일부 제스처가 사이트 자체 동작과 충돌할 수 있습니다. 그런 경우 일반 `<video>`를 직접 노출하는 사이트에서 가장 잘 작동합니다.
+YouTube 등 자체 제스처가 강한 사이트는 일부 동작이 충돌할 수 있어, 일반 `<video>`를 노출하는 사이트에서 가장 잘 작동합니다.
+
+## 광고 차단 동작 원리
+
+- `BrowserWebView.shouldInterceptRequest`에서 가장 먼저 `AdBlocker.intercept()` 호출.
+- 매칭 시 빈 `204 No Content` 응답 반환 → 광고 페이로드 다운로드 자체를 막아 트래픽/배터리/렌더링 시간 절약.
+- 메인 프레임 요청은 절대 차단하지 않음 (실수로 광고 URL을 직접 입력했을 때 빈 페이지가 되는 사고 방지).
+- `onPageFinished`에서 동일 도메인 광고 슬롯을 가리는 CSS를 한 번 inject.
+- 광고 차단을 감지해 콘텐츠를 막는 사이트는 설정에서 토글로 즉시 끌 수 있음.
+
+## 크래시 / 디버그
+
+- 메인 프로세스 충돌 → `CrashRecorder`가 `filesDir/crashes/crash-{시각}.txt`로 스택트레이스 저장 (최대 20개 보관)
+- WebView 렌더러 충돌 → `onRenderProcessGone`이 잡고 `true` 반환해 앱 살아남기 + 에러 페이지 + 토스트 + 기록
+- 메뉴 → 설정 → 디버그 로그에서 충돌 목록과 풀 스택트레이스 조회 / 클립보드 복사 가능
+- 디버그 로그는 `DebugLog` 링버퍼로 SNI 우회 / 광고 차단 / 캐스트 등 이벤트 실시간 표시

@@ -34,7 +34,12 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
 
     fun saveAndApply(next: NetworkSettings) {
         viewModelScope.launch {
-            repository.update { current -> next.copy(sniBypassEnabled = current.sniBypassEnabled) }
+            repository.update { current ->
+                next.copy(
+                    sniBypassEnabled = current.sniBypassEnabled,
+                    adBlockEnabled = current.adBlockEnabled
+                )
+            }
             val result = ProxyManager.apply(next)
             _event.value = ProxyApplyEvent.Message(result.toMessage())
         }
@@ -45,6 +50,15 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             repository.update { it.copy(sniBypassEnabled = enabled) }
             _event.value = ProxyApplyEvent.Message(
                 if (enabled) "자동 SNI 우회 켜짐" else "자동 SNI 우회 꺼짐"
+            )
+        }
+    }
+
+    fun setAdBlockEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(adBlockEnabled = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "광고 차단 켜짐" else "광고 차단 꺼짐"
             )
         }
     }

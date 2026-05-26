@@ -209,6 +209,30 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()
+            SectionTitle("광고 차단")
+            Text(
+                text = "주요 광고/추적 도메인 (Google Ads, DoubleClick, Taboola, " +
+                    "Outbrain, Criteo 등) 으로 가는 서브요청을 네트워크 단에서 차단합니다. " +
+                    "트래픽·배터리·렌더링 시간을 줄여 페이지 로딩이 빨라집니다. " +
+                    "일부 사이트는 광고 차단을 감지해 콘텐츠를 막을 수 있으니, " +
+                    "그런 사이트에서는 잠시 끄세요.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("광고 차단 사용", modifier = Modifier.padding(end = 12.dp))
+                Spacer(modifier = Modifier.fillMaxWidth(0.6f))
+                Switch(
+                    checked = saved.adBlockEnabled,
+                    onCheckedChange = { viewModel.setAdBlockEnabled(it) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
             SectionTitle("디버그")
             Text(
                 text = "SNI 우회·네트워크 인터셉트 동작 로그를 인앱에서 확인합니다. " +

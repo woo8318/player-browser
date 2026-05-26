@@ -33,6 +33,8 @@ import androidx.core.view.WindowInsetsControllerCompat
 import android.os.Build
 import android.webkit.RenderProcessGoneDetail
 import com.playerbrowser.app.cast.VideoStreamSniffer
+import com.playerbrowser.app.network.AdBlockSwitch
+import com.playerbrowser.app.network.AdBlocker
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.SniBypassClient
@@ -105,6 +107,9 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 request: WebResourceRequest?
             ): WebResourceResponse? {
                 if (request == null) return null
+                // Ad blocker first — cheapest check, returns an empty 204
+                // before we waste cycles on sniffer / SNI / iframe injection.
+                AdBlocker.intercept(request)?.let { return it }
                 VideoStreamSniffer.observe(request, view?.tag as? String)
                 val bypassed = SniBypassClient.intercept(request)
                 return IframeScriptInjector.process(request, bypassed)
@@ -120,6 +125,9 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 view?.evaluateJavascript(gestureScript, null)
+                if (AdBlockSwitch.enabled) {
+                    view?.evaluateJavascript(AdBlocker.HIDE_CSS_JS, null)
+                }
                 if (view != null && url != null) {
                     callbacks.onFinished(
                         url = url,

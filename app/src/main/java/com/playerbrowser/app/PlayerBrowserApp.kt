@@ -3,6 +3,7 @@ package com.playerbrowser.app
 import android.app.Application
 import com.google.android.gms.cast.framework.CastContext
 import com.playerbrowser.app.data.BrowserRepository
+import com.playerbrowser.app.network.AdBlockSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.NetworkSettingsRepository
@@ -24,7 +25,7 @@ class PlayerBrowserApp : Application() {
         // Install crash recorder first so any subsequent init failure is captured.
         CrashRecorder.install(this)
         applyStoredProxy()
-        observeSniBypass()
+        observeNetworkSwitches()
         initCast()
     }
 
@@ -44,10 +45,11 @@ class PlayerBrowserApp : Application() {
         }
     }
 
-    private fun observeSniBypass() {
+    private fun observeNetworkSwitches() {
         appScope.launch {
             NetworkSettingsRepository.get(this@PlayerBrowserApp).settings.collectLatest {
                 SniBypassSwitch.enabled = it.sniBypassEnabled
+                AdBlockSwitch.enabled = it.adBlockEnabled
             }
         }
     }

@@ -22,6 +22,7 @@ class NetworkSettingsRepository(private val context: Context) {
         val PROXY_USERNAME = stringPreferencesKey("proxy_username")
         val PROXY_PASSWORD = stringPreferencesKey("proxy_password")
         val SNI_BYPASS_ENABLED = booleanPreferencesKey("sni_bypass_enabled")
+        val AD_BLOCK_ENABLED = booleanPreferencesKey("ad_block_enabled")
     }
 
     val settings: Flow<NetworkSettings> =
@@ -39,6 +40,7 @@ class NetworkSettingsRepository(private val context: Context) {
             prefs[Keys.PROXY_USERNAME] = next.proxyUsername
             prefs[Keys.PROXY_PASSWORD] = next.proxyPassword
             prefs[Keys.SNI_BYPASS_ENABLED] = next.sniBypassEnabled
+            prefs[Keys.AD_BLOCK_ENABLED] = next.adBlockEnabled
         }
     }
 
@@ -48,7 +50,8 @@ class NetworkSettingsRepository(private val context: Context) {
         proxyPort = this[Keys.PROXY_PORT] ?: 0,
         proxyUsername = this[Keys.PROXY_USERNAME].orEmpty(),
         proxyPassword = this[Keys.PROXY_PASSWORD].orEmpty(),
-        sniBypassEnabled = this[Keys.SNI_BYPASS_ENABLED] ?: true
+        sniBypassEnabled = this[Keys.SNI_BYPASS_ENABLED] ?: true,
+        adBlockEnabled = this[Keys.AD_BLOCK_ENABLED] ?: true
     )
 
     companion object {

@@ -8,6 +8,7 @@ import com.playerbrowser.app.PlayerBrowserApp
 import com.playerbrowser.app.data.Bookmark
 import com.playerbrowser.app.data.BrowserRepository
 import com.playerbrowser.app.data.HistoryEntry
+import com.playerbrowser.app.data.PersistedGroup
 import com.playerbrowser.app.data.PersistedSession
 import com.playerbrowser.app.data.PersistedTab
 import com.playerbrowser.app.data.TabPersistence
@@ -40,13 +41,25 @@ data class TabState(
     val currentTitle: String = "",
     val loading: Boolean = false,
     val canGoBack: Boolean = false,
-    val canGoForward: Boolean = false
+    val canGoForward: Boolean = false,
+    val parentTabId: String? = null,
+    val groupId: String? = null
 ) {
     companion object {
-        fun blank(initialUrl: String = BrowserUiState.HOME_URL): TabState =
-            TabState(id = UUID.randomUUID().toString(), currentUrl = initialUrl)
+        fun blank(initialUrl: String = BrowserUiState.HOME_URL, parentTabId: String? = null): TabState =
+            TabState(
+                id = UUID.randomUUID().toString(),
+                currentUrl = initialUrl,
+                parentTabId = parentTabId
+            )
     }
 }
+
+data class TabGroup(
+    val id: String,
+    val name: String,
+    val color: Int
+)
 
 data class BrowserUiState(
     val currentUrl: String = HOME_URL,
@@ -72,7 +85,9 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
             TabState(
                 id = p.id,
                 currentUrl = p.url.ifBlank { BrowserUiState.HOME_URL },
-                currentTitle = p.title
+                currentTitle = p.title,
+                parentTabId = p.parentTabId,
+                groupId = p.groupId
             )
         }
         ?.takeIf { it.isNotEmpty() }
@@ -91,9 +106,16 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         combine(_tabs, _activeTabId) { tabs, id -> tabs.firstOrNull { it.id == id } ?: tabs.first() }
             .stateIn(viewModelScope, SharingStarted.Eagerly, restoredTabs.first())
 
+    private val _groups = MutableStateFlow(
+        restored?.groups?.map { TabGroup(it.id, it.name, it.color) } ?: emptyList()
+    )
+    val groups: StateFlow<List<TabGroup>> = _groups.asStateFlow()
+
     init {
         viewModelScope.launch {
-            combine(_tabs, _activeTabId) { tabs, id -> snapshotForPersist(tabs, id) }
+            combine(_tabs, _activeTabId, _groups) { tabs, id, groups ->
+                snapshotForPersist(tabs, id, groups)
+            }
                 .distinctUntilChanged()
                 .debounce(500)
                 .onEach { session ->
@@ -103,10 +125,23 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private fun snapshotForPersist(tabs: List<TabState>, activeId: String): PersistedSession =
+    private fun snapshotForPersist(
+        tabs: List<TabState>,
+        activeId: String,
+        groups: List<TabGroup>
+    ): PersistedSession =
         PersistedSession(
-            tabs = tabs.map { PersistedTab(id = it.id, url = it.currentUrl, title = it.currentTitle) },
-            activeTabId = activeId
+            tabs = tabs.map {
+                PersistedTab(
+                    id = it.id,
+                    url = it.currentUrl,
+                    title = it.currentTitle,
+                    parentTabId = it.parentTabId,
+                    groupId = it.groupId
+                )
+            },
+            activeTabId = activeId,
+            groups = groups.map { PersistedGroup(it.id, it.name, it.color) }
         )
 
     val state: StateFlow<BrowserUiState> = activeTab.map {
@@ -144,8 +179,17 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
 
     // ----- Tab management -----
 
-    fun newTab(initialUrl: String = BrowserUiState.HOME_URL): String {
-        val tab = TabState.blank(initialUrl)
+    fun newTab(
+        initialUrl: String = BrowserUiState.HOME_URL,
+        parentTabId: String? = null
+    ): String {
+        // Inherit the parent's group so popups land next to their opener instead
+        // of falling into the default bucket and visually breaking the group.
+        val inheritedGroupId = parentTabId?.let { pid ->
+            _tabs.value.firstOrNull { it.id == pid }?.groupId
+        }
+        val tab = TabState.blank(initialUrl, parentTabId = parentTabId)
+            .copy(groupId = inheritedGroupId)
         _tabs.value = _tabs.value + tab
         _activeTabId.value = tab.id
         _pendingLoadUrl.value = initialUrl
@@ -157,27 +201,87 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun closeTab(id: String) {
+        closeTabs(listOf(id))
+    }
+
+    fun closeTabs(ids: List<String>) {
+        if (ids.isEmpty()) return
         val current = _tabs.value
-        if (current.size <= 1) {
-            // Keep at least one tab — reset it to a blank home tab instead.
+        val targets = ids.toSet()
+        // Special case: closing everything → replace with a single blank tab.
+        if (targets.containsAll(current.map { it.id })) {
             val replacement = TabState.blank()
             _tabs.value = listOf(replacement)
             _activeTabId.value = replacement.id
             _pendingLoadUrl.value = BrowserUiState.HOME_URL
             return
         }
-        val index = current.indexOfFirst { it.id == id }
-        if (index < 0) return
-        val next = current.toMutableList().also { it.removeAt(index) }
-        _tabs.value = next
-        if (_activeTabId.value == id) {
-            val newActive = next[index.coerceAtMost(next.lastIndex)]
+        val keptOrdered = current.filterNot { it.id in targets }
+        // Orphaned children (their parent was just closed) lose their back-to-parent link.
+        val keptIds = keptOrdered.map { it.id }.toSet()
+        val sanitized = keptOrdered.map {
+            if (it.parentTabId != null && it.parentTabId !in keptIds) it.copy(parentTabId = null) else it
+        }
+        _tabs.value = sanitized
+        if (_activeTabId.value in targets) {
+            // Keep the activation position close to where it was so the
+            // user's mental map of the tab strip isn't shuffled.
+            val originalIndex = current.indexOfFirst { it.id == _activeTabId.value }
+                .coerceAtLeast(0)
+            val newActive = sanitized.getOrNull(originalIndex.coerceAtMost(sanitized.lastIndex))
+                ?: sanitized.first()
             _activeTabId.value = newActive.id
         }
     }
 
+    /**
+     * Attempts to return to the opener tab and close the current one. Used
+     * when a child tab has no more back-history of its own — matches the
+     * Opera/Chrome popup gesture where "back from a popup" dismisses it.
+     * Returns true if a parent was found and the swap happened.
+     */
+    fun tryReturnToParent(): Boolean {
+        val current = activeTab.value
+        val parentId = current.parentTabId ?: return false
+        if (_tabs.value.none { it.id == parentId }) return false
+        _activeTabId.value = parentId
+        closeTabs(listOf(current.id))
+        return true
+    }
+
     private fun updateTab(id: String, transform: (TabState) -> TabState) {
         _tabs.value = _tabs.value.map { if (it.id == id) transform(it) else it }
+    }
+
+    // ----- Tab grouping -----
+
+    fun addGroup(name: String, color: Int): String {
+        val group = TabGroup(id = UUID.randomUUID().toString(), name = name, color = color)
+        _groups.value = _groups.value + group
+        return group.id
+    }
+
+    fun renameGroup(id: String, name: String) {
+        _groups.value = _groups.value.map { if (it.id == id) it.copy(name = name) else it }
+    }
+
+    fun deleteGroup(id: String) {
+        // Removing a group does NOT close its tabs — they fall back to the
+        // ungrouped section so the user doesn't lose work by mistake.
+        _groups.value = _groups.value.filterNot { it.id == id }
+        _tabs.value = _tabs.value.map { if (it.groupId == id) it.copy(groupId = null) else it }
+    }
+
+    fun setTabGroup(tabId: String, groupId: String?) {
+        updateTab(tabId) { it.copy(groupId = groupId) }
+    }
+
+    fun setTabsGroup(tabIds: List<String>, groupId: String?) {
+        if (tabIds.isEmpty()) return
+        val targets = tabIds.toSet()
+        _tabs.value = _tabs.value.map {
+            if (it.id in targets) it.copy(groupId = groupId) else it
+        }
     }
 
     // ----- Page lifecycle (per tab) -----

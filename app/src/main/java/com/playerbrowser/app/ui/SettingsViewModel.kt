@@ -37,7 +37,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             repository.update { current ->
                 next.copy(
                     sniBypassEnabled = current.sniBypassEnabled,
-                    adBlockEnabled = current.adBlockEnabled
+                    adBlockEnabled = current.adBlockEnabled,
+                    cookieBannerEnabled = current.cookieBannerEnabled
                 )
             }
             val result = ProxyManager.apply(next)
@@ -59,6 +60,15 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             repository.update { it.copy(adBlockEnabled = enabled) }
             _event.value = ProxyApplyEvent.Message(
                 if (enabled) "광고 차단 켜짐" else "광고 차단 꺼짐"
+            )
+        }
+    }
+
+    fun setCookieBannerEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(cookieBannerEnabled = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "쿠키 배너 자동 거부 켜짐" else "쿠키 배너 자동 거부 꺼짐"
             )
         }
     }

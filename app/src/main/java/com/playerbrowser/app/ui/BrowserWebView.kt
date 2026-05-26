@@ -35,6 +35,8 @@ import android.webkit.RenderProcessGoneDetail
 import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.network.AdBlockSwitch
 import com.playerbrowser.app.network.AdBlocker
+import com.playerbrowser.app.network.CookieBannerKiller
+import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.SniBypassClient
@@ -127,6 +129,9 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 view?.evaluateJavascript(gestureScript, null)
                 if (AdBlockSwitch.enabled) {
                     view?.evaluateJavascript(AdBlocker.HIDE_CSS_JS, null)
+                }
+                if (CookieBannerSwitch.enabled) {
+                    view?.evaluateJavascript(CookieBannerKiller.SCRIPT, null)
                 }
                 if (view != null && url != null) {
                     callbacks.onFinished(

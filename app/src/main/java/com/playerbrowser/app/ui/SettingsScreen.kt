@@ -233,6 +233,29 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()
+            SectionTitle("쿠키 동의 배너 자동 거부")
+            Text(
+                text = "GDPR/CCPA 쿠키 동의 배너 (OneTrust, Cookiebot, Quantcast, " +
+                    "Didomi, TrustArc 등) 를 자동으로 \"모두 거부\"로 닫습니다. " +
+                    "버튼 클릭이 실패하면 배너 자체를 숨겨 콘텐츠 가림을 막습니다. " +
+                    "일부 사이트가 배너 동작에 의존하면 깨질 수 있으니, 그때만 끄세요.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("쿠키 배너 자동 거부", modifier = Modifier.padding(end = 12.dp))
+                Spacer(modifier = Modifier.fillMaxWidth(0.6f))
+                Switch(
+                    checked = saved.cookieBannerEnabled,
+                    onCheckedChange = { viewModel.setCookieBannerEnabled(it) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
             SectionTitle("디버그")
             Text(
                 text = "SNI 우회·네트워크 인터셉트 동작 로그를 인앱에서 확인합니다. " +

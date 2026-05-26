@@ -4,6 +4,7 @@ import android.app.Application
 import com.google.android.gms.cast.framework.CastContext
 import com.playerbrowser.app.data.BrowserRepository
 import com.playerbrowser.app.network.AdBlockSwitch
+import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.NetworkSettingsRepository
@@ -50,6 +51,7 @@ class PlayerBrowserApp : Application() {
             NetworkSettingsRepository.get(this@PlayerBrowserApp).settings.collectLatest {
                 SniBypassSwitch.enabled = it.sniBypassEnabled
                 AdBlockSwitch.enabled = it.adBlockEnabled
+                CookieBannerSwitch.enabled = it.cookieBannerEnabled
             }
         }
     }

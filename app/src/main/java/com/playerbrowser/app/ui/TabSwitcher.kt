@@ -6,6 +6,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -52,12 +54,20 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 
 internal val GROUP_COLORS: List<Color> = listOf(
     Color(0xFF1976D2), // blue
@@ -96,6 +106,33 @@ internal fun TabSwitcherOverlay(
     // single-card move menu and the select-mode action bar share one picker
     // dialog + one "create then move" flow.
     var pendingMoveTargets by remember { mutableStateOf<List<String>?>(null) }
+
+    val dragState = remember { TabDragState() }
+    val gridState = rememberLazyGridState()
+    val haptics = LocalHapticFeedback.current
+    dragState.edgeZonePx = with(LocalDensity.current) { 64.dp.toPx() }
+    val isDragging = dragState.draggingIds != null
+
+    // Safety net: if startTransfer silently failed (no ACTION_DRAG_STARTED ever
+    // arrives), undo the optimistic dragging state instead of leaving the
+    // switcher stuck with a dimmed card.
+    LaunchedEffect(isDragging) {
+        if (isDragging) {
+            delay(1_000)
+            if (!dragState.sessionStarted) dragState.reset()
+        }
+    }
+
+    // Edge auto-scroll while a card is being dragged near the top/bottom of the grid.
+    LaunchedEffect(dragState, gridState) {
+        snapshotFlow { dragState.autoScrollDirection }.collectLatest { direction ->
+            if (direction == 0) return@collectLatest
+            while (true) {
+                gridState.scrollBy(direction * 24f)
+                delay(16)
+            }
+        }
+    }
 
     // Make sure the selection set never holds stale ids after a bulk-close.
     LaunchedEffect(tabs) {
@@ -155,69 +192,104 @@ internal fun TabSwitcherOverlay(
             }
         }
     ) { padding ->
-        val groupedSections = remember(tabs, groups) {
-            buildGroupedSections(tabs, groups)
+        // While dragging, the empty "no group" section stays visible so a tab can
+        // always be dragged OUT of its group, even when every tab is grouped.
+        val groupedSections = remember(tabs, groups, isDragging) {
+            buildGroupedSections(tabs, groups, includeEmptyUngrouped = isDragging)
         }
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(2),
+        Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .padding(12.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
+                .onGloballyPositioned { dragState.gridBounds = it.boundsInRoot() }
+                .tabDropTargetRoot(dragState) { ids, sectionKey ->
+                    onMoveToGroup(ids, sectionKey.takeUnless { it == UNGROUPED_SECTION_KEY })
+                    selectedIds = emptySet()
+                }
         ) {
-            groupedSections.forEach { section ->
-                if (section.group != null || section.tabs.isNotEmpty()) {
-                    item(
-                        span = { GridItemSpan(maxLineSpan) },
-                        key = "header-${section.group?.id ?: "none"}"
-                    ) {
-                        GroupHeader(
-                            group = section.group,
-                            tabCount = section.tabs.size,
-                            onRename = if (section.group != null) {
-                                { renamingGroupId = section.group.id }
-                            } else null,
-                            onDelete = if (section.group != null) {
-                                { onDeleteGroup(section.group.id) }
-                            } else null,
-                            onCloseAll = if (section.tabs.isNotEmpty()) {
-                                { onCloseMany(section.tabs.map { it.id }) }
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(2),
+                state = gridState,
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                groupedSections.forEach { section ->
+                    val sectionKey = section.group?.id ?: UNGROUPED_SECTION_KEY
+                    if (section.group != null || section.tabs.isNotEmpty() || isDragging) {
+                        item(
+                            span = { GridItemSpan(maxLineSpan) },
+                            key = "header-${section.group?.id ?: "none"}"
+                        ) {
+                            GroupHeader(
+                                group = section.group,
+                                tabCount = section.tabs.size,
+                                isDropHover = dragState.hoverSectionKey == sectionKey,
+                                modifier = Modifier.tabDropRegion(
+                                    dragState = dragState,
+                                    regionId = "header-$sectionKey",
+                                    sectionKey = sectionKey
+                                ),
+                                onRename = if (section.group != null) {
+                                    { renamingGroupId = section.group.id }
+                                } else null,
+                                onDelete = if (section.group != null) {
+                                    { onDeleteGroup(section.group.id) }
+                                } else null,
+                                onCloseAll = if (section.tabs.isNotEmpty()) {
+                                    { onCloseMany(section.tabs.map { it.id }) }
+                                } else null
+                            )
+                        }
+                    }
+                    items(items = section.tabs, key = { it.id }) { tab ->
+                        val selected = tab.id in selectedIds
+                        TabCard(
+                            tab = tab,
+                            isActive = tab.id == activeTabId,
+                            isSelected = selected,
+                            inSelectMode = inSelectMode,
+                            isDropHover = dragState.hoverSectionKey == sectionKey,
+                            isBeingDragged = dragState.draggingIds?.contains(tab.id) == true,
+                            modifier = Modifier.tabDropRegion(
+                                dragState = dragState,
+                                regionId = "tab-${tab.id}",
+                                sectionKey = sectionKey
+                            ),
+                            dragSourceModifier = Modifier.tabDragSource(
+                                haptics = haptics,
+                                // Dragging a selected card carries the whole selection;
+                                // the long press that precedes the drag has already
+                                // added this tab to the set.
+                                draggedIds = { (selectedIds + tab.id).toList() },
+                                onTransferStarted = { ids -> dragState.draggingIds = ids }
+                            ),
+                            onSelect = {
+                                if (inSelectMode) {
+                                    selectedIds = if (selected) selectedIds - tab.id
+                                    else selectedIds + tab.id
+                                } else {
+                                    onSelect(tab.id)
+                                }
+                            },
+                            onLongPress = {
+                                // Long press always enters/extends selection.
+                                selectedIds = selectedIds + tab.id
+                            },
+                            onClose = {
+                                if (inSelectMode && selected) {
+                                    selectedIds = selectedIds - tab.id
+                                }
+                                onClose(tab.id)
+                            },
+                            onMoveRequest = { pendingMoveTargets = listOf(tab.id) },
+                            onRemoveFromGroup = if (tab.groupId != null) {
+                                { onMoveToGroup(listOf(tab.id), null) }
                             } else null
                         )
                     }
-                }
-                items(items = section.tabs, key = { it.id }) { tab ->
-                    val selected = tab.id in selectedIds
-                    TabCard(
-                        tab = tab,
-                        isActive = tab.id == activeTabId,
-                        isSelected = selected,
-                        inSelectMode = inSelectMode,
-                        onSelect = {
-                            if (inSelectMode) {
-                                selectedIds = if (selected) selectedIds - tab.id
-                                else selectedIds + tab.id
-                            } else {
-                                onSelect(tab.id)
-                            }
-                        },
-                        onLongPress = {
-                            // Long press always enters/extends selection.
-                            selectedIds = selectedIds + tab.id
-                        },
-                        onClose = {
-                            if (inSelectMode && selected) {
-                                selectedIds = selectedIds - tab.id
-                            }
-                            onClose(tab.id)
-                        },
-                        onMoveRequest = { pendingMoveTargets = listOf(tab.id) },
-                        onRemoveFromGroup = if (tab.groupId != null) {
-                            { onMoveToGroup(listOf(tab.id), null) }
-                        } else null
-                    )
                 }
             }
         }
@@ -289,7 +361,8 @@ private data class TabSection(
 
 private fun buildGroupedSections(
     tabs: List<TabState>,
-    groups: List<TabGroup>
+    groups: List<TabGroup>,
+    includeEmptyUngrouped: Boolean = false
 ): List<TabSection> {
     val byGroup = tabs.groupBy { it.groupId }
     val sections = mutableListOf<TabSection>()
@@ -297,7 +370,7 @@ private fun buildGroupedSections(
         sections.add(TabSection(group = g, tabs = byGroup[g.id].orEmpty()))
     }
     val ungrouped = byGroup[null].orEmpty()
-    if (ungrouped.isNotEmpty() || groups.isEmpty()) {
+    if (ungrouped.isNotEmpty() || groups.isEmpty() || includeEmptyUngrouped) {
         sections.add(TabSection(group = null, tabs = ungrouped))
     }
     return sections
@@ -307,15 +380,22 @@ private fun buildGroupedSections(
 private fun GroupHeader(
     group: TabGroup?,
     tabCount: Int,
+    isDropHover: Boolean,
+    modifier: Modifier = Modifier,
     onRename: (() -> Unit)?,
     onDelete: (() -> Unit)?,
     onCloseAll: (() -> Unit)?
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
-            .padding(top = 4.dp, bottom = 4.dp),
+            .background(
+                color = if (isDropHover) MaterialTheme.colorScheme.secondaryContainer
+                else Color.Transparent,
+                shape = RoundedCornerShape(8.dp)
+            )
+            .padding(top = 4.dp, bottom = 4.dp, start = if (isDropHover) 6.dp else 0.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         if (group != null) {
@@ -385,6 +465,10 @@ private fun TabCard(
     isActive: Boolean,
     isSelected: Boolean,
     inSelectMode: Boolean,
+    isDropHover: Boolean,
+    isBeingDragged: Boolean,
+    modifier: Modifier = Modifier,
+    dragSourceModifier: Modifier = Modifier,
     onSelect: () -> Unit,
     onLongPress: () -> Unit,
     onClose: () -> Unit,
@@ -392,6 +476,7 @@ private fun TabCard(
     onRemoveFromGroup: (() -> Unit)?
 ) {
     val border = when {
+        isDropHover -> MaterialTheme.colorScheme.secondary
         isSelected -> MaterialTheme.colorScheme.tertiary
         isActive -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.outlineVariant
@@ -400,11 +485,12 @@ private fun TabCard(
     Surface(
         shape = RoundedCornerShape(10.dp),
         tonalElevation = if (isActive || isSelected) 4.dp else 1.dp,
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .height(160.dp)
+            .alpha(if (isBeingDragged) 0.4f else 1f)
             .border(
-                width = if (isActive || isSelected) 2.dp else 1.dp,
+                width = if (isActive || isSelected || isDropHover) 2.dp else 1.dp,
                 color = border,
                 shape = RoundedCornerShape(10.dp)
             )
@@ -412,6 +498,10 @@ private fun TabCard(
                 onClick = onSelect,
                 onLongClick = onLongPress
             )
+            // Must come AFTER combinedClickable: the inner node wins the Main
+            // pointer pass, so the drag detector consumes move events before the
+            // clickable's post-long-press consumeUntilUp can cancel the drag.
+            .then(dragSourceModifier)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
             Row(

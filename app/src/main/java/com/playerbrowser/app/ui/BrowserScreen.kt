@@ -4,6 +4,13 @@ import android.content.Intent
 import android.net.Uri
 import androidx.activity.compose.BackHandler
 import androidx.appcompat.view.ContextThemeWrapper
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -137,10 +144,17 @@ fun BrowserScreen(
     var menuOpen by remember { mutableStateOf(false) }
     var tabSwitcherOpen by remember { mutableStateOf(false) }
 
+    // Direction of the next content transition: +1 next, -1 previous, 0 none.
+    // Armed only by a swipe so tab close / switcher-select swap instantly
+    // (animating a just-closed tab could reference a GC'd WebView).
+    var switchDirection by remember { mutableStateOf(0) }
+    LaunchedEffect(activeTabId) { switchDirection = 0 }
+
     // Toolbar / nav-bar swipe → switch to the adjacent tab. A short haptic
     // only fires when the swap actually happens (i.e. not at the strip's edge).
     val switchAdjacentTab: (Boolean) -> Unit = { forward ->
         if (viewModel.selectAdjacentTab(forward)) {
+            switchDirection = if (forward) 1 else -1
             haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
         }
     }
@@ -234,10 +248,37 @@ fun BrowserScreen(
             }
         }
         // Middle: web content fills remaining space between the two bars.
-        BrowserWebViewHost(
-            state = activeWebState,
-            modifier = Modifier.weight(1f).fillMaxWidth()
-        )
+        // AnimatedContent slides the outgoing/incoming tab horizontally when a
+        // swipe switched tabs; close/select keep switchDirection == 0 → instant.
+        AnimatedContent(
+            targetState = activeTabId,
+            transitionSpec = {
+                when {
+                    switchDirection > 0 ->
+                        slideInHorizontally(tween(260)) { it } togetherWith
+                            slideOutHorizontally(tween(260)) { -it }
+                    switchDirection < 0 ->
+                        slideInHorizontally(tween(260)) { -it } togetherWith
+                            slideOutHorizontally(tween(260)) { it }
+                    else -> EnterTransition.None togetherWith ExitTransition.None
+                }
+            },
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            label = "tab-switch"
+        ) { tabId ->
+            // Target tab uses the freshly-resolved active state; the outgoing tab
+            // is looked up without creating, so a closed (GC'd) tab renders blank
+            // instead of being resurrected.
+            val hostState = if (tabId == activeTabId) activeWebState else webStates[tabId]
+            if (hostState != null) {
+                BrowserWebViewHost(
+                    state = hostState,
+                    modifier = Modifier.fillMaxSize()
+                )
+            } else {
+                Box(modifier = Modifier.fillMaxSize())
+            }
+        }
         // Bottom: Opera-style navigation bar (back / forward / reload / home / tabs).
         Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
             Row(

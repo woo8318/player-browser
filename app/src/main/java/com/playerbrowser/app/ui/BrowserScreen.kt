@@ -48,8 +48,10 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -131,14 +133,30 @@ fun BrowserScreen(
     LaunchedEffect(state.currentUrl) { urlInput = state.currentUrl }
 
     val focusManager = LocalFocusManager.current
+    val haptics = LocalHapticFeedback.current
     var menuOpen by remember { mutableStateOf(false) }
     var tabSwitcherOpen by remember { mutableStateOf(false) }
+
+    // Toolbar / nav-bar swipe → switch to the adjacent tab. A short haptic
+    // only fires when the swap actually happens (i.e. not at the strip's edge).
+    val switchAdjacentTab: (Boolean) -> Unit = { forward ->
+        if (viewModel.selectAdjacentTab(forward)) {
+            haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+        }
+    }
 
     LaunchedEffect(Unit) { viewModel.checkForUpdates(silent = true) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Top: URL bar + quick actions (bookmark, cast, menu).
-        Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
+        Surface(
+            color = MaterialTheme.colorScheme.surface,
+            tonalElevation = 2.dp,
+            modifier = Modifier.tabSwitchSwipe(
+                onPrevious = { switchAdjacentTab(false) },
+                onNext = { switchAdjacentTab(true) }
+            )
+        ) {
             Column {
                 Row(
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
@@ -223,7 +241,13 @@ fun BrowserScreen(
         // Bottom: Opera-style navigation bar (back / forward / reload / home / tabs).
         Surface(color = MaterialTheme.colorScheme.surface, tonalElevation = 2.dp) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .tabSwitchSwipe(
+                        onPrevious = { switchAdjacentTab(false) },
+                        onNext = { switchAdjacentTab(true) }
+                    )
+                    .padding(horizontal = 4.dp, vertical = 4.dp),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically
             ) {

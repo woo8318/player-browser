@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.21.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + URL 숫자 자동 복구 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.22.
 
 ## 빌드 / 배포
 
@@ -38,6 +38,7 @@ app/src/main/
       FragmentingSocketFactory.kt       # TLS ClientHello 조각화
       SniBypassClient.kt / SniBypassSwitch.kt
       ProxyManager.kt                   # HTTP/HTTPS 프록시 (WebView Proxy API)
+      UrlRecovery.kt                    # URL 숫자 자동 복구 (접속 실패 시 도메인/경로 숫자 증감 후보 프로브 → 자동 이동)
       NetworkSettings.kt / NetworkSettingsRepository.kt
       CrashRecorder.kt                  # 충돌 영속화 (filesDir/crashes/)
       DebugLog.kt                       # 인앱 로그 링버퍼 (500개)
@@ -48,6 +49,7 @@ app/src/main/
       BrowserViewModel.kt               # 탭 + 그룹 + 부모-자식 + isCurrentBookmarked + 업데이트 상태
       TabSwitcher.kt                    # 탭 스위처 오버레이 (그룹 섹션 + 길게 누름 멀티 선택 + 카드 ⋮ 메뉴 1탭 이동 + 일괄 닫기/이동 + 드래그 그룹 편집)
       TabDragAndDrop.kt                 # 탭 카드 드래그 → 그룹 드롭 (TabDragState + tabDragSource/tabDropRegion/tabDropTargetRoot)
+      TabSwipeGesture.kt                # Modifier.tabSwitchSwipe — 상/하단 바 수평 스와이프 → 인접 탭 전환
       BookmarksScreen.kt / HistoryScreen.kt
       SettingsScreen.kt / SettingsViewModel.kt
       DebugLogScreen.kt                 # 로그 + 충돌 기록 뷰어 (확장/복사/삭제)
@@ -68,10 +70,12 @@ app/src/main/
 - **상태 관리:** `BrowserViewModel` (탭 / 그룹 / 현재 URL / 제목 / 즐겨찾기 / 업데이트 상태), `SettingsViewModel` (네트워크 설정)
 - **WebView:** `buildBrowserWebView()`에서 단건 생성. `WebViewClient.shouldInterceptRequest`가 **AdBlocker → VideoStreamSniffer → SniBypassClient → IframeScriptInjector** 순서로 체이닝. `onPageFinished`에서 `video_gestures.js` + (광고차단 켜져있으면) `AdBlocker.HIDE_CSS_JS` + (쿠키배너 켜져있으면) `CookieBannerKiller.SCRIPT` inject.
 - **멀티탭:** 탭 전환 시 WebView 자체를 swap (단일 WebView 재사용 X). `SnapshotStateMap<TabId, BrowserWebViewState>`로 보관. 탭 닫히면 `webView.destroy()`로 GC.
+- **바 스와이프 탭 전환:** `TabSwipeGesture.kt`의 `Modifier.tabSwitchSwipe`를 상단 주소창 `Surface`와 하단 내비 `Row`에 적용. `detectHorizontalDragGestures`(수평 바이어스)라 탭/세로 스크롤/텍스트필드 포커스와 충돌 안 함 — 수평 의도가 확정된 뒤에만 엔게이지. 누적 거리가 touchSlop*3을 넘는 순간 드래그당 1회만 발화(즉각 반응). `viewModel.selectAdjacentTab(forward)`가 평탄한 `_tabs` 순서에서 인접 탭으로 이동(양 끝 멈춤, no-wrap)하고 실제 전환된 경우만 `true` 반환 → 그때만 햅틱. 좌 스와이프=다음 탭, 우 스와이프=이전 탭.
 - **탭 그룹 / 부모-자식:** `TabState`에 `groupId` + `parentTabId` 필드. `TabGroup`(id, name, color)은 `BrowserViewModel._groups` StateFlow + `TabPersistence`의 JSON에 함께 저장 (Room 마이그레이션 비용 회피). 그룹 삭제 시 탭은 살아남고 `groupId`만 null로 떨어짐.
 - **target=_blank / window.open → 부모 탭 복귀:** `WebChromeClient.onCreateWindow`가 throwaway WebView로 URL만 뽑아 `WebViewCallbacks.onOpenInNewTab(url)` 콜백 → `BrowserScreen`이 `viewModel.newTab(url, parentTabId = ownerId)`로 새 탭 생성 (부모의 `groupId`도 자동 상속). 자식 탭에서 뒤로가기 → 자체 history가 없으면 `viewModel.tryReturnToParent()`로 부모 탭으로 복귀 + 자식 탭 닫기. 부모 탭이 이미 사라진 자식은 `closeTabs`에서 `parentTabId`를 null로 정리해 댕글링 방지.
 - **탭 스위처 멀티 선택 + 카드 메뉴 1탭 이동:** `TabSwitcher.kt`의 `TabSwitcherOverlay`(internal). `combinedClickable`(ExperimentalFoundationApi) 길게 누름 → `selectedIds` Set에 추가 → `derivedStateOf`로 선택 모드 진입. 선택 모드에서는 상단 액션 바가 morph(전체 / 그룹으로 이동 / 일괄 닫기). BackHandler가 선택 모드면 선택 해제, 아니면 오버레이 dismiss. 그룹별 섹션은 `LazyVerticalGrid` + `GridItemSpan(maxLineSpan)` 헤더로 렌더. 단일 탭 이동은 카드 우측 ⋮ 메뉴 ("그룹으로 이동..." / "그룹에서 빼기") 로 멀티 선택 없이 처리 — `pendingMoveTargets: List<String>?` 상태가 단일/멀티 양쪽 흐름을 통일해 `GroupPickerDialog`/`NewGroupDialog`(create-then-move 원자 처리) 한 벌을 공유. 카드 메뉴는 `inSelectMode == false` 일 때만 노출해 선택 모드 액션과 충돌하지 않음.
 - **드래그로 탭 그룹 편집:** `TabDragAndDrop.kt`. 카드 롱프레스 → (기존대로 선택 모드 진입) → 손을 떼지 않고 touch slop 이상 끌면 `tabDragSource`(`dragAndDropSource` + `detectDragGesturesAfterLongPress`)가 플랫폼 드래그 시작. 드롭 타깃은 per-item `dragAndDropTarget`이 **아니라** 그리드 전체를 덮는 단일 `tabDropTargetRoot` 1개 — Compose 1.6.x에서 드래그 세션 시작 후 attach된 타깃 노드(스크롤로 새로 composition된 lazy item)는 세션에 합류하지 못하는 제약 회피. 각 헤더/카드는 `tabDropRegion`(`onGloballyPositioned`)으로 자기 bounds를 `TabDragState.regions`에 등록하고 루트 타깃이 hit-test로 섹션 결정. 드래그 중에는 빈 "그룹 없음" 섹션을 항상 노출(그룹에서 빼기 드롭 타깃), 가장자리 64dp 밴드에서 자동 스크롤. 선택된 카드를 끌면 `selectedIds` 전체가 함께 이동. `tabDragSource`는 반드시 `combinedClickable` **뒤에** 체이닝 — Main 포인터 패스에서 안쪽 노드가 먼저 이벤트를 소비해야 clickable의 long-press 후 `consumeUntilUp`이 드래그를 죽이지 못함.
+- **URL 숫자 자동 복구 (`UrlRecovery`):** 메인 프레임이 접속 실패(`onReceivedError`, 코드 `-1/-2/-6/-7/-8/-11/-16`)하면 URL의 숫자를 증감한 후보(`+1~+10`, `-1~-3`)를 만들어 백그라운드로 접속 가능 여부를 확인하고 살아있는 가장 가까운 주소로 **자동 이동**한다. 우선순위는 **도메인 숫자**(newtoki123 → newtoki124, IP 리터럴 제외) → 없으면 경로 숫자 → 쿼리 숫자. 프로브는 WebView와 같은 경로(SNI 우회 켜짐 → DoH + ClientHello 단편화, 꺼짐 → 일반)로 OkHttp GET을 날려 응답 코드로 판정(`2xx/3xx` + `401/403/429`는 생존, `404/410/5xx`·연결에러는 사망). 프로브 동안 `ErrorPage.probing()` 대기 화면, 못 찾으면 평소 `ErrorPage.build()`. 오실레이션/폭주 방지로 최근 자동 이동 후보(60s)는 후보에서 제외하고 2분 내 자동 이동은 5회로 제한. 404/5xx 같은 HTTP 에러(`onReceivedHttpError`)는 대상이 아님 — "접속 자체가 안 되는" 경우만.
 - **iframe 처리:** `IframeScriptInjector`가 cross-origin iframe HTML 응답에 `<script>`를 prepend해 제스처 JS 주입.
 - **광고 차단 (`AdBlocker`):** 약 50개 광고/트래커 host suffix + URL 패턴 매칭으로 빈 204 반환. 메인 프레임은 절대 차단 안 함. CSS 셀렉터로 same-domain 광고 슬롯 숨김. `AdBlockSwitch.enabled` volatile 플래그 (hot path).
 - **쿠키 동의 배너 자동 거부 (`CookieBannerKiller`):** OneTrust / Cookiebot / Quantcast(TCF) / Didomi / Sourcepoint / TrustArc / Google 컨센트의 "Reject All" 버튼 셀렉터 리스트를 들고 400ms 간격으로 최대 10회 폴링 클릭. 동시에 컨센트 컨테이너를 `display:none` + `html,body{overflow:auto}`로 CSS 숨김 (배너 dismiss 실패 시 콘텐츠/스크롤 락 같이 풀어주는 fallback). `window.__pbCookieKill` 플래그로 idempotent — 매 `onPageFinished`에서 재주입돼도 1회만 동작. `CookieBannerSwitch.enabled` volatile 플래그 (hot path).

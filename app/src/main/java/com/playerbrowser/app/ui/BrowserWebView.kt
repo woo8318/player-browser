@@ -40,6 +40,7 @@ import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.SniBypassClient
+import com.playerbrowser.app.network.UrlRecovery
 import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -153,6 +154,44 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 val failingUrl = request.url?.toString().orEmpty()
                 val code = error.errorCode
                 val desc = error.description?.toString().orEmpty()
+
+                // URL의 숫자가 바뀐 사이트(예: newtoki123 → newtoki124)일 수 있으니,
+                // 접속 실패성 에러면 숫자 증감 후보를 백그라운드로 확인해 살아있는
+                // 주소로 자동 이동한다. 후보가 없거나 못 찾으면 평소 에러 페이지.
+                val recoveryCandidates =
+                    if (UrlRecovery.shouldProbe(code)) UrlRecovery.candidates(failingUrl)
+                    else emptyList()
+                if (recoveryCandidates.isNotEmpty()) {
+                    view.loadDataWithBaseURL(
+                        failingUrl, ErrorPage.probing(failingUrl), "text/html", "UTF-8", failingUrl
+                    )
+                    UrlRecovery.probe(failingUrl, recoveryCandidates) { found ->
+                        // probe 콜백은 백그라운드 스레드 + 최대 8초 뒤 → 그 사이 탭이
+                        // 닫혀 WebView가 destroy 됐을 수 있다. post / load 모두 보호.
+                        runCatching {
+                            view.post {
+                                runCatching {
+                                    if (found != null) {
+                                        Toast.makeText(
+                                            view.context,
+                                            "주소가 변경된 것 같아 이동합니다",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        view.loadUrl(found)
+                                    } else {
+                                        view.loadDataWithBaseURL(
+                                            failingUrl,
+                                            ErrorPage.build(failingUrl, code, desc),
+                                            "text/html", "UTF-8", failingUrl
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    return
+                }
+
                 val html = ErrorPage.build(failingUrl, code, desc)
                 view.loadDataWithBaseURL(failingUrl, html, "text/html", "UTF-8", failingUrl)
             }

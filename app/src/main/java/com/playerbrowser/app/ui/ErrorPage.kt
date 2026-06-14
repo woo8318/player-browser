@@ -7,6 +7,12 @@ object ErrorPage {
         val safeDesc = description.replace("<", "&lt;").replace(">", "&gt;")
         val codeName = nameFor(code)
         val sniBlock = if (isLikelySniBlock(code)) sniBlockHtml() else ""
+        // "외부 앱으로 열기"는 url을 intent: 스킴 문자열에 그대로 끼워 넣는다.
+        // url에 '#'/';' 등이 있으면 임의 intent 주입이 가능하므로, 그런 문자가 없는
+        // 평범한 http(s) URL일 때만 버튼을 노출한다.
+        val openExternal = if (isPlainHttpUrl(url)) {
+            """<a class="btn secondary" href="intent:$safeUrl#Intent;action=android.intent.action.VIEW;end">Chrome 등 외부 앱으로 열기</a>"""
+        } else ""
         return """
 <!doctype html>
 <html lang="ko"><head>
@@ -38,8 +44,34 @@ object ErrorPage {
 $sniBlock
 <div class="row">
   <a class="btn" href="$safeUrl">다시 시도</a>
-  <a class="btn secondary" href="intent:$safeUrl#Intent;action=android.intent.action.VIEW;end">Chrome 등 외부 앱으로 열기</a>
+  $openExternal
 </div>
+</body></html>
+        """.trimIndent()
+    }
+
+    /** 숫자 증감 후보로 살아있는 주소를 찾는 동안 잠깐 보여 주는 대기 화면. */
+    fun probing(url: String): String {
+        val safeUrl = url.replace("\"", "&quot;").replace("<", "&lt;").replace(">", "&gt;")
+        return """
+<!doctype html>
+<html lang="ko"><head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>대체 주소 확인 중</title>
+<style>
+  body{margin:0;padding:48px 24px;font:16px/1.5 -apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;
+       background:#121212;color:#e0e0e0;text-align:center}
+  h1{font-size:20px;margin:24px 0 8px}
+  p{color:#bdbdbd;margin:8px 0}
+  .url{margin:16px auto;max-width:90%;padding:12px;background:#1e1e1e;border-radius:8px;word-break:break-all;font-family:monospace;font-size:13px;color:#90caf9}
+  .spinner{width:44px;height:44px;margin:0 auto;border:4px solid #2c2c2c;border-top-color:#1565c0;border-radius:50%;animation:spin 0.9s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+</style></head><body>
+<div class="spinner"></div>
+<h1>접속이 안 돼 대체 주소를 찾는 중…</h1>
+<p>URL의 숫자가 바뀐 사이트일 수 있어 다음 번호들을 확인하고 있어요.</p>
+<div class="url">$safeUrl</div>
 </body></html>
         """.trimIndent()
     }
@@ -77,6 +109,12 @@ $sniBlock
   </details>
 </div>
     """.trimIndent()
+
+    // intent:/href 컨텍스트를 깨뜨릴 수 있는 문자(#, ;, 따옴표, 공백, <>, \)가 없는
+    // 평범한 http(s) URL인지. 외부 앱 링크 노출 가드용.
+    private val PLAIN_HTTP_URL = Regex("^https?://[^\\s\"'<>#;\\\\]+$", RegexOption.IGNORE_CASE)
+
+    private fun isPlainHttpUrl(url: String): Boolean = PLAIN_HTTP_URL.matches(url)
 
     fun isLikelySniBlock(code: Int): Boolean = code in SNI_BLOCK_CODES
 

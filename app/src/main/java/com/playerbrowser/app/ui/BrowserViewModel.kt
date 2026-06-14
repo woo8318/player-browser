@@ -200,6 +200,22 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         if (_tabs.value.any { it.id == id }) _activeTabId.value = id
     }
 
+    /**
+     * Switches to the tab adjacent to the active one in the flat tab order,
+     * used by the toolbar / nav-bar swipe gesture. Stops at the ends (no wrap)
+     * so a swipe at the edge is a predictable no-op rather than a surprise jump.
+     * Returns true only when the active tab actually changed.
+     */
+    fun selectAdjacentTab(forward: Boolean): Boolean {
+        val tabs = _tabs.value
+        val index = tabs.indexOfFirst { it.id == _activeTabId.value }
+        if (index < 0) return false
+        val target = index + if (forward) 1 else -1
+        if (target < 0 || target > tabs.lastIndex) return false
+        _activeTabId.value = tabs[target].id
+        return true
+    }
+
     fun closeTab(id: String) {
         closeTabs(listOf(id))
     }

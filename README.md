@@ -7,6 +7,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 ### 브라우징
 - **상하단 분리 레이아웃** — 상단: 주소창 + 즐겨찾기 + Cast + 메뉴, 하단: 뒤로/앞으로/새로고침/홈/탭 (Opera 스타일)
 - **멀티탭** — 탭별 WebView 인스턴스, 세션 영속화 (탭 + 그룹 + 부모 관계 모두 SharedPreferences로 저장)
+- **스와이프로 탭 전환 (Chrome/Opera 스타일)** — 상단 주소창 바 또는 하단 내비 바를 좌/우로 스와이프하면 인접 탭으로 전환 (스위처를 열 필요 없음). 좌 스와이프 → 다음 탭, 우 스와이프 → 이전 탭. 양 끝에서는 멈춤(no-wrap)이며 실제 전환 시에만 짧은 햅틱
 - **검색어/URL 자동 인식** — URL이 아니면 Google 검색으로 폴백
 - **즐겨찾기 / 방문 기록** — 방문한 URL은 즐겨찾기 목록에서 ✓ 표시
 - **새 창 링크 → 부모 탭 복귀 (Opera 스타일)** — `target="_blank"` / `window.open()`이 띄운 자식 탭에서 뒤로가기 누르면 자식 탭을 닫고 원래 부모 탭으로 복귀
@@ -34,6 +35,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 - **광고 차단** — 약 50개 광고/트래커 도메인 (Google Ads, DoubleClick, Taboola, Outbrain, Criteo, ExoClick 등) + URL 패턴(`/ads/`, `/pagead/`, `adsbygoogle` 등) 매칭으로 서브요청을 빈 204 응답으로 차단. CSS 셀렉터로 동일 도메인 광고 슬롯도 숨김. 설정에서 끌 수 있음.
 - **쿠키 동의 배너 자동 거부** — OneTrust / Cookiebot / Quantcast / Didomi / Sourcepoint / TrustArc 등 주요 GDPR·CCPA 컨센트 플랫폼의 "모두 거부" 버튼을 자동 클릭, 실패 시 배너 자체를 CSS로 숨겨 콘텐츠 가림과 스크롤 락을 같이 해제. 설정에서 토글 가능.
 - **자동 SNI 우회** — DoH(Cloudflare)로 DNS 우회 + TLS ClientHello 단편화로 단순 패턴 매칭 DPI 회피 (KT/SKT의 일부 차단 사이트 접근)
+- **URL 숫자 자동 복구** — 접속 자체가 안 되는 페이지의 URL에 숫자가 있으면(예: `newtoki123.com`), 다음 번호들(`+1~+10`, `-1~-3`)을 백그라운드로 확인해 살아있는 가장 가까운 주소로 자동 이동. 도메인 끝 숫자가 주기적으로 바뀌는 사이트 대응. 도메인에 숫자가 없으면 경로/쿼리의 마지막 숫자로 폴백.
 - **HTTP/HTTPS 프록시** — 인증 포함 외부 프록시 경유 (WebView 트래픽)
 - **크래시 로깅** — `Thread.setDefaultUncaughtExceptionHandler` + `WebViewClient.onRenderProcessGone`으로 메인 프로세스/WebView 렌더러 충돌을 `filesDir/crashes/`에 영구 저장. 디버그 로그 화면에서 조회/복사.
 - **인앱 디버그 로그** — `DebugLog`가 SNI 우회 / 광고 차단 / 캐스트 이벤트 등을 메모리 링버퍼 + 화면에 표시

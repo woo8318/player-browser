@@ -92,7 +92,18 @@ object UrlRecovery {
      * 원본/최근 프로브한 후보는 제외한다.
      */
     fun candidates(failingUrl: String): List<String> {
-        val uri = runCatching { Uri.parse(failingUrl) }.getOrNull() ?: return emptyList()
+        val all = buildCandidates(failingUrl)
+        val now = System.currentTimeMillis()
+        return all.filterNot { isRecentlyProbed(it, now) }
+    }
+
+    /**
+     * 숫자 증감 후보 목록(가까운 순)을 만든다. 도메인 숫자 우선, 없으면 경로,
+     * 그 다음 쿼리. 원본 URL은 제외하지만 TTL(최근 프로브) 필터는 적용하지 않는다 —
+     * 수동 트리거는 사용자가 직접 다시 시도하는 흐름이므로 가드를 거치지 않는다.
+     */
+    private fun buildCandidates(sourceUrl: String): List<String> {
+        val uri = runCatching { Uri.parse(sourceUrl) }.getOrNull() ?: return emptyList()
         val scheme = uri.scheme?.lowercase()
         if (scheme != "http" && scheme != "https") return emptyList()
         val host = uri.host ?: return emptyList()
@@ -130,9 +141,36 @@ object UrlRecovery {
             }
         }
 
-        out.remove(failingUrl)
-        val now = System.currentTimeMillis()
-        return out.filterNot { isRecentlyProbed(it, now) }
+        out.remove(sourceUrl)
+        return out.toList()
+    }
+
+    /**
+     * 수동 트리거용. [url]의 숫자 증감 후보를 동시에 프로브해 가장 가까운 살아있는
+     * 주소를 [onResult]로 돌려준다(없으면 null). 자동 복구와 달리 TTL/자동이동 예산
+     * 가드를 거치지 않는다 — 사용자가 메뉴에서 직접 요청한 흐름이기 때문.
+     * 콜백은 백그라운드 스레드에서 호출되므로 UI 작업은 호출 측에서 post 한다.
+     */
+    fun findAlternative(url: String, onResult: (String?) -> Unit) {
+        val cands = buildCandidates(url)
+        if (cands.isEmpty()) {
+            onResult(null)
+            return
+        }
+        DebugLog.d("UrlRecovery", "manual: probing ${cands.size} candidates for $url")
+        scope.launch {
+            val found = withTimeoutOrNull(PROBE_TIMEOUT_MS) {
+                cands.map { c -> async { c to reachable(c) } }
+                    .awaitAll()
+                    .firstOrNull { it.second }
+                    ?.first
+            }
+            DebugLog.d(
+                "UrlRecovery",
+                if (found != null) "manual: alive candidate $found" else "manual: none alive for $url"
+            )
+            onResult(found)
+        }
     }
 
     /**

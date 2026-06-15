@@ -36,6 +36,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 - **쿠키 동의 배너 자동 거부** — OneTrust / Cookiebot / Quantcast / Didomi / Sourcepoint / TrustArc 등 주요 GDPR·CCPA 컨센트 플랫폼의 "모두 거부" 버튼을 자동 클릭, 실패 시 배너 자체를 CSS로 숨겨 콘텐츠 가림과 스크롤 락을 같이 해제. 설정에서 토글 가능.
 - **자동 SNI 우회** — DoH(Cloudflare)로 DNS 우회 + TLS ClientHello 단편화로 단순 패턴 매칭 DPI 회피 (KT/SKT의 일부 차단 사이트 접근)
 - **URL 숫자 자동 복구** — 접속 자체가 안 되는 페이지의 URL에 숫자가 있으면(예: `newtoki123.com`), 다음 번호들(`+1~+10`, `-1~-3`)을 백그라운드로 확인해 살아있는 가장 가까운 주소로 자동 이동. 도메인 끝 숫자가 주기적으로 바뀌는 사이트 대응. 도메인에 숫자가 없으면 경로/쿼리의 마지막 숫자로 폴백.
+- **URL 숫자 수동 복구** — 페이지가 정상 로드됐지만(예: 404 안내 페이지가 200으로 뜨거나 내용이 바뀐 경우) 새 주소를 직접 찾고 싶을 때, 상단 ⋮ 메뉴 → **주소 복구 (URL 찾기)**로 현재 주소 기준 숫자 후보를 즉석에서 확인해 살아있는 주소로 이동. 자동 복구가 발동하지 않는 상황을 보완.
 - **HTTP/HTTPS 프록시** — 인증 포함 외부 프록시 경유 (WebView 트래픽)
 - **크래시 로깅** — `Thread.setDefaultUncaughtExceptionHandler` + `WebViewClient.onRenderProcessGone`으로 메인 프로세스/WebView 렌더러 충돌을 `filesDir/crashes/`에 영구 저장. 디버그 로그 화면에서 조회/복사.
 - **인앱 디버그 로그** — `DebugLog`가 SNI 우회 / 광고 차단 / 캐스트 이벤트 등을 메모리 링버퍼 + 화면에 표시

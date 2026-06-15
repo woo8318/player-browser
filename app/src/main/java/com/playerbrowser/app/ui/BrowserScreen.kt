@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.DropdownMenu
@@ -64,8 +65,10 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import android.widget.Toast
 import androidx.mediarouter.app.MediaRouteButton
 import com.google.android.gms.cast.framework.CastButtonFactory
+import com.playerbrowser.app.network.UrlRecovery
 import com.playerbrowser.app.web.UrlUtils
 
 @Composable
@@ -226,6 +229,37 @@ fun BrowserScreen(
                                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                             context.startActivity(intent)
                                         }
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("주소 복구 (URL 찾기)") },
+                                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    val url = state.currentUrl
+                                    val wv = activeWebState.webView
+                                    if (url.startsWith("http", ignoreCase = true)) {
+                                        Toast.makeText(context, "주소 찾는 중…", Toast.LENGTH_SHORT).show()
+                                        // 콜백은 백그라운드 스레드 → WebView.post 로 UI 스레드 복귀.
+                                        UrlRecovery.findAlternative(url) { found ->
+                                            runCatching {
+                                                wv.post {
+                                                    if (found != null) {
+                                                        Toast.makeText(context, "이동: $found", Toast.LENGTH_SHORT).show()
+                                                        activeWebState.load(found)
+                                                    } else {
+                                                        Toast.makeText(
+                                                            context,
+                                                            "살아있는 주소를 못 찾았어요",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } else {
+                                        Toast.makeText(context, "복구할 주소가 없어요", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             )

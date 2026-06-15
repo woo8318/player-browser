@@ -113,6 +113,61 @@
     return false;
   }
 
+  // Topmost element at a point, piercing open shadow roots (custom video players
+  // often render their chrome inside a shadow DOM).
+  function deepElementFromPoint(x, y) {
+    var el;
+    try { el = document.elementFromPoint(x, y); } catch (e) { return null; }
+    var guard = 0;
+    while (el && el.shadowRoot && guard < 10) {
+      var inner;
+      try { inner = el.shadowRoot.elementFromPoint(x, y); } catch (e) { break; }
+      if (!inner || inner === el) break;
+      el = inner;
+      guard++;
+    }
+    return el;
+  }
+
+  function isControlEl(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var tag = el.tagName;
+    if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' || tag === 'SELECT' ||
+        tag === 'TEXTAREA' || tag === 'LABEL' || tag === 'SUMMARY') return true;
+    var role = el.getAttribute && el.getAttribute('role');
+    if (role === 'button' || role === 'link' || role === 'menuitem' ||
+        role === 'menuitemcheckbox' || role === 'checkbox' || role === 'switch' ||
+        role === 'tab' || role === 'option') return true;
+    if (el.hasAttribute && el.hasAttribute('onclick')) return true;
+    return false;
+  }
+
+  // True when the topmost element under (x,y) is a *small* interactive control
+  // overlaid on the video (e.g. a close "×", a control-bar button) that should
+  // receive the tap itself instead of our play/pause. A full-size click-catcher
+  // (≥ half the video area) stays owned by us so play/pause keeps working on a
+  // bare video tap — that's the Option A policy for the common play/pause overlay.
+  function controlAtPoint(x, y, video) {
+    var el = deepElementFromPoint(x, y);
+    if (!el) return false;
+    var vr = video ? video.getBoundingClientRect() : null;
+    var videoArea = vr ? Math.max(1, vr.width * vr.height) : 0;
+    var depth = 0;
+    while (el && el !== video && depth < 6) {
+      if (el === document.body || el === document.documentElement) break;
+      if (el.tagName === 'VIDEO') break;
+      if (isControlEl(el)) {
+        if (!videoArea) return true;
+        var er = el.getBoundingClientRect();
+        var area = er.width * er.height;
+        return area > 0 && area < videoArea * 0.5;
+      }
+      el = el.parentElement || (el.getRootNode && el.getRootNode().host) || null;
+      depth++;
+    }
+    return false;
+  }
+
   function pad2(n) { return n < 10 ? '0' + n : '' + n; }
   function formatTime(sec) {
     sec = Math.max(0, Math.floor(sec || 0));
@@ -353,7 +408,11 @@
     if (!v) { touchState = null; return; }
     touchState = {
       video: v,
-      onVideo: isPointOnVideo(t0.clientX, t0.clientY),
+      // Own the tap only if it's on the video surface AND not on a small control
+      // overlaid on it (close button, control-bar button…). Those pass through
+      // like off-video taps so the user can actually press them.
+      onVideo: isPointOnVideo(t0.clientX, t0.clientY) &&
+        !controlAtPoint(t0.clientX, t0.clientY, v),
       startX: t0.clientX,
       startY: t0.clientY,
       startT: Date.now(),

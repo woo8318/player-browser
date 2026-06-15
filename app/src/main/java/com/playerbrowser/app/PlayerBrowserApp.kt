@@ -9,6 +9,7 @@ import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.NetworkSettingsRepository
 import com.playerbrowser.app.network.ProxyManager
+import com.playerbrowser.app.network.ResumeSwitch
 import com.playerbrowser.app.network.SniBypassSwitch
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -52,6 +53,7 @@ class PlayerBrowserApp : Application() {
                 SniBypassSwitch.enabled = it.sniBypassEnabled
                 AdBlockSwitch.enabled = it.adBlockEnabled
                 CookieBannerSwitch.enabled = it.cookieBannerEnabled
+                ResumeSwitch.enabled = it.resumePlaybackEnabled
             }
         }
     }

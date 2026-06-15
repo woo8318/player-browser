@@ -38,7 +38,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                 next.copy(
                     sniBypassEnabled = current.sniBypassEnabled,
                     adBlockEnabled = current.adBlockEnabled,
-                    cookieBannerEnabled = current.cookieBannerEnabled
+                    cookieBannerEnabled = current.cookieBannerEnabled,
+                    resumePlaybackEnabled = current.resumePlaybackEnabled
                 )
             }
             val result = ProxyManager.apply(next)
@@ -69,6 +70,15 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             repository.update { it.copy(cookieBannerEnabled = enabled) }
             _event.value = ProxyApplyEvent.Message(
                 if (enabled) "쿠키 배너 자동 거부 켜짐" else "쿠키 배너 자동 거부 꺼짐"
+            )
+        }
+    }
+
+    fun setResumePlaybackEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(resumePlaybackEnabled = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "이어보기 켜짐" else "이어보기 꺼짐"
             )
         }
     }

@@ -99,6 +99,20 @@
     return activeVideo();
   }
 
+  // Strict variant: true only when the point is actually inside a video's box
+  // (no activeVideo fallback). Used to decide whether to hijack a tap — without
+  // it, a tap anywhere on a page that merely *has* a video would toggle
+  // play/pause and swallow the event, breaking links/buttons.
+  function isPointOnVideo(x, y) {
+    if (fullscreenVideo()) return true;
+    var vids = allVideos();
+    for (var i = 0; i < vids.length; i++) {
+      var r = vids[i].getBoundingClientRect();
+      if (x >= r.left && x <= r.right && y >= r.top && y <= r.bottom) return true;
+    }
+    return false;
+  }
+
   function pad2(n) { return n < 10 ? '0' + n : '' + n; }
   function formatTime(sec) {
     sec = Math.max(0, Math.floor(sec || 0));
@@ -187,6 +201,11 @@
   // Android-callable hooks. Used by the native fullscreen gesture overlay
   // since touch events on the CustomView never reach the WebView document.
   window.__pb = window.__pb || {};
+  // Set by the native fullscreen overlay (GestureCapturingFrame). While true,
+  // the in-document touch handlers below bail out so the Kotlin gesture frame
+  // is the single source of seek/scrub/switch — otherwise a fullscreen
+  // double-tap seeks twice (Kotlin + JS) and lands ~20-30s away.
+  if (typeof window.__pb.fsActive !== 'boolean') window.__pb.fsActive = false;
   window.__pb.seek = function (delta) {
     var v = fullscreenVideo() || activeVideo();
     if (v) seekBy(v, delta);
@@ -314,14 +333,27 @@
 
   var touchState = null;
   var lastTap = { t: 0, x: 0, y: 0, video: null };
+  // Pending single-tap play/pause, deferred until we know it's not a double-tap.
+  var singleTapTimer = null;
+  function cancelSingleTap() {
+    if (singleTapTimer) { clearTimeout(singleTapTimer); singleTapTimer = null; }
+  }
 
   document.addEventListener('touchstart', function (e) {
+    // In native fullscreen the Kotlin GestureCapturingFrame drives gestures via
+    // window.__pb.* hooks; skip the in-document path to avoid double seeking.
+    if (window.__pb && window.__pb.fsActive) { touchState = null; return; }
+    // A new touch resolves any pending single-tap: if this becomes the second
+    // tap (double-tap) or a scrub/swipe, touchend handles it; otherwise the
+    // first tap was alone and its timer below already fired play/pause.
+    cancelSingleTap();
     if (!e.touches || e.touches.length === 0) return;
     var t0 = e.touches[0];
     var v = videoAtPoint(t0.clientX, t0.clientY);
     if (!v) { touchState = null; return; }
     touchState = {
       video: v,
+      onVideo: isPointOnVideo(t0.clientX, t0.clientY),
       startX: t0.clientX,
       startY: t0.clientY,
       startT: Date.now(),
@@ -377,13 +409,26 @@
     if (s.scrubbing) { hideScrub(); return; }
 
     if (!et) return;
+    // Only hijack taps that actually landed on a video. videoAtPoint() falls
+    // back to the active video for off-video points (kept for scrub/swipe), but
+    // taps elsewhere must pass through so page links/buttons still work.
+    if (!s.onVideo) return;
     var x = et.clientX, y = et.clientY;
     var now = Date.now();
+    // Every tap on a video is ours now: kill the synthesized click so neither
+    // the site nor the native <video> toggles play/pause off it (that toggle
+    // is what collided with double-tap seeking). Play/pause is driven solely by
+    // our single-tap (deferred below) and middle double-tap.
+    suppressClick = { until: now + 500, x: x, y: y };
+    e.stopPropagation();
+    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
     if (now - lastTap.t < DOUBLE_TAP_MS && lastTap.video === s.video &&
         Math.abs(x - lastTap.x) < DOUBLE_TAP_MAX_MOVE &&
         Math.abs(y - lastTap.y) < DOUBLE_TAP_MAX_MOVE) {
       // Double-tap: side-aware. Left third → -10s, right third → +10s,
-      // middle → play/pause.
+      // middle → play/pause. Cancel the first tap's pending play/pause so a
+      // side double-tap is a pure seek with no toggle.
+      cancelSingleTap();
       var r = s.video.getBoundingClientRect();
       var left = r.left, width = r.width;
       if (!width || width < 50) { left = 0; width = window.innerWidth || 1; }
@@ -392,19 +437,98 @@
       else if (rel > 0.65) seekBy(s.video, SEEK_SEC);
       else togglePlay(s.video);
       lastTap.t = 0;
-      // Block the site from also handling this tap (the synthesized click
-      // and the upcoming dblclick are what trigger fullscreen on most
-      // players).
-      suppressClick = { until: Date.now() + 500, x: x, y: y };
-      e.stopPropagation();
-      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
     } else {
+      // First tap — record it and defer play/pause until the double-tap window
+      // passes; if a second tap arrives, the branch above cancels this.
       lastTap = { t: now, x: x, y: y, video: s.video };
+      cancelSingleTap();
+      var tapVideo = s.video;
+      singleTapTimer = setTimeout(function () {
+        singleTapTimer = null;
+        togglePlay(tapVideo);
+      }, DOUBLE_TAP_MS);
     }
   }, { passive: true, capture: true });
 
   document.addEventListener('touchcancel', function () {
     if (touchState && touchState.scrubbing) hideScrub();
     touchState = null;
+    cancelSingleTap();
   }, { passive: true, capture: true });
+
+  // ---- 이어보기 (resume playback) ----
+  //
+  // Records the active video's position via the Android PBResume bridge (keyed
+  // by page URL on the native side) and, when the page is revisited, seeks back
+  // to where the user left off. No-ops outside the app WebView (no bridge) or
+  // when the user disabled it (bridge.load() returns -1).
+  (function initResume() {
+    var bridge = window.PBResume;
+    if (!bridge) return;
+
+    var MIN_RESUME_SEC = 10;   // ignore trivially-early positions
+    var END_GUARD_SEC = 20;    // don't resume right at the end
+    var MIN_DURATION_SEC = 90; // only real, long-ish media (skips short ad clips)
+
+    function resumable(v) {
+      return v && isFinite(v.duration) && v.duration > MIN_DURATION_SEC;
+    }
+
+    function reportSave(v) {
+      try {
+        if (!resumable(v)) return;
+        bridge.save(v.currentTime || 0, v.duration || 0, document.title || '');
+      } catch (e) {}
+    }
+
+    function tryResume(v) {
+      try {
+        if (!v || v.__pbResumed) return;
+        if (!resumable(v)) return;
+        v.__pbResumed = true; // attempt once per element
+        var pos = bridge.load();
+        if (pos > MIN_RESUME_SEC && pos < v.duration - END_GUARD_SEC) {
+          v.currentTime = pos;
+          showToast('이어보기 ' + formatTime(pos));
+        }
+      } catch (e) {}
+    }
+
+    function attach(v) {
+      if (!v || v.__pbResumeAttached) return;
+      v.__pbResumeAttached = true;
+      v.addEventListener('loadedmetadata', function () { tryResume(v); });
+      v.addEventListener('play', function () { tryResume(v); });
+      v.addEventListener('pause', function () { reportSave(v); });
+      v.addEventListener('seeked', function () { reportSave(v); });
+      v.addEventListener('ended', function () {
+        try { bridge.clear(); } catch (e) {}
+      });
+      if (v.readyState >= 1) tryResume(v); // metadata already present
+    }
+
+    // Periodically attach to any new <video> and checkpoint the active one.
+    setInterval(function () {
+      try {
+        var vids = allVideosRaw();
+        for (var i = 0; i < vids.length; i++) attach(vids[i]);
+        var a = activeVideo();
+        if (a && !a.paused) reportSave(a);
+      } catch (e) {}
+    }, 5000);
+
+    // Flush the latest position when the page is backgrounded / navigated away.
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) { var a = activeVideo(); if (a) reportSave(a); }
+    });
+    window.addEventListener('pagehide', function () {
+      var a = activeVideo(); if (a) reportSave(a);
+    });
+
+    // Attach to whatever is already on the page right now.
+    try {
+      var existing = allVideosRaw();
+      for (var k = 0; k < existing.length; k++) attach(existing[k]);
+    } catch (e) {}
+  })();
 })();

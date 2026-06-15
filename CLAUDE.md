@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + URL 숫자 자동/수동 복구 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.24.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + URL 숫자 자동/수동 복구 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.27.
 
 ## 빌드 / 배포
 
@@ -30,6 +30,7 @@ app/src/main/
       HistoryEntry.kt / HistoryDao.kt
       BrowserRepository.kt
       TabPersistence.kt                 # 멀티탭 세션 영속화 (tabs + parent + groups, JSON in SharedPreferences)
+      WatchProgressStore.kt             # 동영상 이어보기 위치 영속화 (page URL → pos/dur/title, JSON in SharedPreferences)
     network/                            # 네트워크 인터셉트 / 진단
       AdBlocker.kt / AdBlockSwitch.kt   # 광고 차단 (host suffix + URL pattern, 빈 204 응답)
       CookieBannerKiller.kt             # 쿠키 동의 배너 자동 거부 JS (OneTrust/Cookiebot/Quantcast/Didomi/Sourcepoint/TrustArc)
@@ -38,6 +39,7 @@ app/src/main/
       FragmentingSocketFactory.kt       # TLS ClientHello 조각화
       SniBypassClient.kt / SniBypassSwitch.kt
       ProxyManager.kt                   # HTTP/HTTPS 프록시 (WebView Proxy API)
+      ResumeSwitch.kt                   # 이어보기 토글 (volatile, JS 브리지 hot path)
       UrlRecovery.kt                    # URL 숫자 자동 복구 (접속 실패 시 도메인/경로 숫자 증감 후보 프로브 → 자동 이동)
       NetworkSettings.kt / NetworkSettingsRepository.kt
       CrashRecorder.kt                  # 충돌 영속화 (filesDir/crashes/)
@@ -62,6 +64,7 @@ app/src/main/
       UrlUtils.kt                       # URL/검색어 판별 + 정규화
       WebAssetLoader.kt                 # assets/JS 로딩
       IframeScriptInjector.kt           # cross-origin iframe HTML에 JS prepend
+      ResumeBridge.kt                   # `window.PBResume` @JavascriptInterface — 이어보기 위치 save/load/clear
 ```
 
 ## 핵심 아키텍처 메모
@@ -83,17 +86,21 @@ app/src/main/
 - **쿠키 동의 배너 자동 거부 (`CookieBannerKiller`):** OneTrust / Cookiebot / Quantcast(TCF) / Didomi / Sourcepoint / TrustArc / Google 컨센트의 "Reject All" 버튼 셀렉터 리스트를 들고 400ms 간격으로 최대 10회 폴링 클릭. 동시에 컨센트 컨테이너를 `display:none` + `html,body{overflow:auto}`로 CSS 숨김 (배너 dismiss 실패 시 콘텐츠/스크롤 락 같이 풀어주는 fallback). `window.__pbCookieKill` 플래그로 idempotent — 매 `onPageFinished`에서 재주입돼도 1회만 동작. `CookieBannerSwitch.enabled` volatile 플래그 (hot path).
 - **SNI 우회:** `SniBypassClient` + `FragmentingSocketFactory`가 TLS 레코드 레이어에서 ClientHello를 분할. `DohClient`로 DNS도 우회. `SniBypassSwitch.enabled` volatile 플래그.
 - **Chromecast:** `CastSessionBridge`를 액티비티 lifecycle에 attach/detach. 세션 시작 시 `VideoStreamSniffer.current(host)`로 현재 페이지의 캐스트 가능한 URL 조회 → `RemoteMediaClient.load()`.
-- **풀스크린 동영상:** `WebChromeClient.onShowCustomView`에서 `GestureCapturingFrame`(FrameLayout)으로 감싸 `dispatchTouchEvent`로 제스처 캡처 + 화면 회전/풀스크린/세로 드래그 처리. `onHideCustomView`에서 brightness 복원.
+- **풀스크린 동영상:** `WebChromeClient.onShowCustomView`에서 `GestureCapturingFrame`(FrameLayout)으로 감싸 `dispatchTouchEvent`로 제스처 캡처 + 화면 회전/풀스크린/세로 드래그 처리. `onHideCustomView`에서 brightness 복원. **제스처 단일 소스화:** `GestureCapturingFrame`은 `super.dispatchTouchEvent`로 터치를 WebView에도 흘려보내는데, 최신 WebView에선 그 터치가 document에도 도달해 인-도큐먼트 `video_gestures.js` 핸들러가 같은 더블탭을 **이중 시킹**(Kotlin ±10 + JS ±10 → ~20·30초)함. 그래서 `onShowCustomView`/`onHideCustomView`가 `window.__pb.fsActive`를 true/false로 토글하고, JS `touchstart` 핸들러는 `fsActive`면 즉시 bail — 풀스크린에선 Kotlin 프레임이 단일 제스처 소스. (`window.__pb.*` 훅 함수 자체는 Kotlin이 직접 호출하므로 영향 없음)
+- **동영상 이어보기 (resume):** 페이지별 마지막 재생 위치를 기록했다가 다음 방문 시 그 지점부터 재생. JS(`video_gestures.js`의 `initResume`) ↔ Kotlin(`ResumeBridge`, `window.PBResume`) 브리지 구조. JS가 비디오 이벤트(`pause`/`seeked`/`ended`)와 5초 인터벌·`visibilitychange`/`pagehide`에 `bridge.save(pos, dur, title)` 호출, `loadedmetadata`/`play` 시 `bridge.load()`로 저장 위치를 받아 `currentTime` 세팅(`v.__pbResumed` 가드로 비디오당 1회). 너무 짧은 영상/시작·끝 근처는 제외(`MIN_DURATION_SEC=90`, `MIN_RESUME_SEC=10`, `END_GUARD_SEC=20`), 끝까지 보면 `ended`에서 기록 삭제. 저장소는 `WatchProgressStore`(`data/`) — Room이 아니라 SharedPreferences JSON 맵(키=프래그먼트 제거한 정규화 URL). Room의 `fallbackToDestructiveMigration()`이 버전 bump 시 즐겨찾기/방문기록을 날리므로 테이블 추가 대신 `TabPersistence`와 같은 SharedPreferences 패턴 채택. 최대 500개 prune. `currentUrl`은 `onPageStarted`/`onPageFinished`에서 `ResumeBridge`에 주입 (JS는 자신의 페이지 URL을 모르므로 Kotlin이 컨텍스트 제공). 설정 토글 → `ResumeSwitch.enabled` volatile 플래그 (브리지 hot path), `WatchProgressStore`에 영향 없이 기록/복원만 무력화.
 - **크래시 로깅:** `PlayerBrowserApp.onCreate` 가장 먼저 `CrashRecorder.install(this)`. `Thread.setDefaultUncaughtExceptionHandler` 체이닝으로 시스템 다이얼로그는 그대로 유지. 추가로 `WebViewClient.onRenderProcessGone`이 `true` 반환해 앱 살아남기 + 에러 페이지 + `CrashRecorder.record()`.
 - **자체 업데이트:** GitHub Releases API 조회 → APK 다운로드 → `FileProvider`로 설치 인텐트.
 
 ## 동영상 제스처 (`video_gestures.js`)
 
+- **싱글탭 → 재생/일시정지** (앱이 탭을 소유). 비디오 위 탭의 합성 `click`을 `suppressClick` + capture-phase `stopPropagation`으로 죽여 사이트/네이티브 `<video>`가 같은 탭으로 토글하지 못하게 함. 단일/더블 구분은 `DOUBLE_TAP_MS` 타이머로 지연 처리(`singleTapTimer`) — 첫 탭은 토글을 예약했다가, 두 번째 탭이 오면 `cancelSingleTap()`으로 취소하고 더블탭 액션 실행. **트레이드오프:** 비디오 영역 위에 있는 사이트 컨트롤바(재생바·전체화면 버튼 등)도 탭이 가로채여 재생/정지로 동작 — Option A 선택의 결과.
 - 1 손가락 좌/우 스와이프 → -10/+10초 시킹
 - 2 손가락 좌/우 스와이프 → 이전/다음 `<video>` 전환
-- 양쪽 가장자리 더블탭 → 사이드 인식 더블탭 시킹 (좌 -10, 중앙 토글, 우 +10)
+- 양쪽 가장자리 더블탭 → 사이드 인식 더블탭 시킹 (좌 -10, **중앙 재생/정지**, 우 +10). 사이드 더블탭은 **순수 시킹**(첫 탭의 예약 토글이 취소되므로 재생상태 안 바뀜) — 예전엔 첫 탭 `click`이 play/pause를 토글해 시킹+토글이 같이 일어나던 버그를 수정.
 - 수평 드래그 → 정밀 시킹 (드래그 양에 비례)
 - 풀스크린 세로 드래그 → 좌측 화면밝기 / 우측 시스템 볼륨 (`window.__pb.showVbOverlay` 호출)
+- **풀스크린(Kotlin `GestureCapturingFrame`)도 동일 정책:** `GestureDetector.onSingleTapConfirmed` → `window.__pb.togglePlay`, `onDoubleTap` → 시킹/중앙토글. 탭 `ACTION_UP`은 WebView로 그대로 흘리지 않고 `ACTION_CANCEL`로 치환해 보내 네이티브 `<video>`의 탭-토글을 차단(JS in-document 경로는 `fsActive`로 이미 꺼져 있음).
+- **이어보기:** `initResume` 모듈이 비디오 위치를 `window.PBResume` 브리지로 저장/복원 (위 "동영상 이어보기" 메모 참조). 90초 이상 영상만 대상, 진입 시 토스트로 안내. 설정에서 토글.
 - iframe 내부: `IframeScriptInjector`가 cross-origin iframe HTML에도 주입
 
 수정 후에는 실제 페이지(YouTube, 일반 `<video>` 사이트)에서 테스트 필요. JS는 페이지마다 다른 player 구현과 부딪힐 수 있음.

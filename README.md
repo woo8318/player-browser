@@ -25,6 +25,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 - **2손가락 좌/우 스와이프** — 이전 / 다음 `<video>` 요소로 전환
 - **세로 드래그 (풀스크린)** — 좌측: 화면 밝기, 우측: 시스템 볼륨 (MX Player / VLC 스타일)
 - **풀스크린 가로/세로 자동 회전** — 영상 비율 감지로 결정
+- **이어보기 (보던 곳부터 재생)** — 페이지별로 동영상 재생 위치를 기록해 두고, 다음에 같은 페이지를 방문하면 그 지점부터 자동 재생 (진입 시 토스트로 안내). 90초 이상 영상만 대상이고 시작·끝 근처는 제외, 끝까지 본 영상은 기록 삭제. 설정에서 토글 가능.
 - **iframe / cross-origin 영상도 지원** — `IframeScriptInjector`가 자식 프레임 HTML에 제스처 JS 주입
 
 ### 캐스트 / 미러링
@@ -82,12 +83,14 @@ app/src/main/
       CastOptionsProvider.kt
       CastSessionBridge.kt
       VideoStreamSniffer.kt             # 페이지 내 동영상 URL 캡처
-    data/                               # Room DB + 탭 영속화
+    data/                               # Room DB + 탭/이어보기 영속화
       AppDatabase.kt / Bookmark*.kt / HistoryEntry*.kt / BrowserRepository.kt
       TabPersistence.kt
+      WatchProgressStore.kt             # 동영상 이어보기 위치 저장 (SharedPreferences JSON)
     network/                            # 네트워크 인터셉트 / 프록시 / 진단
       AdBlocker.kt / AdBlockSwitch.kt   # 광고 차단
       CookieBannerKiller.kt / CookieBannerSwitch.kt  # 쿠키 동의 배너 자동 거부
+      ResumeSwitch.kt                   # 이어보기 토글
       SniBypassClient.kt / SniBypassSwitch.kt / FragmentingSocketFactory.kt / DohClient.kt
       ProxyManager.kt / NetworkSettings*.kt
       CrashRecorder.kt                  # 충돌 영속화
@@ -105,6 +108,7 @@ app/src/main/
       UpdateClient.kt / UpdateInstaller.kt / UpdateModels.kt / Version.kt
     web/                                # WebView 유틸
       UrlUtils.kt / WebAssetLoader.kt / IframeScriptInjector.kt
+      ResumeBridge.kt                   # window.PBResume — 이어보기 JS↔Kotlin 브리지
 .github/workflows/android.yml           # APK 빌드 + 릴리스 + 오래된 릴리스 정리
 ```
 

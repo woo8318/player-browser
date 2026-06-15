@@ -46,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.playerbrowser.app.web.IframeScriptInjector
+import com.playerbrowser.app.web.ResumeBridge
 import com.playerbrowser.app.web.WebAssetLoader
 
 class BrowserWebViewState(
@@ -69,6 +70,8 @@ interface WebViewCallbacks {
 
 @SuppressLint("SetJavaScriptEnabled")
 fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserWebViewState {
+    // "이어보기" bridge — keyed by the page URL kept in sync via the WebViewClient.
+    val resumeBridge = ResumeBridge(context.applicationContext)
     val webView = WebView(context).apply {
         layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -94,6 +97,7 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             cm.setAcceptCookie(true)
             cm.setAcceptThirdPartyCookies(this, true)
         }
+        addJavascriptInterface(resumeBridge, "PBResume")
         val gestureScript = WebAssetLoader.gestureScript(context)
         IframeScriptInjector.setScript(gestureScript)
         webViewClient = object : WebViewClient() {
@@ -123,10 +127,12 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 // Track host so the sniffer attributes captured stream URLs to
                 // the right page even when subresources come from CDNs.
                 view?.tag = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
+                resumeBridge.currentUrl = url
                 url?.let { callbacks.onStarted(it) }
             }
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
+                if (url != null) resumeBridge.currentUrl = url
                 view?.evaluateJavascript(gestureScript, null)
                 if (AdBlockSwitch.enabled) {
                     view?.evaluateJavascript(AdBlocker.HIDE_CSS_JS, null)
@@ -316,6 +322,10 @@ private class FullscreenAwareChromeClient(
         )
         customViewContainer = container
 
+        // Tell the in-document gesture script to stand down: this overlay is now
+        // the single gesture source, otherwise a double-tap seeks twice.
+        webView.evaluateJavascript("window.__pb && (window.__pb.fsActive = true);", null)
+
         WindowCompat.setDecorFitsSystemWindows(activity.window, false)
         val controller = WindowInsetsControllerCompat(activity.window, decor)
         controller.hide(WindowInsetsCompat.Type.systemBars())
@@ -343,6 +353,9 @@ private class FullscreenAwareChromeClient(
         customViewContainer = null
         customViewCallback?.onCustomViewHidden()
         customViewCallback = null
+
+        // Re-enable the in-document gesture handlers now that the overlay is gone.
+        webView.evaluateJavascript("window.__pb && (window.__pb.fsActive = false);", null)
 
         if (activity != null) {
             val decor = activity.window.decorView as ViewGroup
@@ -424,6 +437,17 @@ private class GestureCapturingFrame(
 
     private val detector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
+        // Single tap (confirmed not a double-tap) → play/pause. We own taps now
+        // (see dispatchTouchEvent: tap UPs are cancelled before reaching the
+        // WebView), so this is the sole play/pause toggle for a lone tap.
+        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+            if (scrubbing || vbAdjust != null) return false
+            webView.evaluateJavascript(
+                "window.__pb && window.__pb.togglePlay && window.__pb.togglePlay();",
+                null
+            )
+            return true
+        }
         override fun onDoubleTap(e: MotionEvent): Boolean {
             if (scrubbing || vbAdjust != null) return false
             // Side-aware: left third → -10s, right third → +10s, middle → play/pause.
@@ -562,6 +586,17 @@ private class GestureCapturingFrame(
                         "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);",
                         null
                     )
+                } else if (maxPointers == 1 && !moved) {
+                    // A tap. The GestureDetector already saw this UP and will fire
+                    // onSingleTapConfirmed / onDoubleTap. Replace the pass-through
+                    // UP with a CANCEL so the WebView/native <video> doesn't ALSO
+                    // toggle play/pause off the synthesized click — that collision
+                    // is what made a side double-tap seek AND flip play state.
+                    val cancel = MotionEvent.obtain(ev)
+                    cancel.action = MotionEvent.ACTION_CANCEL
+                    super.dispatchTouchEvent(cancel)
+                    cancel.recycle()
+                    return true
                 }
                 // Single tap and double-tap are handled by GestureDetector above.
             }

@@ -256,6 +256,28 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()
+            SectionTitle("이어보기")
+            Text(
+                text = "동영상을 보던 위치를 페이지별로 기억했다가, 같은 페이지를 다시 열면 " +
+                    "그 지점부터 자동으로 이어서 재생합니다. (90초 이상 길이의 영상만 대상, " +
+                    "거의 끝까지 본 영상은 제외) 진행 위치는 기기에만 저장됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("이어보기 사용", modifier = Modifier.padding(end = 12.dp))
+                Spacer(modifier = Modifier.fillMaxWidth(0.6f))
+                Switch(
+                    checked = saved.resumePlaybackEnabled,
+                    onCheckedChange = { viewModel.setResumePlaybackEnabled(it) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
             SectionTitle("디버그")
             Text(
                 text = "SNI 우회·네트워크 인터셉트 동작 로그를 인앱에서 확인합니다. " +

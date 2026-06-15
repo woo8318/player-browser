@@ -236,6 +236,49 @@
     } catch (e) {}
   }
 
+  // Replay a tap as a synthetic pointer/mouse click on the given element so the
+  // site's own handler runs. Untrusted (isTrusted === false), so our capture
+  // click-suppressor lets it through. Returns false if dispatch threw.
+  function dispatchSyntheticClick(el, x, y) {
+    if (!el) return false;
+    try {
+      var base = {
+        bubbles: true, cancelable: true, composed: true,
+        clientX: x, clientY: y, view: window
+      };
+      if (window.PointerEvent) {
+        var pbase = {};
+        for (var k in base) pbase[k] = base[k];
+        pbase.pointerId = 1; pbase.pointerType = 'touch'; pbase.isPrimary = true;
+        el.dispatchEvent(new PointerEvent('pointerdown', pbase));
+        el.dispatchEvent(new PointerEvent('pointerup', pbase));
+      }
+      el.dispatchEvent(new MouseEvent('mousedown', base));
+      el.dispatchEvent(new MouseEvent('mouseup', base));
+      el.dispatchEvent(new MouseEvent('click', base));
+      return true;
+    } catch (e) { return false; }
+  }
+
+  // Single-tap play/pause that keeps the site's UI in sync. If a layer sits on
+  // top of the video (commonly the site's own play button / poster), forward
+  // the tap to that element so the site toggles play AND hides its own overlay —
+  // otherwise we'd play via the API while the button lingers on screen. Fall
+  // back to the direct API if the site didn't actually change the play state
+  // (e.g. a bare <video>, native controls, or a non-interactive overlay).
+  function playPauseAtPoint(video, x, y) {
+    var top = deepElementFromPoint(x, y);
+    if (!top || top === video || top.tagName === 'VIDEO') {
+      togglePlay(video);
+      return;
+    }
+    var wasPaused = video.paused;
+    if (!dispatchSyntheticClick(top, x, y)) { togglePlay(video); return; }
+    setTimeout(function () {
+      try { if (video.paused === wasPaused) togglePlay(video); } catch (e) {}
+    }, 320);
+  }
+
   function switchVideo(direction) {
     var vids = allVideos();
     if (vids.length === 0) return;
@@ -367,6 +410,9 @@
   var suppressClick = null; // { until, x, y }
 
   document.addEventListener('click', function (e) {
+    // Let synthetic clicks through — including the one playPauseAtPoint() dispatches
+    // to the site's own play button to keep its overlay in sync.
+    if (e.isTrusted === false) return;
     var s = suppressClick;
     if (!s) return;
     if (Date.now() > s.until) { suppressClick = null; return; }
@@ -515,7 +561,7 @@
       var rel = (x - left) / width;
       if (rel < 0.35) seekBy(s.video, -SEEK_SEC);
       else if (rel > 0.65) seekBy(s.video, SEEK_SEC);
-      else togglePlay(s.video);
+      else playPauseAtPoint(s.video, x, y);
       lastTap.t = 0;
     } else {
       // First tap — record it and defer play/pause until the double-tap window
@@ -523,9 +569,10 @@
       lastTap = { t: now, x: x, y: y, video: s.video };
       cancelSingleTap();
       var tapVideo = s.video;
+      var tapX = x, tapY = y;
       singleTapTimer = setTimeout(function () {
         singleTapTimer = null;
-        togglePlay(tapVideo);
+        playPauseAtPoint(tapVideo, tapX, tapY);
       }, DOUBLE_TAP_MS);
     }
   }, { passive: true, capture: true });

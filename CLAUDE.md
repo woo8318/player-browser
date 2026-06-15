@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + URL 숫자 자동/수동 복구 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.29.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + URL 숫자 자동/수동 복구 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.30.
 
 ## 빌드 / 배포
 
@@ -94,6 +94,7 @@ app/src/main/
 ## 동영상 제스처 (`video_gestures.js`)
 
 - **싱글탭 → 재생/일시정지** (앱이 탭을 소유). 비디오 위 탭의 합성 `click`을 `suppressClick` + capture-phase `stopPropagation`으로 죽여 사이트/네이티브 `<video>`가 같은 탭으로 토글하지 못하게 함. 단일/더블 구분은 `DOUBLE_TAP_MS` 타이머로 지연 처리(`singleTapTimer`) — 첫 탭은 토글을 예약했다가, 두 번째 탭이 오면 `cancelSingleTap()`으로 취소하고 더블탭 액션 실행.
+- **사이트 오버레이 동기화 (`playPauseAtPoint`):** 싱글탭/중앙 더블탭 재생/정지는 비디오 API를 직접 부르지 않고 `playPauseAtPoint(video,x,y)`를 거침. 탭 지점 최상위 요소가 **비디오 위에 따로 얹힌 레이어**(사이트 자체 재생버튼·포스터 등)면 그 요소에 합성 pointer/mouse `click`(`dispatchSyntheticClick`, `isTrusted=false`)을 dispatch해 **사이트가 직접 재생 토글 + 자기 오버레이를 숨기게** 함 — 안 그러면 API로만 재생돼 영상은 나오는데 사이트 버튼이 안 사라짐. 합성 클릭은 `isTrusted===false`라 capture click-suppressor가 통과시킴. 320ms 뒤 `paused` 상태가 안 바뀌었으면(맨 `<video>`/네이티브 컨트롤/핸들러 없는 오버레이) `togglePlay` API로 폴백. 탭 지점이 비디오 자신이면 곧장 API.
 - **비디오 위 컨트롤 통과 (control passthrough):** 비디오 박스 안이라도 탭 지점의 최상위 엘리먼트가 *작은* 인터랙티브 컨트롤(닫기 ×, 컨트롤바 버튼 등)이면 탭을 가로채지 않고 그대로 통과시켜 사용자가 누를 수 있게 함. `controlAtPoint(x,y,video)`가 `deepElementFromPoint`(shadow DOM 관통)로 최상위 요소를 찾아 `isControlEl`(button/a/input/role=button/onclick…)인지 + 그 bounds 면적이 비디오 면적의 절반 미만인지로 판정 → 참이면 touchstart에서 `onVideo=false`로 떨궈 off-video 탭과 동일 취급(hijack/suppressClick 안 함). **전체 비디오를 덮는 click-catcher(재생/정지 오버레이)는 면적 ≥ 절반이라 통과 대상이 아님** → 맨 비디오 탭의 재생/정지는 기존대로 앱이 소유(Option A 유지).
 - 1 손가락 좌/우 스와이프 → -10/+10초 시킹
 - 2 손가락 좌/우 스와이프 → 이전/다음 `<video>` 전환

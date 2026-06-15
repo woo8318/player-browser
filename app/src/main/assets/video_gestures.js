@@ -456,16 +456,33 @@
     var et = (e.changedTouches && e.changedTouches[0]) || null;
     var dx = et ? et.clientX - s.startX : 0;
     var dy = et ? et.clientY - s.startY : 0;
+    var ex = et ? et.clientX : s.startX;
+    var ey = et ? et.clientY : s.startY;
+
+    // Kill the synthesized click that can trail a gesture so it doesn't reach
+    // the site / native <video> and toggle play or pop a control overlay that
+    // then lingers. Only for gestures that were ours (on the video surface).
+    function suppressTrailingClick() {
+      suppressClick = { until: Date.now() + 700, x: ex, y: ey };
+      e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
+    }
 
     // 2-finger horizontal swipe → switch video.
     if (s.pointers >= 2 && s.moved && dt <= SWIPE_TIME_LIMIT_MS &&
         Math.abs(dx) >= SWIPE_THRESHOLD_PX && Math.abs(dx) > Math.abs(dy)) {
+      hideScrub();
       switchVideo(dx > 0 ? -1 : 1);
+      if (s.onVideo) suppressTrailingClick();
       return;
     }
 
     // Scrubbing already updated currentTime live; just hide the overlay.
-    if (s.scrubbing) { hideScrub(); return; }
+    if (s.scrubbing) {
+      hideScrub();
+      if (s.onVideo) suppressTrailingClick();
+      return;
+    }
 
     if (!et) return;
     // Only hijack taps that actually landed on a video. videoAtPoint() falls
@@ -474,6 +491,10 @@
     if (!s.onVideo) return;
     var x = et.clientX, y = et.clientY;
     var now = Date.now();
+    // A drag that never became a recognized scrub/swipe (a small or vertical
+    // move) is NOT a tap — never toggle play for it. Kill the trailing click
+    // and bail so neither we nor the site act on it.
+    if (s.moved) { suppressTrailingClick(); return; }
     // Every tap on a video is ours now: kill the synthesized click so neither
     // the site nor the native <video> toggles play/pause off it (that toggle
     // is what collided with double-tap seeking). Play/pause is driven solely by

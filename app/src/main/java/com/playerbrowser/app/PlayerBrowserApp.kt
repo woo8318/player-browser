@@ -1,6 +1,7 @@
 package com.playerbrowser.app
 
 import android.app.Application
+import android.webkit.WebView
 import com.google.android.gms.cast.framework.CastContext
 import com.playerbrowser.app.data.BrowserRepository
 import com.playerbrowser.app.network.AdBlockSwitch
@@ -26,6 +27,11 @@ class PlayerBrowserApp : Application() {
         super.onCreate()
         // Install crash recorder first so any subsequent init failure is captured.
         CrashRecorder.install(this)
+        // Debug builds only: expose WebView contents to chrome://inspect so we
+        // can diagnose page issues (e.g. images stalling) over USB / WiFi adb.
+        if (BuildConfig.DEBUG) {
+            runCatching { WebView.setWebContentsDebuggingEnabled(true) }
+        }
         applyStoredProxy()
         observeNetworkSwitches()
         initCast()

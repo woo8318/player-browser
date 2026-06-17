@@ -101,8 +101,12 @@ object IframeScriptInjector {
                 val mime = ctRaw?.substringBefore(';')?.trim()?.lowercase().orEmpty()
                 if (!mime.contains("html")) return null
 
-                val charsetName = parseCharset(ctRaw) ?: "UTF-8"
                 val bytes = resp.body?.bytes() ?: byteArrayOf()
+                // Header charset wins; otherwise sniff the document's own
+                // <meta charset> (Korean pages often omit the HTTP charset and
+                // declare EUC-KR/CP949 only in the HTML). Falling straight to
+                // UTF-8 would corrupt those bytes on decode + re-encode.
+                val charsetName = parseCharset(ctRaw) ?: sniffMetaCharset(bytes) ?: "UTF-8"
                 val headers = LinkedHashMap<String, String>()
                 resp.headers.forEach { (n, v) ->
                     if (n.equals("Content-Encoding", true)) return@forEach
@@ -137,7 +141,8 @@ object IframeScriptInjector {
         return try {
             val stream = upstream.data ?: return null
             val bytes = stream.use { it.readBytes() }
-            val charsetName = upstream.encoding?.ifBlank { null } ?: "UTF-8"
+            val charsetName = upstream.encoding?.ifBlank { null }
+                ?: sniffMetaCharset(bytes) ?: "UTF-8"
             val charset = runCatching { Charset.forName(charsetName) }
                 .getOrDefault(Charsets.UTF_8)
             val outBytes = injectScript(String(bytes, charset)).toByteArray(charset)
@@ -171,6 +176,25 @@ object IframeScriptInjector {
         val idx = html.lastIndexOf("</body>", ignoreCase = true)
         return if (idx >= 0) html.substring(0, idx) + tag + html.substring(idx) else html + tag
     }
+
+    /**
+     * Sniffs the charset from an HTML document's <meta> declarations, scanning
+     * only the head region. Handles both forms:
+     *   <meta charset="euc-kr">
+     *   <meta http-equiv="Content-Type" content="text/html; charset=euc-kr">
+     * The prefix is decoded as ISO-8859-1 so every byte maps to one char —
+     * charset names are ASCII, so this is safe regardless of the real encoding.
+     */
+    private fun sniffMetaCharset(bytes: ByteArray): String? {
+        if (bytes.isEmpty()) return null
+        val len = minOf(bytes.size, 4096)
+        val head = String(bytes, 0, len, Charsets.ISO_8859_1)
+        val match = META_CHARSET.find(head) ?: return null
+        return match.groupValues[1].trim().trim('"', '\'').ifBlank { null }
+    }
+
+    private val META_CHARSET =
+        Regex("""charset\s*=\s*["']?\s*([A-Za-z0-9_\-]+)""", RegexOption.IGNORE_CASE)
 
     private fun parseCharset(contentType: String?): String? {
         if (contentType == null) return null

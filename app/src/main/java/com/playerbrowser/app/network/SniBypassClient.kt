@@ -94,11 +94,14 @@ object SniBypassClient {
             val contentType = resp.header("Content-Type")
             val mime = contentType?.substringBefore(';')?.trim()?.ifBlank { null }
                 ?: "application/octet-stream"
-            val charset = contentType
-                ?.substringAfter("charset=", "")
-                ?.substringBefore(';')
-                ?.trim()
-                ?.ifBlank { null } ?: "UTF-8"
+            // Only pass an encoding when the server actually declared one. If we
+            // hardcode "UTF-8" here, the WebView trusts it verbatim and never
+            // sniffs the document's own <meta charset> — so EUC-KR/CP949 pages
+            // (common on Korean sites that omit the HTTP charset) get decoded as
+            // UTF-8 and render as ???/mojibake. A null encoding lets the WebView
+            // detect the charset from the bytes/meta exactly as it would without
+            // our interception.
+            val charset = parseCharset(contentType)
 
             val headers = LinkedHashMap<String, String>()
             resp.headers.forEach { (name, value) ->
@@ -151,6 +154,23 @@ object SniBypassClient {
             runCatching { super.close() }
             runCatching { response.close() }
         }
+    }
+
+    /**
+     * Extracts the charset from a Content-Type header, or null if the server
+     * didn't declare one. Case-insensitive (some servers send `Charset=`).
+     * Returning null is deliberate: it tells the WebView to sniff the encoding
+     * itself instead of forcing one.
+     */
+    private fun parseCharset(contentType: String?): String? {
+        if (contentType == null) return null
+        for (part in contentType.split(';')) {
+            val t = part.trim()
+            if (t.startsWith("charset=", ignoreCase = true)) {
+                return t.substringAfter('=').trim().trim('"').ifBlank { null }
+            }
+        }
+        return null
     }
 
     private fun reasonFor(code: Int): String = when (code) {

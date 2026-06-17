@@ -370,6 +370,7 @@ fun BrowserScreen(
             onAddGroup = { name, color -> viewModel.addGroup(name, color) },
             onRenameGroup = { id, name -> viewModel.renameGroup(id, name) },
             onDeleteGroup = { viewModel.deleteGroup(it) },
+            onMoveGroup = { id, up -> viewModel.moveGroup(id, up) },
             onNewTab = {
                 viewModel.newTab()
                 tabSwitcherOpen = false

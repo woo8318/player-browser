@@ -293,6 +293,24 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         _groups.value = _groups.value.map { if (it.id == id) it.copy(name = name) else it }
     }
 
+    /**
+     * Moves a group one slot toward the top ([up] = true) or bottom of the group
+     * order. The group order is just the list order in [_groups] (persisted in
+     * JSON insertion order by [TabPersistence]), so swapping adjacent entries is
+     * enough to reorder the sections in the tab switcher. No-op at the edges.
+     */
+    fun moveGroup(id: String, up: Boolean) {
+        val current = _groups.value
+        val index = current.indexOfFirst { it.id == id }
+        if (index < 0) return
+        val target = if (up) index - 1 else index + 1
+        if (target < 0 || target >= current.size) return
+        _groups.value = current.toMutableList().apply {
+            val moved = removeAt(index)
+            add(target, moved)
+        }
+    }
+
     fun deleteGroup(id: String) {
         // Removing a group does NOT close its tabs — they fall back to the
         // ungrouped section so the user doesn't lose work by mistake.

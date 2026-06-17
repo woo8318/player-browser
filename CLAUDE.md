@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + URL 숫자 자동/수동 복구 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.31.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(그룹/그룹순서변경/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + URL 숫자 자동/수동 복구 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.32.
 
 ## 빌드 / 배포
 
@@ -49,7 +49,7 @@ app/src/main/
       BrowserScreen.kt                  # 상단(주소+즐겨찾기+Cast+메뉴) + 중앙(WebView) + 하단(뒤로/앞/새로고침/홈/탭)
       BrowserWebView.kt                 # WebViewClient / WebChromeClient / GestureCapturingFrame
       BrowserViewModel.kt               # 탭 + 그룹 + 부모-자식 + isCurrentBookmarked + 업데이트 상태
-      TabSwitcher.kt                    # 탭 스위처 오버레이 (그룹 섹션 + 길게 누름 멀티 선택 + 카드 ⋮ 메뉴 1탭 이동 + 일괄 닫기/이동 + 드래그 그룹 편집)
+      TabSwitcher.kt                    # 탭 스위처 오버레이 (그룹 섹션 + 그룹 헤더 ⋮ 메뉴 순서 변경(위/아래) + 길게 누름 멀티 선택 + 카드 ⋮ 메뉴 1탭 이동 + 일괄 닫기/이동 + 드래그 그룹 편집)
       TabDragAndDrop.kt                 # 탭 카드 드래그 → 그룹 드롭 (TabDragState + tabDragSource/tabDropRegion/tabDropTargetRoot)
       TabSwipeGesture.kt                # Modifier.tabSwitchSwipe — 상/하단 바 수평 스와이프 → 인접 탭 전환
       BookmarksScreen.kt / HistoryScreen.kt
@@ -75,7 +75,7 @@ app/src/main/
 - **멀티탭:** 탭 전환 시 WebView 자체를 swap (단일 WebView 재사용 X). `SnapshotStateMap<TabId, BrowserWebViewState>`로 보관. 탭 닫히면 `webView.destroy()`로 GC.
 - **바 스와이프 탭 전환:** `TabSwipeGesture.kt`의 `Modifier.tabSwitchSwipe`를 상단 주소창 `Surface`와 하단 내비 `Row`에 적용. `detectHorizontalDragGestures`(수평 바이어스)라 탭/세로 스크롤/텍스트필드 포커스와 충돌 안 함 — 수평 의도가 확정된 뒤에만 엔게이지. 누적 거리가 touchSlop*3을 넘는 순간 드래그당 1회만 발화(즉각 반응). `viewModel.selectAdjacentTab(forward)`가 실제 전환된 경우만 `true` 반환 → 그때만 햅틱. 좌 스와이프=다음 탭(forward), 우 스와이프=이전 탭. **이전(backward) 방향은 부모 탭 우선** — 현재 탭이 `window.open`/`target=_blank`로 열린 자식(`parentTabId` 생존)이면 인접 탭 대신 부모 탭으로 복귀(back 제스처와 동일 멘탈모델), 부모가 없으면 평탄한 `_tabs` 순서 인접 탭(양 끝 멈춤, no-wrap).
 - **탭 전환 슬라이드 애니메이션:** 중앙 WebView 호스트를 `AnimatedContent(targetState = activeTabId)`로 감싸 스와이프 시 콘텐츠가 가로로 슬라이드(`slideIn/OutHorizontally`, tween 260ms). `switchDirection`(+1/-1/0) 상태로 방향 결정 — **스와이프만 애니메이션을 arm**하고 `LaunchedEffect(activeTabId)`가 매 전환 후 0으로 disarm해서 탭 닫기/스위처 선택은 무애니메이션 즉시 swap. 이유: 닫힌(=`webStates` GC로 `destroy()`된) 탭을 슬라이드 아웃하면 파괴된 WebView를 참조할 수 있음. 전환 콘텐츠는 target=현재 active면 `activeWebState`, 빠져나가는 탭은 `webStates[id]`를 **생성 없이** 조회(없으면 빈 Box)해 죽은 탭 부활/크래시 방지.
-- **탭 그룹 / 부모-자식:** `TabState`에 `groupId` + `parentTabId` 필드. `TabGroup`(id, name, color)은 `BrowserViewModel._groups` StateFlow + `TabPersistence`의 JSON에 함께 저장 (Room 마이그레이션 비용 회피). 그룹 삭제 시 탭은 살아남고 `groupId`만 null로 떨어짐.
+- **탭 그룹 / 부모-자식:** `TabState`에 `groupId` + `parentTabId` 필드. `TabGroup`(id, name, color)은 `BrowserViewModel._groups` StateFlow + `TabPersistence`의 JSON에 함께 저장 (Room 마이그레이션 비용 회피). 그룹 삭제 시 탭은 살아남고 `groupId`만 null로 떨어짐. **그룹 순서 = `_groups` 리스트 순서**(스위처 섹션 렌더/JSON 영속화 모두 이 순서를 따름) — 그룹 헤더 ⋮ 메뉴의 "위로 이동"/"아래로 이동"이 `viewModel.moveGroup(id, up)`으로 인접 항목을 스왑. 양 끝에서는 해당 메뉴 항목을 숨김.
 - **target=_blank / window.open → 부모 탭 복귀:** `WebChromeClient.onCreateWindow`가 throwaway WebView로 URL만 뽑아 `WebViewCallbacks.onOpenInNewTab(url)` 콜백 → `BrowserScreen`이 `viewModel.newTab(url, parentTabId = ownerId)`로 새 탭 생성 (부모의 `groupId`도 자동 상속). 자식 탭에서 뒤로가기 → 자체 history가 없으면 `viewModel.tryReturnToParent()`로 부모 탭으로 복귀 + 자식 탭 닫기. 부모 탭이 이미 사라진 자식은 `closeTabs`에서 `parentTabId`를 null로 정리해 댕글링 방지.
 - **탭 스위처 멀티 선택 + 카드 메뉴 1탭 이동:** `TabSwitcher.kt`의 `TabSwitcherOverlay`(internal). `combinedClickable`(ExperimentalFoundationApi) 길게 누름 → `selectedIds` Set에 추가 → `derivedStateOf`로 선택 모드 진입. 선택 모드에서는 상단 액션 바가 morph(전체 / 그룹으로 이동 / 일괄 닫기). BackHandler가 선택 모드면 선택 해제, 아니면 오버레이 dismiss. 그룹별 섹션은 `LazyVerticalGrid` + `GridItemSpan(maxLineSpan)` 헤더로 렌더. 단일 탭 이동은 카드 우측 ⋮ 메뉴 ("그룹으로 이동..." / "그룹에서 빼기") 로 멀티 선택 없이 처리 — `pendingMoveTargets: List<String>?` 상태가 단일/멀티 양쪽 흐름을 통일해 `GroupPickerDialog`/`NewGroupDialog`(create-then-move 원자 처리) 한 벌을 공유. 카드 메뉴는 `inSelectMode == false` 일 때만 노출해 선택 모드 액션과 충돌하지 않음.
 - **드래그로 탭 그룹 편집:** `TabDragAndDrop.kt`. 카드 롱프레스 → (기존대로 선택 모드 진입) → 손을 떼지 않고 touch slop 이상 끌면 `tabDragSource`(`dragAndDropSource` + `detectDragGesturesAfterLongPress`)가 플랫폼 드래그 시작. 드롭 타깃은 per-item `dragAndDropTarget`이 **아니라** 그리드 전체를 덮는 단일 `tabDropTargetRoot` 1개 — Compose 1.6.x에서 드래그 세션 시작 후 attach된 타깃 노드(스크롤로 새로 composition된 lazy item)는 세션에 합류하지 못하는 제약 회피. 각 헤더/카드는 `tabDropRegion`(`onGloballyPositioned`)으로 자기 bounds를 `TabDragState.regions`에 등록하고 루트 타깃이 hit-test로 섹션 결정. 드래그 중에는 빈 "그룹 없음" 섹션을 항상 노출(그룹에서 빼기 드롭 타깃), 가장자리 64dp 밴드에서 자동 스크롤. 선택된 카드를 끌면 `selectedIds` 전체가 함께 이동. `tabDragSource`는 반드시 `combinedClickable` **뒤에** 체이닝 — Main 포인터 패스에서 안쪽 노드가 먼저 이벤트를 소비해야 clickable의 long-press 후 `consumeUntilUp`이 드래그를 죽이지 못함.

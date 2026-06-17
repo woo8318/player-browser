@@ -31,6 +31,8 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.outlined.Circle
 import androidx.compose.material3.AlertDialog
@@ -93,6 +95,7 @@ internal fun TabSwitcherOverlay(
     onAddGroup: (String, Int) -> String,
     onRenameGroup: (String, String) -> Unit,
     onDeleteGroup: (String) -> Unit,
+    onMoveGroup: (String, Boolean) -> Unit,
     onNewTab: () -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -237,6 +240,17 @@ internal fun TabSwitcherOverlay(
                                 } else null,
                                 onDelete = if (section.group != null) {
                                     { onDeleteGroup(section.group.id) }
+                                } else null,
+                                onMoveUp = if (section.group != null &&
+                                    groups.indexOfFirst { it.id == section.group.id } > 0
+                                ) {
+                                    { onMoveGroup(section.group.id, true) }
+                                } else null,
+                                onMoveDown = if (section.group != null &&
+                                    groups.indexOfFirst { it.id == section.group.id }
+                                        .let { it in 0 until groups.lastIndex }
+                                ) {
+                                    { onMoveGroup(section.group.id, false) }
                                 } else null,
                                 onCloseAll = if (section.tabs.isNotEmpty()) {
                                     { onCloseMany(section.tabs.map { it.id }) }
@@ -384,6 +398,8 @@ private fun GroupHeader(
     modifier: Modifier = Modifier,
     onRename: (() -> Unit)?,
     onDelete: (() -> Unit)?,
+    onMoveUp: (() -> Unit)?,
+    onMoveDown: (() -> Unit)?,
     onCloseAll: (() -> Unit)?
 ) {
     var menuOpen by remember { mutableStateOf(false) }
@@ -424,7 +440,9 @@ private fun GroupHeader(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
         )
-        if (onRename != null || onDelete != null || onCloseAll != null) {
+        if (onRename != null || onDelete != null || onMoveUp != null ||
+            onMoveDown != null || onCloseAll != null
+        ) {
             Box {
                 IconButton(onClick = { menuOpen = true }, modifier = Modifier.size(32.dp)) {
                     Icon(
@@ -434,6 +452,24 @@ private fun GroupHeader(
                     )
                 }
                 DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                    onMoveUp?.let {
+                        DropdownMenuItem(
+                            text = { Text("위로 이동") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = null)
+                            },
+                            onClick = { menuOpen = false; it() }
+                        )
+                    }
+                    onMoveDown?.let {
+                        DropdownMenuItem(
+                            text = { Text("아래로 이동") },
+                            leadingIcon = {
+                                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = null)
+                            },
+                            onClick = { menuOpen = false; it() }
+                        )
+                    }
                     onRename?.let {
                         DropdownMenuItem(
                             text = { Text("이름 바꾸기") },

@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + URL 숫자 자동/수동 복구 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.30.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(그룹/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + URL 숫자 자동/수동 복구 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.31.
 
 ## 빌드 / 배포
 
@@ -94,14 +94,14 @@ app/src/main/
 ## 동영상 제스처 (`video_gestures.js`)
 
 - **싱글탭 → 재생/일시정지** (앱이 탭을 소유). 비디오 위 탭의 합성 `click`을 `suppressClick` + capture-phase `stopPropagation`으로 죽여 사이트/네이티브 `<video>`가 같은 탭으로 토글하지 못하게 함. 단일/더블 구분은 `DOUBLE_TAP_MS` 타이머로 지연 처리(`singleTapTimer`) — 첫 탭은 토글을 예약했다가, 두 번째 탭이 오면 `cancelSingleTap()`으로 취소하고 더블탭 액션 실행.
-- **사이트 오버레이 동기화 (`playPauseAtPoint`):** 싱글탭/중앙 더블탭 재생/정지는 비디오 API를 직접 부르지 않고 `playPauseAtPoint(video,x,y)`를 거침. 탭 지점 최상위 요소가 **비디오 위에 따로 얹힌 레이어**(사이트 자체 재생버튼·포스터 등)면 그 요소에 합성 pointer/mouse `click`(`dispatchSyntheticClick`, `isTrusted=false`)을 dispatch해 **사이트가 직접 재생 토글 + 자기 오버레이를 숨기게** 함 — 안 그러면 API로만 재생돼 영상은 나오는데 사이트 버튼이 안 사라짐. 합성 클릭은 `isTrusted===false`라 capture click-suppressor가 통과시킴. 320ms 뒤 `paused` 상태가 안 바뀌었으면(맨 `<video>`/네이티브 컨트롤/핸들러 없는 오버레이) `togglePlay` API로 폴백. 탭 지점이 비디오 자신이면 곧장 API.
-- **비디오 위 컨트롤 통과 (control passthrough):** 비디오 박스 안이라도 탭 지점의 최상위 엘리먼트가 *작은* 인터랙티브 컨트롤(닫기 ×, 컨트롤바 버튼 등)이면 탭을 가로채지 않고 그대로 통과시켜 사용자가 누를 수 있게 함. `controlAtPoint(x,y,video)`가 `deepElementFromPoint`(shadow DOM 관통)로 최상위 요소를 찾아 `isControlEl`(button/a/input/role=button/onclick…)인지 + 그 bounds 면적이 비디오 면적의 절반 미만인지로 판정 → 참이면 touchstart에서 `onVideo=false`로 떨궈 off-video 탭과 동일 취급(hijack/suppressClick 안 함). **전체 비디오를 덮는 click-catcher(재생/정지 오버레이)는 면적 ≥ 절반이라 통과 대상이 아님** → 맨 비디오 탭의 재생/정지는 기존대로 앱이 소유(Option A 유지).
+- **사이트 오버레이 동기화 (`playPauseAtPoint`):** 싱글탭/중앙 더블탭 재생/정지는 비디오 API를 직접 부르지 않고 `playPauseAtPoint(video,x,y)`를 거침. 탭 지점 최상위 요소가 **비디오 위에 따로 얹힌 레이어**(사이트 자체 재생버튼·포스터·툴바 등)면 그 요소에 합성 pointer/mouse `click`(`dispatchSyntheticClick`, `isTrusted=false`)을 dispatch해 **사이트가 직접 처리(재생/정지·⏩·확대 등) + 자기 오버레이를 갱신/숨기게** 함 — 안 그러면 API로만 재생돼 영상은 나오는데 사이트 버튼이 안 사라짐. 합성 클릭은 `isTrusted===false`라 capture click-suppressor가 통과시킴. **폴백은 `paused` 상태 변화가 아니라 요소의 인터랙티브 여부로 판정** — `looksInteractive(top)`이면(버튼/cursor:pointer 등) 사이트에 맡기고 우리가 토글하지 않음(확대 버튼처럼 재생과 무관한 동작을 눌렀을 때 직후 영상이 멈추던 버그 수정), 비인터랙티브 오버레이(포스터/그라데이션)거나 dispatch 실패면 `togglePlay` API 폴백. 탭 지점이 비디오 자신이면 곧장 API.
+- **비디오 위 컨트롤 통과 (control passthrough):** 비디오 박스 안이라도 탭 지점의 최상위 엘리먼트가 *작은* 인터랙티브 컨트롤(닫기 ×, 사이트 자체 툴바의 재생/정지/⏪/⏩/확대 버튼 등)이면 탭을 가로채지 않고 그대로 통과시켜 사용자가 누를 수 있게 함. `controlAtPoint(x,y,video)`가 `deepElementFromPoint`(shadow DOM 관통)로 최상위 요소를 찾아 `looksInteractive`(button/a/input/role=button/onclick **또는 `cursor:pointer`** — 커스텀 툴바 버튼이 `<div>/<span>/<i>`라도 잡힘)인지 + 그 bounds 면적이 비디오 면적의 절반 미만인지로 판정 → 참이면 touchstart에서 `onVideo=false`로 떨궈 off-video 탭과 동일 취급(hijack/suppressClick 안 함). **전체 비디오를 덮는 click-catcher(재생/정지 오버레이)는 면적 ≥ 절반이라 통과 대상이 아님** → 맨 비디오 탭의 재생/정지는 기존대로 앱이 소유(Option A 유지).
 - 1 손가락 좌/우 스와이프 → -10/+10초 시킹
 - 2 손가락 좌/우 스와이프 → 이전/다음 `<video>` 전환
 - 양쪽 가장자리 더블탭 → 사이드 인식 더블탭 시킹 (좌 -10, **중앙 재생/정지**, 우 +10). 사이드 더블탭은 **순수 시킹**(첫 탭의 예약 토글이 취소되므로 재생상태 안 바뀜) — 예전엔 첫 탭 `click`이 play/pause를 토글해 시킹+토글이 같이 일어나던 버그를 수정.
 - 수평 드래그 → 정밀 시킹 (드래그 양에 비례). **드래그/스와이프/시킹 등 탭이 아닌 제스처는 끝날 때 합성 `click`을 `suppressClick`으로 같이 죽여** 사이트가 그 클릭으로 재생/정지 토글하거나 컨트롤 오버레이를 띄워 안 사라지는 일을 막음. 또 scrub로 인식되지 못한 작은/세로 드래그(`s.moved`)는 탭이 아니므로 재생/정지를 발화하지 않고 클릭만 죽이고 종료.
 - 풀스크린 세로 드래그 → 좌측 화면밝기 / 우측 시스템 볼륨 (`window.__pb.showVbOverlay` 호출)
-- **풀스크린(Kotlin `GestureCapturingFrame`)도 동일 정책:** `GestureDetector.onSingleTapConfirmed` → `window.__pb.togglePlay`, `onDoubleTap` → 시킹/중앙토글. 탭 `ACTION_UP`은 WebView로 그대로 흘리지 않고 `ACTION_CANCEL`로 치환해 보내 네이티브 `<video>`의 탭-토글을 차단(JS in-document 경로는 `fsActive`로 이미 꺼져 있음).
+- **풀스크린(Kotlin `GestureCapturingFrame`)도 동일 정책:** `GestureDetector.onSingleTapConfirmed`/`onDoubleTap`(사이드 시킹). 탭 `ACTION_UP`은 WebView로 그대로 흘리지 않고 `ACTION_CANCEL`로 치환해 네이티브 `<video>`의 탭-토글을 차단(JS in-document 경로는 `fsActive`로 이미 꺼져 있음). **단, 탭을 그냥 죽이면 사이트가 영상 위에 올린 오버레이 툴바(재생/⏩/확대 등) 버튼을 풀스크린에서 누를 수 없으므로**, 단일탭/중앙 더블탭은 `togglePlay`를 직접 부르지 않고 `window.__pb.fsTap(xRatio, yRatio)`로 위임 — Kotlin이 탭 위치를 0~1 비율로 넘기면(디바이스 px↔CSS px 무관) JS가 `innerWidth/Height`로 CSS 좌표로 환산해 in-document와 **동일한 `playPauseAtPoint`** 실행 → 툴바 버튼 위면 그 버튼에 합성 클릭 포워딩, 맨 비디오면 재생/정지 토글.
 - **이어보기:** `initResume` 모듈이 비디오 위치를 `window.PBResume` 브리지로 저장/복원 (위 "동영상 이어보기" 메모 참조). 90초 이상 영상만 대상, 진입 시 토스트로 안내. 설정에서 토글.
 - iframe 내부: `IframeScriptInjector`가 cross-origin iframe HTML에도 주입
 

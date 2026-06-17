@@ -142,6 +142,19 @@
     return false;
   }
 
+  // Broader "is this a clickable thing" test: real control elements OR anything
+  // styled as clickable (cursor:pointer) — which is how virtually every custom
+  // toolbar button (play/stop/⏪/⏩/expand rendered as <div>/<span>/<i>) signals
+  // it's tappable, even without a button tag / role / onclick attribute.
+  function looksInteractive(el) {
+    if (isControlEl(el)) return true;
+    try {
+      var cs = window.getComputedStyle(el);
+      if (cs && cs.cursor === 'pointer') return true;
+    } catch (e) {}
+    return false;
+  }
+
   // True when the topmost element under (x,y) is a *small* interactive control
   // overlaid on the video (e.g. a close "×", a control-bar button) that should
   // receive the tap itself instead of our play/pause. A full-size click-catcher
@@ -156,7 +169,7 @@
     while (el && el !== video && depth < 6) {
       if (el === document.body || el === document.documentElement) break;
       if (el.tagName === 'VIDEO') break;
-      if (isControlEl(el)) {
+      if (looksInteractive(el)) {
         if (!videoArea) return true;
         var er = el.getBoundingClientRect();
         var area = er.width * er.height;
@@ -268,15 +281,19 @@
   // (e.g. a bare <video>, native controls, or a non-interactive overlay).
   function playPauseAtPoint(video, x, y) {
     var top = deepElementFromPoint(x, y);
+    // Bare video surface (or no element): the API toggle is our job.
     if (!top || top === video || top.tagName === 'VIDEO') {
-      togglePlay(video);
+      if (video) togglePlay(video);
       return;
     }
-    var wasPaused = video.paused;
-    if (!dispatchSyntheticClick(top, x, y)) { togglePlay(video); return; }
-    setTimeout(function () {
-      try { if (video.paused === wasPaused) togglePlay(video); } catch (e) {}
-    }, 320);
+    // A layer sits on top. If it looks clickable (site play button, toolbar
+    // button…), forward the tap so the site does its own thing — play, expand,
+    // ⏩, whatever — and updates/hides its own UI. Do NOT toggle play ourselves:
+    // the button may do something unrelated (expand), and a blind fallback would
+    // pause the video right after. Only fall back to our API toggle when the
+    // overlay is non-interactive (a passive poster/gradient that swallows taps).
+    var forwarded = dispatchSyntheticClick(top, x, y);
+    if (video && (!forwarded || !looksInteractive(top))) togglePlay(video);
   }
 
   function switchVideo(direction) {
@@ -311,6 +328,18 @@
   window.__pb.togglePlay = function () {
     var v = fullscreenVideo() || activeVideo();
     if (v) togglePlay(v);
+  };
+  // Native-fullscreen single tap. Kotlin passes the tap position as 0..1 ratios
+  // (device-px vs CSS-px independent); we map to viewport CSS coords and run the
+  // same element-aware logic as the in-document path so a tap on the site's
+  // overlay toolbar (play/⏩/expand…) is forwarded to that button instead of
+  // being swallowed, while a tap on the bare video toggles play.
+  window.__pb.fsTap = function (xRatio, yRatio) {
+    var v = fullscreenVideo() || activeVideo();
+    if (!v) return;
+    var x = (xRatio || 0) * (window.innerWidth || document.documentElement.clientWidth || 1);
+    var y = (yRatio || 0) * (window.innerHeight || document.documentElement.clientHeight || 1);
+    playPauseAtPoint(v, x, y);
   };
   window.__pb.switchVideo = function (dir) { switchVideo(dir); };
 

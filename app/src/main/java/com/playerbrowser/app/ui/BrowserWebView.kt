@@ -442,8 +442,17 @@ private class GestureCapturingFrame(
         // WebView), so this is the sole play/pause toggle for a lone tap.
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             if (scrubbing || vbAdjust != null) return false
+            // Element-aware tap: forward to the site's overlay control (toolbar
+            // play/⏩/expand…) if one is under the finger, else toggle play. We
+            // pass 0..1 ratios so the JS side can map to CSS coords regardless of
+            // device pixel ratio. (The pass-through UP was cancelled in
+            // dispatchTouchEvent, so native won't also act on this tap.)
+            val w = width.coerceAtLeast(1)
+            val h = height.coerceAtLeast(1)
+            val xr = (e.x / w).coerceIn(0f, 1f)
+            val yr = (e.y / h).coerceIn(0f, 1f)
             webView.evaluateJavascript(
-                "window.__pb && window.__pb.togglePlay && window.__pb.togglePlay();",
+                "window.__pb && window.__pb.fsTap && window.__pb.fsTap($xr, $yr);",
                 null
             )
             return true
@@ -452,11 +461,12 @@ private class GestureCapturingFrame(
             if (scrubbing || vbAdjust != null) return false
             // Side-aware: left third → -10s, right third → +10s, middle → play/pause.
             val w = width.coerceAtLeast(1)
+            val h = height.coerceAtLeast(1)
             val ratio = (e.x / w).coerceIn(0f, 1f)
             val js = when {
                 ratio < 0.35f -> "window.__pb && window.__pb.seek && window.__pb.seek(-$SEEK_SECONDS);"
                 ratio > 0.65f -> "window.__pb && window.__pb.seek && window.__pb.seek($SEEK_SECONDS);"
-                else -> "window.__pb && window.__pb.togglePlay && window.__pb.togglePlay();"
+                else -> "window.__pb && window.__pb.fsTap && window.__pb.fsTap($ratio, ${(e.y / h).coerceIn(0f, 1f)});"
             }
             webView.evaluateJavascript(js, null)
             return true

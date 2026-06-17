@@ -200,6 +200,14 @@ internal fun TabSwitcherOverlay(
         val groupedSections = remember(tabs, groups, isDragging) {
             buildGroupedSections(tabs, groups, includeEmptyUngrouped = isDragging)
         }
+        // On open, jump to the tab the user was just viewing so the switcher
+        // lands on it instead of always starting at the top of the list. The
+        // overlay is composed fresh each time it opens, so a Unit-keyed effect
+        // runs exactly once per open with the active tab captured at open time.
+        LaunchedEffect(Unit) {
+            val target = activeTabLazyIndex(groupedSections, activeTabId, isDragging)
+            if (target >= 0) gridState.scrollToItem(target)
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -372,6 +380,29 @@ private data class TabSection(
     val group: TabGroup?,
     val tabs: List<TabState>
 )
+
+/**
+ * Flat index of [activeTabId] within the LazyVerticalGrid's item stream, or -1
+ * if not found. Must mirror the emit order in [TabSwitcherOverlay]: each section
+ * emits an optional header item followed by its tab items. The header presence
+ * condition is kept identical to the rendering side.
+ */
+private fun activeTabLazyIndex(
+    sections: List<TabSection>,
+    activeTabId: String,
+    isDragging: Boolean
+): Int {
+    var index = 0
+    sections.forEach { section ->
+        val hasHeader = section.group != null || section.tabs.isNotEmpty() || isDragging
+        if (hasHeader) index++
+        section.tabs.forEach { tab ->
+            if (tab.id == activeTabId) return index
+            index++
+        }
+    }
+    return -1
+}
 
 private fun buildGroupedSections(
     tabs: List<TabState>,

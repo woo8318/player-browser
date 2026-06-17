@@ -8,6 +8,7 @@ import com.playerbrowser.app.network.AdBlockSwitch
 import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
+import com.playerbrowser.app.network.LinkNewTabSwitch
 import com.playerbrowser.app.network.NetworkSettingsRepository
 import com.playerbrowser.app.network.ProxyManager
 import com.playerbrowser.app.network.ResumeSwitch
@@ -60,6 +61,7 @@ class PlayerBrowserApp : Application() {
                 AdBlockSwitch.enabled = it.adBlockEnabled
                 CookieBannerSwitch.enabled = it.cookieBannerEnabled
                 ResumeSwitch.enabled = it.resumePlaybackEnabled
+                LinkNewTabSwitch.enabled = it.openLinksInNewTab
             }
         }
     }

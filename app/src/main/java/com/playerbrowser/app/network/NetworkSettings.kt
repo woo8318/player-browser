@@ -9,7 +9,8 @@ data class NetworkSettings(
     val sniBypassEnabled: Boolean = true,
     val adBlockEnabled: Boolean = true,
     val cookieBannerEnabled: Boolean = true,
-    val resumePlaybackEnabled: Boolean = true
+    val resumePlaybackEnabled: Boolean = true,
+    val openLinksInNewTab: Boolean = false
 ) {
     fun isValid(): Boolean =
         proxyHost.isNotBlank() && proxyPort in 1..65535

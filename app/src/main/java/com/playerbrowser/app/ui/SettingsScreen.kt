@@ -278,6 +278,29 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()
+            SectionTitle("링크를 새 탭에서 열기")
+            Text(
+                text = "페이지 안의 링크를 누를 때 현재 탭을 바꾸지 않고 항상 새 탭에서 엽니다. " +
+                    "(새 창/팝업으로 열리는 링크가 아니어도 적용) 새 탭은 현재 탭의 자식으로 " +
+                    "열려서 뒤로 가기를 하면 원래 탭으로 돌아옵니다. 주소창 입력·페이지 내 " +
+                    "리다이렉트에는 영향이 없습니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("링크 항상 새 탭에서 열기", modifier = Modifier.padding(end = 12.dp))
+                Spacer(modifier = Modifier.fillMaxWidth(0.6f))
+                Switch(
+                    checked = saved.openLinksInNewTab,
+                    onCheckedChange = { viewModel.setOpenLinksInNewTab(it) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
             SectionTitle("디버그")
             Text(
                 text = "SNI 우회·네트워크 인터셉트 동작 로그를 인앱에서 확인합니다. " +

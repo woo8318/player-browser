@@ -39,7 +39,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                     sniBypassEnabled = current.sniBypassEnabled,
                     adBlockEnabled = current.adBlockEnabled,
                     cookieBannerEnabled = current.cookieBannerEnabled,
-                    resumePlaybackEnabled = current.resumePlaybackEnabled
+                    resumePlaybackEnabled = current.resumePlaybackEnabled,
+                    openLinksInNewTab = current.openLinksInNewTab
                 )
             }
             val result = ProxyManager.apply(next)
@@ -79,6 +80,15 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             repository.update { it.copy(resumePlaybackEnabled = enabled) }
             _event.value = ProxyApplyEvent.Message(
                 if (enabled) "이어보기 켜짐" else "이어보기 꺼짐"
+            )
+        }
+    }
+
+    fun setOpenLinksInNewTab(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(openLinksInNewTab = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "링크를 새 탭에서 열기 켜짐" else "링크를 새 탭에서 열기 꺼짐"
             )
         }
     }

@@ -11,6 +11,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 - **검색어/URL 자동 인식** — URL이 아니면 Google 검색으로 폴백
 - **즐겨찾기 / 방문 기록** — 방문한 URL은 즐겨찾기 목록에서 ✓ 표시
 - **새 창 링크 → 부모 탭 복귀 (Opera 스타일)** — `target="_blank"` / `window.open()`이 띄운 자식 탭에서 뒤로가기 누르면 자식 탭을 닫고 원래 부모 탭으로 복귀
+- **링크를 항상 새 탭에서 열기 (설정 토글, 기본 꺼짐)** — 켜면 새 창/팝업 링크가 아니어도 페이지 안의 일반 링크 탭이 현재 탭을 바꾸지 않고 새 탭(현재 탭의 자식)에서 열림. 뒤로 가기를 하면 원래 탭으로 복귀. 주소창 입력·리다이렉트에는 영향 없음
 - **탭 그룹화** — 탭 스위처에서 색상 라벨이 붙는 그룹을 만들어 탭을 묶고, 그룹 단위로 일괄 닫기 / 이름 변경 / 해제. 자식 탭은 부모의 그룹을 자동으로 상속
 - **그룹 순서 변경** — 그룹 헤더 우측 ⋮ 메뉴의 "위로 이동" / "아래로 이동"으로 탭 스위처에서 그룹 섹션 순서를 바꿈 (변경된 순서는 영속화)
 - **탭 멀티 선택 → 일괄 닫기 / 그룹 이동** — 탭 카드를 길게 누르면 선택 모드 진입, 상단 액션 바에서 전체 선택 / 그룹으로 이동 / 일괄 닫기
@@ -93,6 +94,7 @@ app/src/main/
       AdBlocker.kt / AdBlockSwitch.kt   # 광고 차단
       CookieBannerKiller.kt / CookieBannerSwitch.kt  # 쿠키 동의 배너 자동 거부
       ResumeSwitch.kt                   # 이어보기 토글
+      LinkNewTabSwitch.kt               # 링크 항상 새 탭 열기 토글 (shouldOverrideUrlLoading hot path)
       SniBypassClient.kt / SniBypassSwitch.kt / FragmentingSocketFactory.kt / DohClient.kt
       ProxyManager.kt / NetworkSettings*.kt
       CrashRecorder.kt                  # 충돌 영속화

@@ -39,6 +39,7 @@ import com.playerbrowser.app.network.CookieBannerKiller
 import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
+import com.playerbrowser.app.network.LinkNewTabSwitch
 import com.playerbrowser.app.network.SniBypassClient
 import com.playerbrowser.app.network.UrlRecovery
 import android.widget.Toast
@@ -105,8 +106,29 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 view: WebView?,
                 request: WebResourceRequest?
             ): Boolean {
-                val uri = request?.url ?: return false
-                return UrlIntentRouter.route(view?.context ?: context, uri, callbacks)
+                if (request == null) return false
+                val uri = request.url ?: return false
+                // Internal schemes / external apps are routed first; route()
+                // returns false for plain http/https so we can decide below.
+                if (UrlIntentRouter.route(view?.context ?: context, uri, callbacks)) return true
+
+                // "링크를 항상 새 탭에서 열기": spin a user-clicked main-frame link
+                // off into a child tab instead of replacing the current page.
+                // Gated to genuine link taps — typed URLs (loadUrl never hits this
+                // callback), server redirects, and JS navigations without a user
+                // gesture are left to load in place.
+                if (LinkNewTabSwitch.enabled &&
+                    request.isForMainFrame &&
+                    request.hasGesture() &&
+                    !request.isRedirect
+                ) {
+                    val scheme = uri.scheme?.lowercase()
+                    if (scheme == "http" || scheme == "https") {
+                        callbacks.onOpenInNewTab(uri.toString())
+                        return true
+                    }
+                }
+                return false
             }
 
             override fun shouldInterceptRequest(

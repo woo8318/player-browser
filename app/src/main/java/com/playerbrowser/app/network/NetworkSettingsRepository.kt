@@ -25,6 +25,7 @@ class NetworkSettingsRepository(private val context: Context) {
         val AD_BLOCK_ENABLED = booleanPreferencesKey("ad_block_enabled")
         val COOKIE_BANNER_ENABLED = booleanPreferencesKey("cookie_banner_enabled")
         val RESUME_PLAYBACK_ENABLED = booleanPreferencesKey("resume_playback_enabled")
+        val OPEN_LINKS_IN_NEW_TAB = booleanPreferencesKey("open_links_in_new_tab")
     }
 
     val settings: Flow<NetworkSettings> =
@@ -45,6 +46,7 @@ class NetworkSettingsRepository(private val context: Context) {
             prefs[Keys.AD_BLOCK_ENABLED] = next.adBlockEnabled
             prefs[Keys.COOKIE_BANNER_ENABLED] = next.cookieBannerEnabled
             prefs[Keys.RESUME_PLAYBACK_ENABLED] = next.resumePlaybackEnabled
+            prefs[Keys.OPEN_LINKS_IN_NEW_TAB] = next.openLinksInNewTab
         }
     }
 
@@ -57,7 +59,8 @@ class NetworkSettingsRepository(private val context: Context) {
         sniBypassEnabled = this[Keys.SNI_BYPASS_ENABLED] ?: true,
         adBlockEnabled = this[Keys.AD_BLOCK_ENABLED] ?: true,
         cookieBannerEnabled = this[Keys.COOKIE_BANNER_ENABLED] ?: true,
-        resumePlaybackEnabled = this[Keys.RESUME_PLAYBACK_ENABLED] ?: true
+        resumePlaybackEnabled = this[Keys.RESUME_PLAYBACK_ENABLED] ?: true,
+        openLinksInNewTab = this[Keys.OPEN_LINKS_IN_NEW_TAB] ?: false
     )
 
     companion object {

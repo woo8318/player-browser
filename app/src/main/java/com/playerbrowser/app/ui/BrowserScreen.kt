@@ -75,6 +75,7 @@ import com.playerbrowser.app.web.UrlUtils
 fun BrowserScreen(
     viewModel: BrowserViewModel,
     webStates: SnapshotStateMap<String, BrowserWebViewState>,
+    thumbnails: TabThumbnailStore,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit
@@ -89,13 +90,15 @@ fun BrowserScreen(
     val updateState by viewModel.updateState.collectAsState()
     val groups by viewModel.groups.collectAsState()
 
-    // Garbage-collect WebViews for tabs that no longer exist.
+    // Garbage-collect WebViews for tabs that no longer exist, and prune their
+    // gallery thumbnails in lock-step.
     LaunchedEffect(tabs) {
         val liveIds = tabs.map { it.id }.toSet()
         val stale = webStates.keys.filterNot { liveIds.contains(it) }
         stale.forEach { id ->
             webStates.remove(id)?.webView?.let { runCatching { it.destroy() } }
         }
+        thumbnails.retain(liveIds)
     }
 
     val tabIdForCreation: String = activeTabId
@@ -153,9 +156,17 @@ fun BrowserScreen(
     var switchDirection by remember { mutableStateOf(0) }
     LaunchedEffect(activeTabId) { switchDirection = 0 }
 
+    // Snapshot the tab the user is currently looking at into the gallery cache.
+    // Only the active tab's WebView is attached & laid out, so this is the one
+    // moment we can reliably capture it — call before navigating away.
+    val captureActive: () -> Unit = {
+        thumbnails.capture(activeTabId, activeWebState.webView)
+    }
+
     // Toolbar / nav-bar swipe → switch to the adjacent tab. A short haptic
     // only fires when the swap actually happens (i.e. not at the strip's edge).
     val switchAdjacentTab: (Boolean) -> Unit = { forward ->
+        captureActive()
         if (viewModel.selectAdjacentTab(forward)) {
             switchDirection = if (forward) 1 else -1
             haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -349,7 +360,12 @@ fun BrowserScreen(
                 }
                 TabCountButton(
                     count = tabs.size,
-                    onClick = { tabSwitcherOpen = true }
+                    onClick = {
+                        // Capture the page being viewed so its card shows a live
+                        // thumbnail the instant the gallery opens.
+                        captureActive()
+                        tabSwitcherOpen = true
+                    }
                 )
             }
         }
@@ -360,6 +376,7 @@ fun BrowserScreen(
             tabs = tabs,
             groups = groups,
             activeTabId = activeTabId,
+            thumbnails = thumbnails,
             onSelect = {
                 viewModel.selectTab(it)
                 tabSwitcherOpen = false

@@ -25,6 +25,9 @@ fun RootNavigation(viewModel: BrowserViewModel) {
     // History / Settings and back. They are destroyed only when the entire
     // composition is disposed (Activity destroy).
     val webStates = remember { mutableStateMapOf<String, BrowserWebViewState>() }
+    // Lives next to webStates so captured gallery thumbnails survive navigation
+    // to Bookmarks / History / Settings and back.
+    val thumbnails = remember { TabThumbnailStore() }
     DisposableEffect(Unit) {
         onDispose {
             webStates.values.forEach { runCatching { it.webView.destroy() } }
@@ -37,6 +40,7 @@ fun RootNavigation(viewModel: BrowserViewModel) {
             BrowserScreen(
                 viewModel = viewModel,
                 webStates = webStates,
+                thumbnails = thumbnails,
                 onOpenBookmarks = { navController.navigate(Routes.BOOKMARKS) },
                 onOpenHistory = { navController.navigate(Routes.HISTORY) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) }

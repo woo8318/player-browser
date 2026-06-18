@@ -2,6 +2,7 @@ package com.playerbrowser.app.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -60,8 +61,11 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -88,6 +92,7 @@ internal fun TabSwitcherOverlay(
     tabs: List<TabState>,
     groups: List<TabGroup>,
     activeTabId: String,
+    thumbnails: TabThumbnailStore,
     onSelect: (String) -> Unit,
     onClose: (String) -> Unit,
     onCloseMany: (List<String>) -> Unit,
@@ -270,6 +275,7 @@ internal fun TabSwitcherOverlay(
                         val selected = tab.id in selectedIds
                         TabCard(
                             tab = tab,
+                            thumbnail = thumbnails.get(tab.id),
                             isActive = tab.id == activeTabId,
                             isSelected = selected,
                             inSelectMode = inSelectMode,
@@ -434,28 +440,31 @@ private fun GroupHeader(
     onCloseAll: (() -> Unit)?
 ) {
     var menuOpen by remember { mutableStateOf(false) }
+    val accent = group?.let { Color(it.color) }
+    val rowBg = when {
+        isDropHover -> MaterialTheme.colorScheme.secondaryContainer
+        accent != null -> accent.copy(alpha = 0.14f)
+        else -> Color.Transparent
+    }
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .background(
-                color = if (isDropHover) MaterialTheme.colorScheme.secondaryContainer
-                else Color.Transparent,
-                shape = RoundedCornerShape(8.dp)
-            )
-            .padding(top = 4.dp, bottom = 4.dp, start = if (isDropHover) 6.dp else 0.dp),
+            .background(color = rowBg, shape = RoundedCornerShape(10.dp))
+            .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        if (group != null) {
+        if (group != null && accent != null) {
             Box(
                 modifier = Modifier
-                    .size(12.dp)
-                    .background(Color(group.color), CircleShape)
+                    .size(14.dp)
+                    .background(accent, CircleShape)
             )
             Spacer(modifier = Modifier.width(8.dp))
             Text(
                 text = group.name,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
+                maxLines = 1,
                 modifier = Modifier.weight(1f)
             )
         } else {
@@ -466,11 +475,23 @@ private fun GroupHeader(
                 modifier = Modifier.weight(1f)
             )
         }
-        Text(
-            text = "$tabCount",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
+        // Count badge.
+        Box(
+            modifier = Modifier
+                .background(
+                    color = accent?.copy(alpha = 0.22f)
+                        ?: MaterialTheme.colorScheme.surfaceVariant,
+                    shape = CircleShape
+                )
+                .padding(horizontal = 8.dp, vertical = 2.dp)
+        ) {
+            Text(
+                text = "$tabCount",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
         if (onRename != null || onDelete != null || onMoveUp != null ||
             onMoveDown != null || onCloseAll != null
         ) {
@@ -529,6 +550,7 @@ private fun GroupHeader(
 @Composable
 private fun TabCard(
     tab: TabState,
+    thumbnail: ImageBitmap?,
     isActive: Boolean,
     isSelected: Boolean,
     inSelectMode: Boolean,
@@ -542,24 +564,28 @@ private fun TabCard(
     onMoveRequest: () -> Unit,
     onRemoveFromGroup: (() -> Unit)?
 ) {
+    val cardShape = RoundedCornerShape(14.dp)
     val border = when {
         isDropHover -> MaterialTheme.colorScheme.secondary
         isSelected -> MaterialTheme.colorScheme.tertiary
         isActive -> MaterialTheme.colorScheme.primary
         else -> MaterialTheme.colorScheme.outlineVariant
     }
+    val emphasized = isActive || isSelected || isDropHover
     var menuOpen by remember { mutableStateOf(false) }
     Surface(
-        shape = RoundedCornerShape(10.dp),
-        tonalElevation = if (isActive || isSelected) 4.dp else 1.dp,
+        shape = cardShape,
+        tonalElevation = if (emphasized) 4.dp else 1.dp,
+        shadowElevation = if (isActive) 6.dp else 2.dp,
         modifier = modifier
             .fillMaxWidth()
-            .height(160.dp)
+            .height(190.dp)
             .alpha(if (isBeingDragged) 0.4f else 1f)
+            .clip(cardShape)
             .border(
-                width = if (isActive || isSelected || isDropHover) 2.dp else 1.dp,
+                width = if (emphasized) 2.5.dp else 1.dp,
                 color = border,
-                shape = RoundedCornerShape(10.dp)
+                shape = cardShape
             )
             .combinedClickable(
                 onClick = onSelect,
@@ -571,11 +597,15 @@ private fun TabCard(
             .then(dragSourceModifier)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
+            // Title bar — favicon-dot + title, with the per-card menu / close.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .padding(start = 10.dp, end = 2.dp, top = 2.dp, bottom = 2.dp),
+                    .background(
+                        if (isActive) MaterialTheme.colorScheme.primaryContainer
+                        else MaterialTheme.colorScheme.surfaceVariant
+                    )
+                    .padding(start = 10.dp, end = 2.dp, top = 3.dp, bottom = 3.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 if (inSelectMode) {
@@ -590,8 +620,8 @@ private fun TabCard(
                     Spacer(modifier = Modifier.width(6.dp))
                 }
                 Text(
-                    text = tab.currentTitle.ifBlank { "새 탭" },
-                    style = MaterialTheme.typography.bodySmall,
+                    text = tab.currentTitle.ifBlank { hostOf(tab.currentUrl) },
+                    style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     modifier = Modifier.weight(1f)
@@ -636,21 +666,49 @@ private fun TabCard(
                     )
                 }
             }
+            // Live page thumbnail fills the rest; falls back to a domain
+            // placeholder for tabs not yet captured this session.
             Box(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(10.dp),
-                contentAlignment = Alignment.TopStart
+                    .background(MaterialTheme.colorScheme.surface)
             ) {
-                Text(
-                    text = tab.currentUrl,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 5
-                )
+                if (thumbnail != null) {
+                    Image(
+                        bitmap = thumbnail,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        alignment = Alignment.TopCenter,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.surfaceVariant)
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = hostOf(tab.currentUrl),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 3,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
             }
         }
     }
+}
+
+/** Bare host for compact labels: "https://m.site.com/x?y" → "m.site.com". */
+private fun hostOf(url: String): String {
+    if (url.isBlank()) return "새 탭"
+    val noScheme = url.substringAfter("://", url)
+    val host = noScheme.substringBefore('/').substringBefore('?')
+    return host.ifBlank { url }
 }
 
 @Composable

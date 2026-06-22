@@ -26,7 +26,19 @@ import java.util.concurrent.TimeUnit
  */
 object SniBypassClient {
 
-    private val client: OkHttpClient by lazy { build() }
+    // Main-frame client never follows redirects: if OkHttp resolved the
+    // redirect internally, the bytes we hand back would belong to a different
+    // URL than the one in the WebView's address bar (origin / cookie scope
+    // mismatch). The WebView itself handles main-frame 3xx.
+    private val mainFrameClient: OkHttpClient by lazy { build(followRedirects = false) }
+
+    // Subresource client DOES follow redirects. The WebView does not follow
+    // redirects returned from an intercepted *subresource* response, so a
+    // same-host image/CSS/JS that answers with 301/302 (signed CDN URL,
+    // http->https, extension rewrite, ...) would silently fail to load if we
+    // returned the bare 3xx. Following it here makes those load like they do
+    // in the native loader.
+    private val subResourceClient: OkHttpClient by lazy { build(followRedirects = true) }
 
     /**
      * Hosts that previously needed an OkHttp main-frame fetch. Subresource
@@ -36,7 +48,7 @@ object SniBypassClient {
      */
     private val bypassedHosts: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
-    private fun build(): OkHttpClient {
+    private fun build(followRedirects: Boolean): OkHttpClient {
         val fragmenting = FragmentingSocketFactory()
         // Tiny pool with a 5-second keep-alive. Fresh main-frame loads still
         // benefit from reusing a warm connection for the immediate burst of
@@ -49,8 +61,8 @@ object SniBypassClient {
             .connectionPool(pool)
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
-            .followRedirects(false)
-            .followSslRedirects(false)
+            .followRedirects(followRedirects)
+            .followSslRedirects(followRedirects)
             .retryOnConnectionFailure(true)
             .build()
     }
@@ -88,6 +100,7 @@ object SniBypassClient {
             builder.header("Cookie", it)
         }
 
+        val client = if (request.isForMainFrame) mainFrameClient else subResourceClient
         var resp: Response? = null
         return try {
             resp = client.newCall(builder.build()).execute()

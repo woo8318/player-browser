@@ -26,49 +26,58 @@ import java.util.concurrent.TimeUnit
  */
 object SniBypassClient {
 
-    // Main-frame client never follows redirects: if OkHttp resolved the
-    // redirect internally, the bytes we hand back would belong to a different
-    // URL than the one in the WebView's address bar (origin / cookie scope
-    // mismatch). The WebView itself handles main-frame 3xx.
-    private val mainFrameClient: OkHttpClient by lazy { build(followRedirects = false) }
-
-    // Subresource client DOES follow redirects. The WebView does not follow
-    // redirects returned from an intercepted *subresource* response, so a
-    // same-host image/CSS/JS that answers with 301/302 (signed CDN URL,
-    // http->https, extension rewrite, ...) would silently fail to load if we
-    // returned the bare 3xx. Following it here makes those load like they do
-    // in the native loader.
-    private val subResourceClient: OkHttpClient by lazy { build(followRedirects = true) }
+    // OkHttp clients are matrixed on two independent axes:
+    //
+    //  - fragment: when SNI bypass is on we splinter the TLS ClientHello via
+    //    FragmentingSocketFactory to defeat DPI. When only Private DNS is on we
+    //    use a plain socket — fragmentation is unnecessary and a compat risk if
+    //    the user didn't ask for SNI evasion.
+    //  - followRedirects: main-frame requests never follow redirects (OkHttp
+    //    resolving them internally would desync the WebView's address bar /
+    //    origin); subresource requests DO, because the WebView does not follow
+    //    redirects returned from an intercepted *subresource* response, so a
+    //    same-host image/CSS/JS answering 301/302 (signed CDN URL, http->https,
+    //    extension rewrite, ...) would otherwise silently fail to load.
+    //
+    // All four share the configurable DoH resolver (PrivateDnsSwitch.dohUrl).
+    private val fragMainClient: OkHttpClient by lazy { build(fragment = true, followRedirects = false) }
+    private val fragSubClient: OkHttpClient by lazy { build(fragment = true, followRedirects = true) }
+    private val plainMainClient: OkHttpClient by lazy { build(fragment = false, followRedirects = false) }
+    private val plainSubClient: OkHttpClient by lazy { build(fragment = false, followRedirects = true) }
 
     /**
-     * Hosts that previously needed an OkHttp main-frame fetch. Subresource
-     * requests to these hosts are also routed through OkHttp so the rest of
-     * the page (CSS / JS / images / XHR / iframes) doesn't get blocked by
-     * the same ISP DPI that blocked the main frame.
+     * Hosts whose main frame we already fetched over OkHttp (SNI bypass OR
+     * Private DNS). Subresource requests to these hosts are also routed through
+     * OkHttp so the rest of the page (CSS / JS / images / XHR / iframes) gets
+     * the same treatment — DPI evasion under SNI bypass, the chosen DoH resolver
+     * under Private DNS — instead of falling back to the system path.
      */
     private val bypassedHosts: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
-    private fun build(followRedirects: Boolean): OkHttpClient {
-        val fragmenting = FragmentingSocketFactory()
+    private fun build(fragment: Boolean, followRedirects: Boolean): OkHttpClient {
         // Tiny pool with a 5-second keep-alive. Fresh main-frame loads still
         // benefit from reusing a warm connection for the immediate burst of
         // subresources, but a connection that the middlebox silently RSTs
         // can't sit around long enough to poison the next page navigation.
         val pool = ConnectionPool(4, 5, TimeUnit.SECONDS)
-        return OkHttpClient.Builder()
+        val builder = OkHttpClient.Builder()
             .dns(DohClient())
-            .socketFactory(fragmenting)
             .connectionPool(pool)
             .connectTimeout(6, TimeUnit.SECONDS)
             .readTimeout(15, TimeUnit.SECONDS)
             .followRedirects(followRedirects)
             .followSslRedirects(followRedirects)
             .retryOnConnectionFailure(true)
-            .build()
+        if (fragment) builder.socketFactory(FragmentingSocketFactory())
+        return builder.build()
     }
 
     fun intercept(request: WebResourceRequest): WebResourceResponse? {
-        if (!SniBypassSwitch.enabled) return null
+        val sni = SniBypassSwitch.enabled
+        val privateDns = PrivateDnsSwitch.enabled
+        // Either feature routes requests through our OkHttp path: SNI bypass
+        // adds ClientHello fragmentation, Private DNS just swaps the resolver.
+        if (!sni && !privateDns) return null
         val method = request.method?.uppercase() ?: "GET"
         if (method != "GET" && method != "HEAD") return null
         val url = request.url ?: return null
@@ -81,7 +90,8 @@ object SniBypassClient {
         // only intercepted if we've already seen this host need bypass.
         if (!request.isForMainFrame && (host.isBlank() || host !in bypassedHosts)) return null
 
-        if (request.isForMainFrame) DebugLog.d("SniBypass", "intercept: $method $host (main frame)")
+        val mode = if (sni) "sni" else "dns"
+        if (request.isForMainFrame) DebugLog.d("SniBypass", "intercept[$mode]: $method $host (main frame)")
 
         val urlString = url.toString()
         val builder = Request.Builder().url(urlString)
@@ -100,7 +110,14 @@ object SniBypassClient {
             builder.header("Cookie", it)
         }
 
-        val client = if (request.isForMainFrame) mainFrameClient else subResourceClient
+        // Fragment only when SNI bypass intends DPI evasion; Private-DNS-only
+        // requests use the plain (non-fragmenting) clients.
+        val client = when {
+            request.isForMainFrame && sni -> fragMainClient
+            request.isForMainFrame -> plainMainClient
+            sni -> fragSubClient
+            else -> plainSubClient
+        }
         var resp: Response? = null
         return try {
             resp = client.newCall(builder.build()).execute()

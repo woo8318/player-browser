@@ -39,7 +39,8 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 ### 네트워크 / 프라이버시
 - **광고 차단** — 약 50개 광고/트래커 도메인 (Google Ads, DoubleClick, Taboola, Outbrain, Criteo, ExoClick 등) + URL 패턴(`/ads/`, `/pagead/`, `adsbygoogle` 등) 매칭으로 서브요청을 빈 204 응답으로 차단. CSS 셀렉터로 동일 도메인 광고 슬롯도 숨김. 설정에서 끌 수 있음.
 - **쿠키 동의 배너 자동 거부** — OneTrust / Cookiebot / Quantcast / Didomi / Sourcepoint / TrustArc 등 주요 GDPR·CCPA 컨센트 플랫폼의 "모두 거부" 버튼을 자동 클릭, 실패 시 배너 자체를 CSS로 숨겨 콘텐츠 가림과 스크롤 락을 같이 해제. 설정에서 토글 가능.
-- **자동 SNI 우회** — DoH(Cloudflare)로 DNS 우회 + TLS ClientHello 단편화로 단순 패턴 매칭 DPI 회피 (KT/SKT의 일부 차단 사이트 접근)
+- **자동 SNI 우회** — DoH로 DNS 우회 + TLS ClientHello 단편화로 단순 패턴 매칭 DPI 회피 (KT/SKT의 일부 차단 사이트 접근)
+- **프라이빗 DNS (DoH)** — DNS 조회를 ISP 대신 선택한 DNS-over-HTTPS 제공자(Cloudflare / Google / Quad9 / AdGuard, 또는 커스텀 URL)로 암호화. 켜면 SNI 우회와 별개로 모든 페이지에 적용되며, AdGuard 선택 시 DNS 단에서 광고·추적 도메인도 차단. RFC 8484 wire-format이라 임의의 DoH 엔드포인트(NextDNS 등) 지원. 설정에서 토글.
 - **URL 숫자 자동 복구** — 접속 자체가 안 되는 페이지의 URL에 숫자가 있으면(예: `newtoki123.com`), 다음 번호들(`+1~+10`, `-1~-3`)을 백그라운드로 확인해 살아있는 가장 가까운 주소로 자동 이동. 도메인 끝 숫자가 주기적으로 바뀌는 사이트 대응. 도메인에 숫자가 없으면 경로/쿼리의 마지막 숫자로 폴백.
 - **URL 숫자 수동 복구** — 페이지가 정상 로드됐지만(예: 404 안내 페이지가 200으로 뜨거나 내용이 바뀐 경우) 새 주소를 직접 찾고 싶을 때, 상단 ⋮ 메뉴 → **주소 복구 (URL 찾기)**로 현재 주소 기준 숫자 후보를 즉석에서 확인해 살아있는 주소로 이동. 자동 복구가 발동하지 않는 상황을 보완.
 - **HTTP/HTTPS 프록시** — 인증 포함 외부 프록시 경유 (WebView 트래픽)

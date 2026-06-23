@@ -3,6 +3,7 @@ package com.playerbrowser.app.ui
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.playerbrowser.app.network.DohProvider
 import com.playerbrowser.app.network.NetworkSettings
 import com.playerbrowser.app.network.NetworkSettingsRepository
 import com.playerbrowser.app.network.ProxyApplyResult
@@ -40,7 +41,10 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                     adBlockEnabled = current.adBlockEnabled,
                     cookieBannerEnabled = current.cookieBannerEnabled,
                     resumePlaybackEnabled = current.resumePlaybackEnabled,
-                    openLinksInNewTab = current.openLinksInNewTab
+                    openLinksInNewTab = current.openLinksInNewTab,
+                    privateDnsEnabled = current.privateDnsEnabled,
+                    dohProvider = current.dohProvider,
+                    dohCustomUrl = current.dohCustomUrl
                 )
             }
             val result = ProxyManager.apply(next)
@@ -90,6 +94,33 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             _event.value = ProxyApplyEvent.Message(
                 if (enabled) "링크를 새 탭에서 열기 켜짐" else "링크를 새 탭에서 열기 꺼짐"
             )
+        }
+    }
+
+    fun setPrivateDnsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(privateDnsEnabled = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "프라이빗 DNS 켜짐 (새로 로드되는 페이지부터 적용)"
+                else "프라이빗 DNS 꺼짐"
+            )
+        }
+    }
+
+    /**
+     * Persists the DoH provider selection. For a custom provider the URL must be
+     * a valid https endpoint, otherwise the change is rejected with a message.
+     */
+    fun setDohProvider(providerKey: String, customUrl: String) {
+        val provider = DohProvider.fromKey(providerKey)
+        val trimmed = customUrl.trim()
+        if (provider == DohProvider.CUSTOM && !trimmed.startsWith("https://")) {
+            _event.value = ProxyApplyEvent.Message("유효한 https DoH URL을 입력하세요")
+            return
+        }
+        viewModelScope.launch {
+            repository.update { it.copy(dohProvider = provider.key, dohCustomUrl = trimmed) }
+            _event.value = ProxyApplyEvent.Message("DNS 제공자 적용됨: ${provider.label}")
         }
     }
 

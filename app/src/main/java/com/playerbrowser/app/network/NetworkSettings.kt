@@ -10,7 +10,10 @@ data class NetworkSettings(
     val adBlockEnabled: Boolean = true,
     val cookieBannerEnabled: Boolean = true,
     val resumePlaybackEnabled: Boolean = true,
-    val openLinksInNewTab: Boolean = false
+    val openLinksInNewTab: Boolean = false,
+    val privateDnsEnabled: Boolean = false,
+    val dohProvider: String = DohProvider.CLOUDFLARE.key,
+    val dohCustomUrl: String = ""
 ) {
     fun isValid(): Boolean =
         proxyHost.isNotBlank() && proxyPort in 1..65535

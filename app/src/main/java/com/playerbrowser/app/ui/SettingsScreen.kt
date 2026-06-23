@@ -18,6 +18,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -39,6 +40,8 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.selection.selectable
+import com.playerbrowser.app.network.DohProvider
 import com.playerbrowser.app.network.NetworkSettings
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -59,6 +62,9 @@ fun SettingsScreen(
     }
     var username by remember(saved.proxyUsername) { mutableStateOf(saved.proxyUsername) }
     var password by remember(saved.proxyPassword) { mutableStateOf(saved.proxyPassword) }
+
+    var dohProviderKey by remember(saved.dohProvider) { mutableStateOf(saved.dohProvider) }
+    var dohCustomUrl by remember(saved.dohCustomUrl) { mutableStateOf(saved.dohCustomUrl) }
 
     LaunchedEffect(event) {
         val e = event ?: return@LaunchedEffect
@@ -206,6 +212,68 @@ fun SettingsScreen(
                     onCheckedChange = { viewModel.setSniBypassEnabled(it) }
                 )
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
+            SectionTitle("프라이빗 DNS (DoH)")
+            Text(
+                text = "DNS 조회를 ISP 대신 선택한 DNS-over-HTTPS 제공자로 암호화해 보냅니다. " +
+                    "켜면 SNI 우회와 별개로 모든 페이지(메인 주소)에 적용됩니다. " +
+                    "AdGuard를 고르면 DNS 단에서 광고·추적 도메인도 차단됩니다. " +
+                    "참고: Android 제약상 CDN 등 다른 호스트의 일부 하위 리소스는 시스템 DNS를 " +
+                    "탈 수 있습니다. 제공자 설정은 SNI 우회의 DNS에도 함께 적용됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("프라이빗 DNS 사용 (모든 페이지)", modifier = Modifier.padding(end = 12.dp))
+                Spacer(modifier = Modifier.fillMaxWidth(0.4f))
+                Switch(
+                    checked = saved.privateDnsEnabled,
+                    onCheckedChange = { viewModel.setPrivateDnsEnabled(it) }
+                )
+            }
+
+            DohProvider.entries.forEach { provider ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .selectable(
+                            selected = dohProviderKey == provider.key,
+                            onClick = { dohProviderKey = provider.key }
+                        ),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RadioButton(
+                        selected = dohProviderKey == provider.key,
+                        onClick = { dohProviderKey = provider.key }
+                    )
+                    Text(provider.label, modifier = Modifier.padding(start = 4.dp))
+                }
+            }
+
+            if (dohProviderKey == DohProvider.CUSTOM.key) {
+                OutlinedTextField(
+                    value = dohCustomUrl,
+                    onValueChange = { dohCustomUrl = it.trim() },
+                    label = { Text("DoH URL (예: https://dns.nextdns.io/abc123)") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+
+            Button(
+                onClick = { viewModel.setDohProvider(dohProviderKey, dohCustomUrl) },
+                modifier = Modifier.fillMaxWidth()
+            ) { Text("DNS 제공자 적용") }
+            Text(
+                text = "DNS 변경 후에는 새로 로드되는 페이지부터 적용됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()

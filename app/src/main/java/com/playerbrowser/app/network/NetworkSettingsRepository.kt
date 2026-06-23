@@ -26,6 +26,9 @@ class NetworkSettingsRepository(private val context: Context) {
         val COOKIE_BANNER_ENABLED = booleanPreferencesKey("cookie_banner_enabled")
         val RESUME_PLAYBACK_ENABLED = booleanPreferencesKey("resume_playback_enabled")
         val OPEN_LINKS_IN_NEW_TAB = booleanPreferencesKey("open_links_in_new_tab")
+        val PRIVATE_DNS_ENABLED = booleanPreferencesKey("private_dns_enabled")
+        val DOH_PROVIDER = stringPreferencesKey("doh_provider")
+        val DOH_CUSTOM_URL = stringPreferencesKey("doh_custom_url")
     }
 
     val settings: Flow<NetworkSettings> =
@@ -47,6 +50,9 @@ class NetworkSettingsRepository(private val context: Context) {
             prefs[Keys.COOKIE_BANNER_ENABLED] = next.cookieBannerEnabled
             prefs[Keys.RESUME_PLAYBACK_ENABLED] = next.resumePlaybackEnabled
             prefs[Keys.OPEN_LINKS_IN_NEW_TAB] = next.openLinksInNewTab
+            prefs[Keys.PRIVATE_DNS_ENABLED] = next.privateDnsEnabled
+            prefs[Keys.DOH_PROVIDER] = next.dohProvider
+            prefs[Keys.DOH_CUSTOM_URL] = next.dohCustomUrl
         }
     }
 
@@ -60,7 +66,10 @@ class NetworkSettingsRepository(private val context: Context) {
         adBlockEnabled = this[Keys.AD_BLOCK_ENABLED] ?: true,
         cookieBannerEnabled = this[Keys.COOKIE_BANNER_ENABLED] ?: true,
         resumePlaybackEnabled = this[Keys.RESUME_PLAYBACK_ENABLED] ?: true,
-        openLinksInNewTab = this[Keys.OPEN_LINKS_IN_NEW_TAB] ?: false
+        openLinksInNewTab = this[Keys.OPEN_LINKS_IN_NEW_TAB] ?: false,
+        privateDnsEnabled = this[Keys.PRIVATE_DNS_ENABLED] ?: false,
+        dohProvider = this[Keys.DOH_PROVIDER] ?: DohProvider.CLOUDFLARE.key,
+        dohCustomUrl = this[Keys.DOH_CUSTOM_URL].orEmpty()
     )
 
     companion object {

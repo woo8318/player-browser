@@ -8,8 +8,10 @@ import com.playerbrowser.app.network.AdBlockSwitch
 import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
+import com.playerbrowser.app.network.DohProvider
 import com.playerbrowser.app.network.LinkNewTabSwitch
 import com.playerbrowser.app.network.NetworkSettingsRepository
+import com.playerbrowser.app.network.PrivateDnsSwitch
 import com.playerbrowser.app.network.ProxyManager
 import com.playerbrowser.app.network.ResumeSwitch
 import com.playerbrowser.app.network.SniBypassSwitch
@@ -62,6 +64,8 @@ class PlayerBrowserApp : Application() {
                 CookieBannerSwitch.enabled = it.cookieBannerEnabled
                 ResumeSwitch.enabled = it.resumePlaybackEnabled
                 LinkNewTabSwitch.enabled = it.openLinksInNewTab
+                PrivateDnsSwitch.enabled = it.privateDnsEnabled
+                PrivateDnsSwitch.dohUrl = DohProvider.resolveUrl(it.dohProvider, it.dohCustomUrl)
             }
         }
     }

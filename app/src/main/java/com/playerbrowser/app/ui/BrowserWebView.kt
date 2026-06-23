@@ -496,6 +496,17 @@ private class GestureCapturingFrame(
     })
 
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // Single gesture source in native fullscreen. We FULLY consume every
+        // touch and never forward raw touch events to the child WebView /
+        // native <video>. Otherwise the site's own player also receives the
+        // touches and runs its own double-tap / scrub, colliding with ours —
+        // and because each player detects gestures differently (click vs
+        // touchstart vs pointer), the result was inconsistent across sites
+        // (double seek, surprise fullscreen toggle, etc). All intent is driven
+        // through the window.__pb.* hooks: taps/double-taps via the detector
+        // below, scrub/volume/brightness/switchVideo via the branches here, and
+        // taps on the site's overlay controls via fsTap's synthetic-click
+        // forwarding (so control buttons still work without raw touch).
         detector.onTouchEvent(ev)
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
@@ -538,7 +549,7 @@ private class GestureCapturingFrame(
                 ) {
                     moved = true
                 }
-                if (maxPointers >= 2) return super.dispatchTouchEvent(ev)
+                if (maxPointers >= 2) return true // 2-finger swipe → switchVideo on UP; don't forward
                 // Mode selection — first qualifying motion wins, scrubbing and
                 // vbAdjust are mutually exclusive.
                 if (!scrubbing && vbAdjust == null) {
@@ -618,19 +629,11 @@ private class GestureCapturingFrame(
                         "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);",
                         null
                     )
-                } else if (maxPointers == 1 && !moved) {
-                    // A tap. The GestureDetector already saw this UP and will fire
-                    // onSingleTapConfirmed / onDoubleTap. Replace the pass-through
-                    // UP with a CANCEL so the WebView/native <video> doesn't ALSO
-                    // toggle play/pause off the synthesized click — that collision
-                    // is what made a side double-tap seek AND flip play state.
-                    val cancel = MotionEvent.obtain(ev)
-                    cancel.action = MotionEvent.ACTION_CANCEL
-                    super.dispatchTouchEvent(cancel)
-                    cancel.recycle()
-                    return true
                 }
-                // Single tap and double-tap are handled by GestureDetector above.
+                // A lone tap is handled by the GestureDetector
+                // (onSingleTapConfirmed / onDoubleTap). Nothing to forward here —
+                // we consume everything (return true below), so the native
+                // <video> never sees the tap and can't double-toggle play/pause.
             }
             MotionEvent.ACTION_CANCEL -> {
                 if (scrubbing) {
@@ -649,7 +652,9 @@ private class GestureCapturingFrame(
                 }
             }
         }
-        return super.dispatchTouchEvent(ev)
+        // Fully consume — the child WebView / native <video> sees no raw touch,
+        // so this frame is the sole gesture source for every site's player.
+        return true
     }
 
     private fun currentVolumeIndex(): Int =

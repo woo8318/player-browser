@@ -123,7 +123,7 @@ app/src/main/
 
 - `BrowserWebView`의 `onPageFinished`에서 `video_gestures.js`를 페이지에 주입.
 - 페이지의 `<video>` 요소 위 터치 이벤트(`touchstart` / `touchmove` / `touchend`)를 가로채 손가락 개수·방향·시작 위치로 동작 분기.
-- 풀스크린 모드에서는 `GestureCapturingFrame`이 `dispatchTouchEvent`를 래핑해 player 자체 컨트롤과 충돌 없이 동시 수신.
+- 네이티브 풀스크린에서는 `GestureCapturingFrame`이 `dispatchTouchEvent`로 모든 터치를 **완전 소비**해 사이트 플레이어가 같은 터치로 자기 더블탭/스크럽을 인식하는 충돌을 차단(단일 제스처 소스). 컨트롤 버튼 탭은 `window.__pb.fsTap`이 그 요소에 합성 클릭을 포워딩해 raw 터치 없이도 동작.
 - 시킹/전환 시 화면 상단/측면에 토스트 또는 진행바 표시.
 - iframe (cross-origin 포함) 내부 `<video>`도 `IframeScriptInjector`가 HTML 응답에 `<script>`를 prepend해 지원.
 

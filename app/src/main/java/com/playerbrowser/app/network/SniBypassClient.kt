@@ -4,6 +4,7 @@ import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -55,11 +56,16 @@ object SniBypassClient {
     private val bypassedHosts: MutableSet<String> = ConcurrentHashMap.newKeySet()
 
     private fun build(fragment: Boolean, followRedirects: Boolean): OkHttpClient {
-        // Tiny pool with a 5-second keep-alive. Fresh main-frame loads still
-        // benefit from reusing a warm connection for the immediate burst of
-        // subresources, but a connection that the middlebox silently RSTs
-        // can't sit around long enough to poison the next page navigation.
-        val pool = ConnectionPool(4, 5, TimeUnit.SECONDS)
+        // followRedirects is our 1:1 proxy for "subresource client" (main-frame
+        // clients never follow redirects). Subresource loads come in bursts —
+        // a webtoon page fires dozens of CDN image requests at once — and since
+        // SNI bypass now routes ALL of them through OkHttp, a tiny pool would
+        // serialize the burst. Give subresources a larger, longer-lived pool to
+        // keep parallelism close to the native loader. Main-frame clients keep
+        // the tiny 5s pool: a connection the middlebox silently RSTs can't sit
+        // around long enough to poison the next page navigation.
+        val pool = if (followRedirects) ConnectionPool(8, 30, TimeUnit.SECONDS)
+                   else ConnectionPool(4, 5, TimeUnit.SECONDS)
         val builder = OkHttpClient.Builder()
             .dns(DohClient())
             .connectionPool(pool)
@@ -69,6 +75,16 @@ object SniBypassClient {
             .followSslRedirects(followRedirects)
             .retryOnConnectionFailure(true)
         if (fragment) builder.socketFactory(FragmentingSocketFactory())
+        if (followRedirects) {
+            // Subresource clients face image bursts that hit a SINGLE CDN host
+            // (a webtoon chapter pulls every panel from one image server).
+            // OkHttp's default maxRequestsPerHost = 5 would serialize that into
+            // slow waves; raise it so concurrency tracks the native loader.
+            builder.dispatcher(Dispatcher().apply {
+                maxRequests = 64
+                maxRequestsPerHost = 16
+            })
+        }
         return builder.build()
     }
 
@@ -86,9 +102,29 @@ object SniBypassClient {
         val host = url.host?.lowercase().orEmpty()
 
         // Main-frame requests are always intercepted (cheap insurance for any
-        // host that turns out to be DPI-blocked). Subresource requests are
-        // only intercepted if we've already seen this host need bypass.
-        if (!request.isForMainFrame && (host.isBlank() || host !in bypassedHosts)) return null
+        // host that turns out to be DPI-blocked). Subresource gating:
+        //  - same-host of a bypassed page (`bypassedHosts`): unchanged — routed
+        //    through OkHttp under SNI bypass OR Private DNS, including range/media
+        //    requests (this is how blocked-site video already works).
+        //  - cross-host, SNI bypass ON: also intercept, so image/media CDNs
+        //    referenced by a bypassed page (e.g. a webtoon page on blacktoon*.com
+        //    pulling images from koimagemoa.com / webimg7.com — never main frames,
+        //    themselves DPI-blocked) get ClientHello fragmentation instead of the
+        //    exposed native handshake that left their images blank. BUT skip
+        //    `Range` (media) requests here: video seeking / progressive playback
+        //    rely on the native loader's 206 handling and mid-stream resilience,
+        //    which our streaming wrapper can't match once headers are committed.
+        //    Images/CSS/JS carry no Range, so the fix still lands.
+        //  - cross-host, Private-DNS-only: skip. DNS needs no fragmentation and
+        //    funneling every third-party request through OkHttp isn't worth it.
+        if (!request.isForMainFrame) {
+            val sameHostBypassed = host.isNotBlank() && host in bypassedHosts
+            if (!sameHostBypassed) {
+                if (!sni) return null
+                val isRange = request.requestHeaders?.keys?.any { it.equals("Range", true) } == true
+                if (isRange) return null
+            }
+        }
 
         val mode = if (sni) "sni" else "dns"
         if (request.isForMainFrame) DebugLog.d("SniBypass", "intercept[$mode]: $method $host (main frame)")

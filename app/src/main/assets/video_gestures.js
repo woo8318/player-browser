@@ -321,27 +321,82 @@
   // is the single source of seek/scrub/switch — otherwise a fullscreen
   // double-tap seeks twice (Kotlin + JS) and lands ~20-30s away.
   if (typeof window.__pb.fsActive !== 'boolean') window.__pb.fsActive = false;
-  window.__pb.seek = function (delta) {
-    var v = fullscreenVideo() || activeVideo();
-    if (v) seekBy(v, delta);
-  };
-  window.__pb.togglePlay = function () {
-    var v = fullscreenVideo() || activeVideo();
-    if (v) togglePlay(v);
-  };
-  // Native-fullscreen single tap. Kotlin passes the tap position as 0..1 ratios
-  // (device-px vs CSS-px independent); we map to viewport CSS coords and run the
-  // same element-aware logic as the in-document path so a tap on the site's
-  // overlay toolbar (play/⏩/expand…) is forwarded to that button instead of
-  // being swallowed, while a tap on the bare video toggles play.
-  window.__pb.fsTap = function (xRatio, yRatio) {
-    var v = fullscreenVideo() || activeVideo();
-    if (!v) return;
-    var x = (xRatio || 0) * (window.innerWidth || document.documentElement.clientWidth || 1);
-    var y = (yRatio || 0) * (window.innerHeight || document.documentElement.clientHeight || 1);
+
+  // Map a 0..1 tap position onto the VIDEO's box and run the same side-aware
+  // double-tap as the in-document path: left third → −10s, right third → +10s,
+  // middle → play/pause. Measuring against the video rect (not the screen) is
+  // what makes ±10s land correctly when the video is letterboxed / portrait —
+  // deciding the thirds from screen width left most taps in the middle zone.
+  function applyDoubleTap(v, xRatio, yRatio) {
+    var w = window.innerWidth || document.documentElement.clientWidth || 1;
+    var h = window.innerHeight || document.documentElement.clientHeight || 1;
+    var x = (xRatio || 0) * w, y = (yRatio || 0) * h;
+    var r = v.getBoundingClientRect();
+    var left = r.left, width = r.width;
+    if (!width || width < 50) { left = 0; width = w; }
+    var rel = (x - left) / width;
+    if (rel < 0.35) { seekBy(v, -SEEK_SEC); return 'seek-'; }
+    if (rel > 0.65) { seekBy(v, SEEK_SEC); return 'seek+'; }
     playPauseAtPoint(v, x, y);
+    return 'pp';
+  }
+
+  // Relay a gesture to child frames. In native fullscreen the WebView only runs
+  // evaluateJavascript in the TOP frame, but the actual <video> often lives in
+  // a (possibly cross-origin) iframe player the top frame can't reach. Every
+  // frame runs this same injected script and listens for the postMessage below,
+  // so the frame that owns the video acts on it. Relay only fires when this
+  // frame has no video of its own, so the video is never double-handled.
+  function broadcastFsGesture(payload) {
+    try {
+      var frames = document.querySelectorAll('iframe, frame');
+      for (var i = 0; i < frames.length; i++) {
+        try { frames[i].contentWindow.postMessage({ __pbFs: payload }, '*'); } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  // Single entry point for every discrete native-fullscreen gesture. Runs it on
+  // this frame's video, or relays to child frames if the video isn't here.
+  // Returns a short status string purely for Kotlin-side DebugLog diagnostics.
+  function runFsGesture(p) {
+    var v = fullscreenVideo() || activeVideo();
+    if (!v) { broadcastFsGesture(p); return 'relay'; }
+    switch (p.kind) {
+      case 'seek': seekBy(v, p.delta); return 'seek';
+      case 'doubletap': return applyDoubleTap(v, p.xRatio, p.yRatio);
+      case 'tap': {
+        // Element-aware: forward to the site's overlay control (toolbar
+        // play/⏩/expand…) if one is under the finger, else toggle play.
+        var w = window.innerWidth || document.documentElement.clientWidth || 1;
+        var h = window.innerHeight || document.documentElement.clientHeight || 1;
+        playPauseAtPoint(v, (p.xRatio || 0) * w, (p.yRatio || 0) * h);
+        return 'pp';
+      }
+      case 'toggle': togglePlay(v); return 'toggle';
+      case 'switch': switchVideo(p.dir); return 'switch';
+    }
+    return 'noop';
+  }
+
+  window.addEventListener('message', function (ev) {
+    var d = ev && ev.data;
+    if (!d || !d.__pbFs) return;
+    runFsGesture(d.__pbFs);
+  });
+
+  // Android-callable hooks. Kotlin passes tap positions as 0..1 ratios (device-px
+  // vs CSS-px independent). All route through runFsGesture so an iframe-hosted
+  // player is handled the same as a top-frame <video>.
+  window.__pb.seek = function (delta) { return runFsGesture({ kind: 'seek', delta: delta }); };
+  window.__pb.togglePlay = function () { return runFsGesture({ kind: 'toggle' }); };
+  window.__pb.fsTap = function (xRatio, yRatio) {
+    return runFsGesture({ kind: 'tap', xRatio: xRatio, yRatio: yRatio });
   };
-  window.__pb.switchVideo = function (dir) { switchVideo(dir); };
+  window.__pb.fsDoubleTap = function (xRatio, yRatio) {
+    return runFsGesture({ kind: 'doubletap', xRatio: xRatio, yRatio: yRatio });
+  };
+  window.__pb.switchVideo = function (dir) { return runFsGesture({ kind: 'switch', dir: dir }); };
 
   var nativeScrub = null;
   window.__pb.scrubStart = function (screenWidth) {

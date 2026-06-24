@@ -356,14 +356,31 @@ private class FullscreenAwareChromeClient(
 
         // Default to landscape immediately so most videos rotate without waiting on JS.
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        applyVideoOrientation(activity, 0)
+    }
+
+    /**
+     * Match screen orientation to the video's aspect ratio (portrait video →
+     * portrait screen, landscape → landscape). The video's intrinsic size may
+     * not be known yet at the moment fullscreen opens, so when the probe can't
+     * tell ("unknown") we retry a few times before giving up on the landscape
+     * default — that's what makes a portrait video actually rotate to portrait
+     * instead of being stuck landscape.
+     */
+    private fun applyVideoOrientation(activity: Activity, attempt: Int) {
+        if (customView == null) return
         webView.evaluateJavascript(DETECT_VIDEO_ORIENTATION_JS) { result ->
             if (customView == null) return@evaluateJavascript
-            val orientation = when (result?.trim('"')) {
-                "port" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
-                "land" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
-                else -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            when (result?.trim('"')) {
+                "port" -> activity.requestedOrientation =
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                "land" -> activity.requestedOrientation =
+                    ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                else -> if (attempt < 8) {
+                    // Dimensions not ready — re-probe shortly (keeps landscape default meanwhile).
+                    webView.postDelayed({ applyVideoOrientation(activity, attempt + 1) }, 200)
+                }
             }
-            activity.requestedOrientation = orientation
         }
     }
 
@@ -408,7 +425,7 @@ private class FullscreenAwareChromeClient(
               if (v && v.videoWidth && v.videoHeight) {
                 return v.videoWidth >= v.videoHeight ? 'land' : 'port';
               }
-              return 'land';
+              return 'unknown';
             })();
         """
     }
@@ -474,23 +491,27 @@ private class GestureCapturingFrame(
             val xr = (e.x / w).coerceIn(0f, 1f)
             val yr = (e.y / h).coerceIn(0f, 1f)
             webView.evaluateJavascript(
-                "window.__pb && window.__pb.fsTap && window.__pb.fsTap($xr, $yr);",
-                null
-            )
+                "window.__pb && window.__pb.fsTap && window.__pb.fsTap($xr, $yr);"
+            ) { r -> DebugLog.d("FsGesture", "singleTap xr=$xr yr=$yr -> $r") }
             return true
         }
         override fun onDoubleTap(e: MotionEvent): Boolean {
             if (scrubbing || vbAdjust != null) return false
-            // Side-aware: left third → -10s, right third → +10s, middle → play/pause.
+            // Side-aware seek, but the LEFT/MIDDLE/RIGHT split is decided in JS
+            // against the *video's* bounding box — identical to the working
+            // in-document path. Deciding it here from screen width was the bug:
+            // when the video doesn't fill the screen (letterboxed / portrait
+            // video), screen-thirds don't line up with the video, so most taps
+            // fell into the middle (play/pause) and ±10s rarely triggered. We
+            // just pass the tap position as 0..1 ratios and let JS map it onto
+            // the real video rect.
             val w = width.coerceAtLeast(1)
             val h = height.coerceAtLeast(1)
-            val ratio = (e.x / w).coerceIn(0f, 1f)
-            val js = when {
-                ratio < 0.35f -> "window.__pb && window.__pb.seek && window.__pb.seek(-$SEEK_SECONDS);"
-                ratio > 0.65f -> "window.__pb && window.__pb.seek && window.__pb.seek($SEEK_SECONDS);"
-                else -> "window.__pb && window.__pb.fsTap && window.__pb.fsTap($ratio, ${(e.y / h).coerceIn(0f, 1f)});"
-            }
-            webView.evaluateJavascript(js, null)
+            val xr = (e.x / w).coerceIn(0f, 1f)
+            val yr = (e.y / h).coerceIn(0f, 1f)
+            webView.evaluateJavascript(
+                "window.__pb && window.__pb.fsDoubleTap && window.__pb.fsDoubleTap($xr, $yr);"
+            ) { r -> DebugLog.d("FsGesture", "doubleTap xr=$xr yr=$yr -> $r") }
             return true
         }
     })
@@ -689,10 +710,6 @@ private class GestureCapturingFrame(
                 "window.__pb.showVbOverlay('$kind', $clamped);",
             null
         )
-    }
-
-    companion object {
-        private const val SEEK_SECONDS = 10
     }
 }
 

@@ -476,16 +476,16 @@ private class GestureCapturingFrame(
 
     private val detector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
         override fun onDown(e: MotionEvent): Boolean = true
-        // Single tap (confirmed not a double-tap) → play/pause. We own taps now
-        // (see dispatchTouchEvent: tap UPs are cancelled before reaching the
-        // WebView), so this is the sole play/pause toggle for a lone tap.
+        // Single tap (confirmed not a double-tap) → show the site's control
+        // layer. We deliberately do NOT toggle play here — play/pause is the
+        // middle double-tap. Since we consume raw touch the site never sees the
+        // tap, so fsTap replays it as a synthetic click on the JS side so the
+        // site's own controls still appear.
         override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
             if (scrubbing || vbAdjust != null) return false
-            // Element-aware tap: forward to the site's overlay control (toolbar
-            // play/⏩/expand…) if one is under the finger, else toggle play. We
-            // pass 0..1 ratios so the JS side can map to CSS coords regardless of
-            // device pixel ratio. (The pass-through UP was cancelled in
-            // dispatchTouchEvent, so native won't also act on this tap.)
+            // Forward the tap as 0..1 ratios; JS maps to CSS coords (device-px
+            // independent) and dispatches a synthetic click so the site reveals
+            // its control overlay instead of us toggling play.
             val w = width.coerceAtLeast(1)
             val h = height.coerceAtLeast(1)
             val xr = (e.x / w).coerceIn(0f, 1f)

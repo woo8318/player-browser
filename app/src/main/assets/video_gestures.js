@@ -366,12 +366,16 @@
       case 'seek': seekBy(v, p.delta); return 'seek';
       case 'doubletap': return applyDoubleTap(v, p.xRatio, p.yRatio);
       case 'tap': {
-        // Element-aware: forward to the site's overlay control (toolbar
-        // play/⏩/expand…) if one is under the finger, else toggle play.
+        // Single tap: show the site's control layer — do NOT toggle play (that's
+        // the middle double-tap). The native-fullscreen overlay consumes raw
+        // touch so the site never sees the tap; replay it as a synthetic click
+        // on the element under the finger so the site's controls still toggle.
         var w = window.innerWidth || document.documentElement.clientWidth || 1;
         var h = window.innerHeight || document.documentElement.clientHeight || 1;
-        playPauseAtPoint(v, (p.xRatio || 0) * w, (p.yRatio || 0) * h);
-        return 'pp';
+        var tx = (p.xRatio || 0) * w, ty = (p.yRatio || 0) * h;
+        var topEl = deepElementFromPoint(tx, ty) || v;
+        dispatchSyntheticClick(topEl, tx, ty);
+        return 'tap';
       }
       case 'toggle': togglePlay(v); return 'toggle';
       case 'switch': switchVideo(p.dir); return 'switch';
@@ -518,20 +522,11 @@
 
   var touchState = null;
   var lastTap = { t: 0, x: 0, y: 0, video: null };
-  // Pending single-tap play/pause, deferred until we know it's not a double-tap.
-  var singleTapTimer = null;
-  function cancelSingleTap() {
-    if (singleTapTimer) { clearTimeout(singleTapTimer); singleTapTimer = null; }
-  }
 
   document.addEventListener('touchstart', function (e) {
     // In native fullscreen the Kotlin GestureCapturingFrame drives gestures via
     // window.__pb.* hooks; skip the in-document path to avoid double seeking.
     if (window.__pb && window.__pb.fsActive) { touchState = null; return; }
-    // A new touch resolves any pending single-tap: if this becomes the second
-    // tap (double-tap) or a scrub/swipe, touchend handles it; otherwise the
-    // first tap was alone and its timer below already fired play/pause.
-    cancelSingleTap();
     if (!e.touches || e.touches.length === 0) return;
     var t0 = e.touches[0];
     var v = videoAtPoint(t0.clientX, t0.clientY);
@@ -625,20 +620,15 @@
     // move) is NOT a tap — never toggle play for it. Kill the trailing click
     // and bail so neither we nor the site act on it.
     if (s.moved) { suppressTrailingClick(); return; }
-    // Every tap on a video is ours now: kill the synthesized click so neither
-    // the site nor the native <video> toggles play/pause off it (that toggle
-    // is what collided with double-tap seeking). Play/pause is driven solely by
-    // our single-tap (deferred below) and middle double-tap.
-    suppressClick = { until: now + 500, x: x, y: y };
-    e.stopPropagation();
-    if (e.stopImmediatePropagation) e.stopImmediatePropagation();
     if (now - lastTap.t < DOUBLE_TAP_MS && lastTap.video === s.video &&
         Math.abs(x - lastTap.x) < DOUBLE_TAP_MAX_MOVE &&
         Math.abs(y - lastTap.y) < DOUBLE_TAP_MAX_MOVE) {
-      // Double-tap: side-aware. Left third → -10s, right third → +10s,
-      // middle → play/pause. Cancel the first tap's pending play/pause so a
-      // side double-tap is a pure seek with no toggle.
-      cancelSingleTap();
+      // Double-tap: this one is ours. Side-aware — left third → -10s, right
+      // third → +10s, middle → play/pause. Kill the trailing click so the site
+      // doesn't also act on it (e.g. toggle fullscreen).
+      suppressClick = { until: now + 500, x: x, y: y };
+      e.stopPropagation();
+      if (e.stopImmediatePropagation) e.stopImmediatePropagation();
       var r = s.video.getBoundingClientRect();
       var left = r.left, width = r.width;
       if (!width || width < 50) { left = 0; width = window.innerWidth || 1; }
@@ -648,23 +638,17 @@
       else playPauseAtPoint(s.video, x, y);
       lastTap.t = 0;
     } else {
-      // First tap — record it and defer play/pause until the double-tap window
-      // passes; if a second tap arrives, the branch above cancels this.
+      // Single tap: let the site handle it so its own control layer shows/hides.
+      // We deliberately do NOT toggle play (that's the middle double-tap) and do
+      // NOT suppress the click — the site needs the real tap to reveal its
+      // controls. Just record it so a following tap can be matched as a double.
       lastTap = { t: now, x: x, y: y, video: s.video };
-      cancelSingleTap();
-      var tapVideo = s.video;
-      var tapX = x, tapY = y;
-      singleTapTimer = setTimeout(function () {
-        singleTapTimer = null;
-        playPauseAtPoint(tapVideo, tapX, tapY);
-      }, DOUBLE_TAP_MS);
     }
   }, { passive: true, capture: true });
 
   document.addEventListener('touchcancel', function () {
     if (touchState && touchState.scrubbing) hideScrub();
     touchState = null;
-    cancelSingleTap();
   }, { passive: true, capture: true });
 
   // ---- 이어보기 (resume playback) ----

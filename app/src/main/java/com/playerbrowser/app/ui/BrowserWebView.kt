@@ -11,7 +11,6 @@ import android.media.AudioManager
 import android.net.Uri
 import android.os.Message
 import android.provider.Settings
-import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
 import android.view.ViewConfiguration
@@ -451,7 +450,7 @@ private class GestureCapturingFrame(
     private enum class VbMode { Volume, Brightness }
 
     private val swipeThresholdPx = 40f * resources.displayMetrics.density
-    private val scrubThresholdPx = 20f * resources.displayMetrics.density
+    private val vbThresholdPx = 24f * resources.displayMetrics.density
     private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val maxSwipeMs = 800L
 
@@ -460,8 +459,7 @@ private class GestureCapturingFrame(
     private var startT = 0L
     private var moved = false
     private var maxPointers = 1
-    private var scrubbing = false
-    private var lastScrubFireMs = 0L
+    private var siteCancelled = false
 
     private var vbAdjust: VbMode? = null
     private var vbStartValue: Float = 0f
@@ -474,61 +472,19 @@ private class GestureCapturingFrame(
         audioManager?.getStreamMaxVolume(AudioManager.STREAM_MUSIC) ?: 0
     }
 
-    private val detector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
-        override fun onDown(e: MotionEvent): Boolean = true
-        // Single tap (confirmed not a double-tap) → show the site's control
-        // layer. We deliberately do NOT toggle play here — play/pause is the
-        // middle double-tap. Since we consume raw touch the site never sees the
-        // tap, so fsTap replays it as a synthetic click on the JS side so the
-        // site's own controls still appear.
-        override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-            if (scrubbing || vbAdjust != null) return false
-            // Forward the tap as 0..1 ratios; JS maps to CSS coords (device-px
-            // independent) and dispatches a synthetic click so the site reveals
-            // its control overlay instead of us toggling play.
-            val w = width.coerceAtLeast(1)
-            val h = height.coerceAtLeast(1)
-            val xr = (e.x / w).coerceIn(0f, 1f)
-            val yr = (e.y / h).coerceIn(0f, 1f)
-            webView.evaluateJavascript(
-                "window.__pb && window.__pb.fsTap && window.__pb.fsTap($xr, $yr);"
-            ) { r -> DebugLog.d("FsGesture", "singleTap xr=$xr yr=$yr -> $r") }
-            return true
-        }
-        override fun onDoubleTap(e: MotionEvent): Boolean {
-            if (scrubbing || vbAdjust != null) return false
-            // Side-aware seek, but the LEFT/MIDDLE/RIGHT split is decided in JS
-            // against the *video's* bounding box — identical to the working
-            // in-document path. Deciding it here from screen width was the bug:
-            // when the video doesn't fill the screen (letterboxed / portrait
-            // video), screen-thirds don't line up with the video, so most taps
-            // fell into the middle (play/pause) and ±10s rarely triggered. We
-            // just pass the tap position as 0..1 ratios and let JS map it onto
-            // the real video rect.
-            val w = width.coerceAtLeast(1)
-            val h = height.coerceAtLeast(1)
-            val xr = (e.x / w).coerceIn(0f, 1f)
-            val yr = (e.y / h).coerceIn(0f, 1f)
-            webView.evaluateJavascript(
-                "window.__pb && window.__pb.fsDoubleTap && window.__pb.fsDoubleTap($xr, $yr);"
-            ) { r -> DebugLog.d("FsGesture", "doubleTap xr=$xr yr=$yr -> $r") }
-            return true
-        }
-    })
-
+    // Stopgap (v1.3.42): forward raw touches to the WebView so the *site's own*
+    // player controls work natively again — taps reveal its control layer, its
+    // own double-tap-seek / scrubber respond, and a native <video controls> bar
+    // shows on tap. The previous "fully consume, drive everything via
+    // window.__pb.* hooks" approach went dead whenever the real <video> lived in
+    // a cross-origin iframe the top-frame hooks couldn't reach (touch felt
+    // unresponsive). Here we instead let the site own taps/double-taps/scrub and
+    // layer ONLY the two gestures sites never provide — vertical
+    // brightness/volume and a 2-finger video switch. When one of those engages
+    // we send ACTION_CANCEL down so the site stops tracking the same drag. The
+    // in-document gesture script stays out via fsActive=true. The full app
+    // gesture set lives in the native Media3 player instead.
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
-        // Single gesture source in native fullscreen. We FULLY consume every
-        // touch and never forward raw touch events to the child WebView /
-        // native <video>. Otherwise the site's own player also receives the
-        // touches and runs its own double-tap / scrub, colliding with ours —
-        // and because each player detects gestures differently (click vs
-        // touchstart vs pointer), the result was inconsistent across sites
-        // (double seek, surprise fullscreen toggle, etc). All intent is driven
-        // through the window.__pb.* hooks: taps/double-taps via the detector
-        // below, scrub/volume/brightness/switchVideo via the branches here, and
-        // taps on the site's overlay controls via fsTap's synthetic-click
-        // forwarding (so control buttons still work without raw touch).
-        detector.onTouchEvent(ev)
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 startX = ev.x
@@ -536,31 +492,23 @@ private class GestureCapturingFrame(
                 startT = System.currentTimeMillis()
                 moved = false
                 maxPointers = 1
-                scrubbing = false
+                siteCancelled = false
                 vbAdjust = null
-                webView.evaluateJavascript(
-                    "window.__pb && window.__pb.scrubStart && window.__pb.scrubStart(${width.coerceAtLeast(1)});",
-                    null
-                )
+                return super.dispatchTouchEvent(ev)
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (ev.pointerCount > maxPointers) maxPointers = ev.pointerCount
-                if (scrubbing) {
-                    // Second finger landed mid-scrub → cancel scrubbing so a
-                    // 2-finger switchVideo swipe can still be recognized.
-                    scrubbing = false
-                    webView.evaluateJavascript(
-                        "window.__pb && window.__pb.scrubEnd && window.__pb.scrubEnd();",
-                        null
-                    )
+                if (maxPointers >= 2 && !siteCancelled) {
+                    // Two fingers → reserve for a switchVideo swipe; stop the
+                    // site tracking the first finger so it doesn't also act.
+                    cancelChildren(ev)
+                    siteCancelled = true
                 }
                 if (vbAdjust != null) {
                     vbAdjust = null
-                    webView.evaluateJavascript(
-                        "window.__pb && window.__pb.hideVbOverlay && window.__pb.hideVbOverlay();",
-                        null
-                    )
+                    hideVbOverlay()
                 }
+                return if (siteCancelled) true else super.dispatchTouchEvent(ev)
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = ev.x - startX
@@ -570,112 +518,109 @@ private class GestureCapturingFrame(
                 ) {
                     moved = true
                 }
-                if (maxPointers >= 2) return true // 2-finger swipe → switchVideo on UP; don't forward
-                // Mode selection — first qualifying motion wins, scrubbing and
-                // vbAdjust are mutually exclusive.
-                if (!scrubbing && vbAdjust == null) {
-                    if (abs(dx) > scrubThresholdPx && abs(dx) > abs(dy)) {
-                        scrubbing = true
-                    } else if (abs(dy) > scrubThresholdPx && abs(dy) > abs(dx)) {
-                        val w = width.coerceAtLeast(1)
-                        val mode = if (startX / w < 0.5f) VbMode.Brightness else VbMode.Volume
-                        vbAdjust = mode
-                        vbStartValue = when (mode) {
-                            VbMode.Volume -> currentVolumeIndex().toFloat()
-                            VbMode.Brightness -> currentBrightnessRatio()
-                        }
+                if (maxPointers >= 2) {
+                    // 2-finger swipe → switchVideo on UP; consume (site cancelled).
+                    return true
+                }
+                // Engage vertical brightness/volume once a clear vertical drag is
+                // seen, then cancel the site's tracking of this same drag.
+                if (vbAdjust == null && abs(dy) > vbThresholdPx && abs(dy) > abs(dx)) {
+                    val w = width.coerceAtLeast(1)
+                    val mode = if (startX / w < 0.5f) VbMode.Brightness else VbMode.Volume
+                    vbAdjust = mode
+                    vbStartValue = when (mode) {
+                        VbMode.Volume -> currentVolumeIndex().toFloat()
+                        VbMode.Brightness -> currentBrightnessRatio()
+                    }
+                    if (!siteCancelled) {
+                        cancelChildren(ev)
+                        siteCancelled = true
                     }
                 }
-                if (scrubbing) {
-                    val now = System.currentTimeMillis()
-                    if (now - lastScrubFireMs >= 16) {
-                        lastScrubFireMs = now
-                        webView.evaluateJavascript(
-                            "window.__pb && window.__pb.scrubBy && window.__pb.scrubBy(${dx.toInt()});",
-                            null
-                        )
-                    }
-                } else {
-                    val mode = vbAdjust
-                    if (mode != null) {
-                        val h = height.coerceAtLeast(1)
-                        // Y grows downward — invert so dragging up increases.
-                        val deltaRatio = -dy / h
-                        when (mode) {
-                            VbMode.Volume -> {
-                                val maxVol = maxVolume
-                                if (maxVol > 0) {
-                                    val newIdx = (vbStartValue + deltaRatio * maxVol)
-                                        .coerceIn(0f, maxVol.toFloat())
-                                    audioManager?.setStreamVolume(
-                                        AudioManager.STREAM_MUSIC,
-                                        newIdx.toInt(),
-                                        0
-                                    )
-                                    fireVbOverlay("volume", newIdx / maxVol)
-                                }
-                            }
-                            VbMode.Brightness -> {
-                                val newRatio = (vbStartValue + deltaRatio).coerceIn(0f, 1f)
-                                applyBrightness(newRatio)
-                                fireVbOverlay("brightness", newRatio)
+                val mode = vbAdjust
+                if (mode != null) {
+                    val h = height.coerceAtLeast(1)
+                    // Y grows downward — invert so dragging up increases.
+                    val deltaRatio = -dy / h
+                    when (mode) {
+                        VbMode.Volume -> {
+                            val maxVol = maxVolume
+                            if (maxVol > 0) {
+                                val newIdx = (vbStartValue + deltaRatio * maxVol)
+                                    .coerceIn(0f, maxVol.toFloat())
+                                audioManager?.setStreamVolume(
+                                    AudioManager.STREAM_MUSIC,
+                                    newIdx.toInt(),
+                                    0
+                                )
+                                fireVbOverlay("volume", newIdx / maxVol)
                             }
                         }
+                        VbMode.Brightness -> {
+                            val newRatio = (vbStartValue + deltaRatio).coerceIn(0f, 1f)
+                            applyBrightness(newRatio)
+                            fireVbOverlay("brightness", newRatio)
+                        }
                     }
+                    return true
                 }
+                // Otherwise forward to the site so its own scrubber/controls work.
+                return super.dispatchTouchEvent(ev)
             }
             MotionEvent.ACTION_UP -> {
                 val dx = ev.x - startX
                 val dy = ev.y - startY
                 val dt = System.currentTimeMillis() - startT
-                if (scrubbing) {
-                    // Final scrub position then end.
-                    webView.evaluateJavascript(
-                        "window.__pb && window.__pb.scrubBy && window.__pb.scrubBy(${dx.toInt()});" +
-                            "window.__pb && window.__pb.scrubEnd && window.__pb.scrubEnd();",
-                        null
-                    )
-                    scrubbing = false
-                } else if (vbAdjust != null) {
-                    vbAdjust = null
-                    webView.evaluateJavascript(
-                        "window.__pb && window.__pb.hideVbOverlay && window.__pb.hideVbOverlay();",
-                        null
-                    )
-                } else if (maxPointers >= 2 && moved && dt <= maxSwipeMs &&
-                    abs(dx) >= swipeThresholdPx && abs(dx) > abs(dy)
-                ) {
-                    val dir = if (dx > 0) -1 else 1
-                    webView.evaluateJavascript(
-                        "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);",
-                        null
-                    )
-                }
-                // A lone tap is handled by the GestureDetector
-                // (onSingleTapConfirmed / onDoubleTap). Nothing to forward here —
-                // we consume everything (return true below), so the native
-                // <video> never sees the tap and can't double-toggle play/pause.
-            }
-            MotionEvent.ACTION_CANCEL -> {
-                if (scrubbing) {
-                    scrubbing = false
-                    webView.evaluateJavascript(
-                        "window.__pb && window.__pb.scrubEnd && window.__pb.scrubEnd();",
-                        null
-                    )
-                }
                 if (vbAdjust != null) {
                     vbAdjust = null
-                    webView.evaluateJavascript(
-                        "window.__pb && window.__pb.hideVbOverlay && window.__pb.hideVbOverlay();",
-                        null
-                    )
+                    hideVbOverlay()
+                    return true
                 }
+                if (maxPointers >= 2) {
+                    if (moved && dt <= maxSwipeMs &&
+                        abs(dx) >= swipeThresholdPx && abs(dx) > abs(dy)
+                    ) {
+                        val dir = if (dx > 0) -1 else 1
+                        webView.evaluateJavascript(
+                            "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);",
+                            null
+                        )
+                    }
+                    return true
+                }
+                // Plain tap / forwarded drag → let the site complete it (reveals
+                // controls, toggles its own play/pause, etc).
+                return super.dispatchTouchEvent(ev)
+            }
+            MotionEvent.ACTION_CANCEL -> {
+                if (vbAdjust != null) {
+                    vbAdjust = null
+                    hideVbOverlay()
+                }
+                return super.dispatchTouchEvent(ev)
             }
         }
-        // Fully consume — the child WebView / native <video> sees no raw touch,
-        // so this frame is the sole gesture source for every site's player.
-        return true
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun cancelChildren(ev: MotionEvent) {
+        val cancel = MotionEvent.obtain(
+            ev.downTime,
+            ev.eventTime,
+            MotionEvent.ACTION_CANCEL,
+            ev.x,
+            ev.y,
+            ev.metaState
+        )
+        super.dispatchTouchEvent(cancel)
+        cancel.recycle()
+    }
+
+    private fun hideVbOverlay() {
+        webView.evaluateJavascript(
+            "window.__pb && window.__pb.hideVbOverlay && window.__pb.hideVbOverlay();",
+            null
+        )
     }
 
     private fun currentVolumeIndex(): Int =

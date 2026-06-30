@@ -2,6 +2,7 @@ package com.playerbrowser.app.ui
 
 import android.content.Intent
 import android.net.Uri
+import android.webkit.CookieManager
 import androidx.activity.compose.BackHandler
 import androidx.appcompat.view.ContextThemeWrapper
 import androidx.compose.animation.AnimatedContent
@@ -33,6 +34,7 @@ import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
@@ -68,7 +70,9 @@ import androidx.compose.ui.viewinterop.AndroidView
 import android.widget.Toast
 import androidx.mediarouter.app.MediaRouteButton
 import com.google.android.gms.cast.framework.CastButtonFactory
+import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.network.UrlRecovery
+import com.playerbrowser.app.player.VideoPlayerActivity
 import com.playerbrowser.app.web.UrlUtils
 
 @Composable
@@ -271,6 +275,41 @@ fun BrowserScreen(
                                         }
                                     } else {
                                         Toast.makeText(context, "복구할 주소가 없어요", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("플레이어로 재생") },
+                                leadingIcon = { Icon(Icons.Filled.PlayCircle, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    val pageUrl = state.currentUrl
+                                    val host = runCatching { Uri.parse(pageUrl).host }.getOrNull()
+                                    val candidate = VideoStreamSniffer.current(host)
+                                    if (candidate == null) {
+                                        Toast.makeText(
+                                            context,
+                                            "재생할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생해 보세요)",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        // Hand the extracted stream to the native Media3 player with
+                                        // the page's Referer/Cookie/UA so protected CDNs still serve it.
+                                        val ua = runCatching {
+                                            activeWebState.webView.settings.userAgentString
+                                        }.getOrNull()
+                                        val cookie = runCatching {
+                                            CookieManager.getInstance().getCookie(candidate.url)
+                                        }.getOrNull()
+                                        VideoPlayerActivity.start(
+                                            context = context,
+                                            url = candidate.url,
+                                            referer = pageUrl,
+                                            cookie = cookie,
+                                            userAgent = ua,
+                                            mime = candidate.mime,
+                                            title = state.currentTitle
+                                        )
                                     }
                                 }
                             )

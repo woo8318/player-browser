@@ -330,6 +330,30 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Drag-to-reorder for the tab switcher. Moves [tabId] within the flat tab list
+     * to sit next to [anchorTabId] (before it, or after when [placeAfter]) and
+     * adopts [groupId]. Since the switcher renders each group's tabs in [_tabs]
+     * order, repositioning in the flat list next to the anchor is what produces the
+     * visual reorder. Drops onto a header / empty section (no anchor card) go
+     * through [setTabsGroup] instead, so this only handles the card-anchored case.
+     */
+    fun moveTab(tabId: String, anchorTabId: String, placeAfter: Boolean, groupId: String?) {
+        if (tabId == anchorTabId) return
+        val current = _tabs.value
+        val moving = current.firstOrNull { it.id == tabId } ?: return
+        val without = current.filterNot { it.id == tabId }
+        val idx = without.indexOfFirst { it.id == anchorTabId }
+        val insertAt = when {
+            idx < 0 -> without.size
+            placeAfter -> idx + 1
+            else -> idx
+        }
+        _tabs.value = without.toMutableList().apply {
+            add(insertAt.coerceIn(0, size), moving.copy(groupId = groupId))
+        }
+    }
+
     // ----- Page lifecycle (per tab) -----
 
     fun onPageStarted(tabId: String, url: String) {

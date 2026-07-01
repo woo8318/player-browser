@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -62,6 +63,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.toArgb
@@ -71,7 +75,9 @@ import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collectLatest
 
@@ -97,6 +103,7 @@ internal fun TabSwitcherOverlay(
     onClose: (String) -> Unit,
     onCloseMany: (List<String>) -> Unit,
     onMoveToGroup: (List<String>, String?) -> Unit,
+    onMoveTab: (String, String, Boolean, String?) -> Unit,
     onAddGroup: (String, Int) -> String,
     onRenameGroup: (String, String) -> Unit,
     onDeleteGroup: (String) -> Unit,
@@ -121,22 +128,15 @@ internal fun TabSwitcherOverlay(
     dragState.edgeZonePx = with(LocalDensity.current) { 64.dp.toPx() }
     val isDragging = dragState.draggingIds != null
 
-    // Safety net: if startTransfer silently failed (no ACTION_DRAG_STARTED ever
-    // arrives), undo the optimistic dragging state instead of leaving the
-    // switcher stuck with a dimmed card.
-    LaunchedEffect(isDragging) {
-        if (isDragging) {
-            delay(1_000)
-            if (!dragState.sessionStarted) dragState.reset()
-        }
-    }
-
     // Edge auto-scroll while a card is being dragged near the top/bottom of the grid.
     LaunchedEffect(dragState, gridState) {
         snapshotFlow { dragState.autoScrollDirection }.collectLatest { direction ->
             if (direction == 0) return@collectLatest
             while (true) {
                 gridState.scrollBy(direction * 24f)
+                // Content moved under a possibly-stationary finger — re-resolve the
+                // hover so the highlight and drop target follow the scroll.
+                dragState.refreshHover()
                 delay(16)
             }
         }
@@ -213,15 +213,27 @@ internal fun TabSwitcherOverlay(
             val target = activeTabLazyIndex(groupedSections, activeTabId, isDragging)
             if (target >= 0) gridState.scrollToItem(target)
         }
+        // Resolves the release position to a landing spot. A single dragged card
+        // over another card inserts relative to it (reorder); anything else — a
+        // multi-selection, a header, or an empty section — moves into that group.
+        val performDrop: () -> Unit = {
+            val ids = dragState.draggingIds
+            val res = dragState.resolve()
+            if (ids != null && res != null) {
+                val group = res.sectionKey.takeUnless { it == UNGROUPED_SECTION_KEY }
+                if (ids.size == 1 && res.anchorTabId != null) {
+                    onMoveTab(ids.first(), res.anchorTabId, res.placeAfter, group)
+                } else {
+                    onMoveToGroup(ids, group)
+                }
+            }
+            selectedIds = emptySet()
+        }
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .onGloballyPositioned { dragState.gridBounds = it.boundsInRoot() }
-                .tabDropTargetRoot(dragState) { ids, sectionKey ->
-                    onMoveToGroup(ids, sectionKey.takeUnless { it == UNGROUPED_SECTION_KEY })
-                    selectedIds = emptySet()
-                }
         ) {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
@@ -281,18 +293,25 @@ internal fun TabSwitcherOverlay(
                             inSelectMode = inSelectMode,
                             isDropHover = dragState.hoverSectionKey == sectionKey,
                             isBeingDragged = dragState.draggingIds?.contains(tab.id) == true,
+                            insertSide = when {
+                                dragState.hoverTabId != tab.id -> InsertSide.NONE
+                                dragState.hoverAfter -> InsertSide.AFTER
+                                else -> InsertSide.BEFORE
+                            },
                             modifier = Modifier.tabDropRegion(
                                 dragState = dragState,
                                 regionId = "tab-${tab.id}",
-                                sectionKey = sectionKey
+                                sectionKey = sectionKey,
+                                tabId = tab.id
                             ),
                             dragSourceModifier = Modifier.tabDragSource(
+                                dragState = dragState,
                                 haptics = haptics,
                                 // Dragging a selected card carries the whole selection;
                                 // the long press that precedes the drag has already
                                 // added this tab to the set.
                                 draggedIds = { (selectedIds + tab.id).toList() },
-                                onTransferStarted = { ids -> dragState.draggingIds = ids }
+                                onDrop = performDrop
                             ),
                             onSelect = {
                                 if (inSelectMode) {
@@ -318,6 +337,34 @@ internal fun TabSwitcherOverlay(
                             } else null
                         )
                     }
+                }
+            }
+            // Floating badge that tracks the finger so the drag reads as a real
+            // pick-up (the source cards only dim in place). Positioned in Box-local
+            // space by subtracting the Box's own root offset from the finger point.
+            val draggingCount = dragState.draggingIds?.size ?: 0
+            if (draggingCount > 0) {
+                val boxTopLeft = dragState.gridBounds?.topLeft ?: Offset.Zero
+                val local = dragState.pointer - boxTopLeft
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    shadowElevation = 8.dp,
+                    modifier = Modifier
+                        .offset {
+                            IntOffset(
+                                (local.x - 28.dp.toPx()).roundToInt(),
+                                (local.y - 28.dp.toPx()).roundToInt()
+                            )
+                        }
+                ) {
+                    Text(
+                        text = if (draggingCount > 1) "$draggingCount 탭" else "이동",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)
+                    )
                 }
             }
         }
@@ -546,6 +593,9 @@ private fun GroupHeader(
     }
 }
 
+/** Which edge of a card the reorder insertion bar sits on (or none). */
+private enum class InsertSide { NONE, BEFORE, AFTER }
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun TabCard(
@@ -556,6 +606,7 @@ private fun TabCard(
     inSelectMode: Boolean,
     isDropHover: Boolean,
     isBeingDragged: Boolean,
+    insertSide: InsertSide = InsertSide.NONE,
     modifier: Modifier = Modifier,
     dragSourceModifier: Modifier = Modifier,
     onSelect: () -> Unit,
@@ -573,6 +624,8 @@ private fun TabCard(
     }
     val emphasized = isActive || isSelected || isDropHover
     var menuOpen by remember { mutableStateOf(false) }
+    val insertBarColor = MaterialTheme.colorScheme.secondary
+    val insertBarWidth = with(LocalDensity.current) { 4.dp.toPx() }
     Surface(
         shape = cardShape,
         tonalElevation = if (emphasized) 4.dp else 1.dp,
@@ -581,6 +634,18 @@ private fun TabCard(
             .fillMaxWidth()
             .height(190.dp)
             .alpha(if (isBeingDragged) 0.4f else 1f)
+            // Reorder insertion bar: shows which edge the dragged tab will land on.
+            .drawWithContent {
+                drawContent()
+                if (insertSide != InsertSide.NONE) {
+                    val left = if (insertSide == InsertSide.AFTER) size.width - insertBarWidth else 0f
+                    drawRect(
+                        color = insertBarColor,
+                        topLeft = Offset(left, 0f),
+                        size = Size(insertBarWidth, size.height)
+                    )
+                }
+            }
             .clip(cardShape)
             .border(
                 width = if (emphasized) 2.5.dp else 1.dp,

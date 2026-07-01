@@ -431,6 +431,9 @@ fun BrowserScreen(
             onClose = { viewModel.closeTab(it) },
             onCloseMany = { viewModel.closeTabs(it) },
             onMoveToGroup = { tabIds, groupId -> viewModel.setTabsGroup(tabIds, groupId) },
+            onMoveTab = { tabId, anchor, after, groupId ->
+                viewModel.moveTab(tabId, anchor, after, groupId)
+            },
             onAddGroup = { name, color -> viewModel.addGroup(name, color) },
             onRenameGroup = { id, name -> viewModel.renameGroup(id, name) },
             onDeleteGroup = { viewModel.deleteGroup(it) },

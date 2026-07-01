@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 내장 Media3 플레이어(스트림 추출 후 네이티브 재생) + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(썸네일 갤러리/그룹/그룹순서변경/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 자동/수동 복구 + 링크 항상 새 탭 열기 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.42.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 내장 Media3 플레이어(스트림 추출 후 네이티브 재생) + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(썸네일 갤러리/그룹/그룹순서변경/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 편집/바 스와이프 탭 전환/탭별 히스토리 영속화) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 자동/수동 복구 + 링크 항상 새 탭 열기 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.43.
 
 ## 빌드 / 배포
 
@@ -30,6 +30,7 @@ app/src/main/
       HistoryEntry.kt / HistoryDao.kt
       BrowserRepository.kt
       TabPersistence.kt                 # 멀티탭 세션 영속화 (tabs + parent + groups, JSON in SharedPreferences)
+      TabWebStateStore.kt               # 탭별 WebView 뒤로/앞으로 히스토리 영속화 (saveState/restoreState Bundle → filesDir/tabstate/<id>.bin)
       WatchProgressStore.kt             # 동영상 이어보기 위치 영속화 (page URL → pos/dur/title, JSON in SharedPreferences)
     network/                            # 네트워크 인터셉트 / 진단
       AdBlocker.kt / AdBlockSwitch.kt   # 광고 차단 (host suffix + URL pattern, 빈 204 응답)
@@ -78,6 +79,7 @@ app/src/main/
 - **상태 관리:** `BrowserViewModel` (탭 / 그룹 / 현재 URL / 제목 / 즐겨찾기 / 업데이트 상태), `SettingsViewModel` (네트워크 설정)
 - **WebView:** `buildBrowserWebView()`에서 단건 생성. `WebViewClient.shouldInterceptRequest`가 **AdBlocker → VideoStreamSniffer → SniBypassClient → IframeScriptInjector** 순서로 체이닝. `onPageFinished`에서 `video_gestures.js` + (광고차단 켜져있으면) `AdBlocker.HIDE_CSS_JS` + (쿠키배너 켜져있으면) `CookieBannerKiller.SCRIPT` inject.
 - **멀티탭:** 탭 전환 시 WebView 자체를 swap (단일 WebView 재사용 X). `SnapshotStateMap<TabId, BrowserWebViewState>`로 보관. 탭 닫히면 `webView.destroy()`로 GC.
+- **탭별 히스토리 영속화 (`TabWebStateStore`, v1.3.43):** 앱을 껐다 켜도 탭 안에서 이동해 온 **뒤로/앞으로 히스토리**를 유지. 예전엔 `TabPersistence`가 탭의 **최종 URL만** 저장해서, 복원된 탭은 `load(currentUrl)`로 그 페이지만 다시 띄우고 `WebBackForwardList`가 비어 있어 Android 뒤로가기를 누르면 곧장 탭이 닫혔음(부모 없으면 back-handler가 히스토리 없음으로 판단). 이제 `WebView.saveState(Bundle)`로 각 탭의 네비게이션 리스트를 직렬화해 `filesDir/tabstate/<tabId>.bin`(마샬링한 `Bundle`, Room 회피—`TabPersistence`/`WatchProgressStore`와 같은 파일/prefs 패턴)에 저장하고, 탭 WebView를 새로 만들 때 `restoreState(Bundle)`로 되살림. **저장 시점:** `RootNavigation`이 `LifecycleEventObserver`로 `ON_STOP`(백그라운드 진입—프로세스 킬 직전 신뢰 훅)에 열린 모든 탭의 WebView를 한 번에 `saveAll`, `onDispose`에서도 파괴 직전 한 번 더 flush(모든 WebView 객체는 살아있어 detached여도 `saveState` 가능). **복원 시점:** `BrowserScreen`의 `webStates.getOrPut`에서 WebView 생성 직후 `tabWebStates.restore(id, wv)` — 성공하면(`restoreState`가 non-empty 리스트 반환) `restoreState`가 현재 엔트리를 스스로 재로드하므로 `load()`를 **건너뜀**, 실패/블롭 없음이면 종전대로 `load(currentUrl)` 폴백. **방어:** 마샬링 Parcel 바이트는 OS/WebView 업그레이드 간 안정 보장이 없어 restore 전체를 try/catch로 감싸 실패 시 손상 블롭을 삭제하고 URL 로드로 폴백(크래시/데이터 손실 없음—히스토리 리스트만 포기), 과대 블롭(>1.5MB)은 쓰기 스킵. 탭이 닫혀 WebView가 GC되면 `retain(liveIds)`가 썸네일과 lock-step으로 블롭도 prune.
 - **바 스와이프 탭 전환:** `TabSwipeGesture.kt`의 `Modifier.tabSwitchSwipe`를 상단 주소창 `Surface`와 하단 내비 `Row`에 적용. `detectHorizontalDragGestures`(수평 바이어스)라 탭/세로 스크롤/텍스트필드 포커스와 충돌 안 함 — 수평 의도가 확정된 뒤에만 엔게이지. 누적 거리가 touchSlop*3을 넘는 순간 드래그당 1회만 발화(즉각 반응). `viewModel.selectAdjacentTab(forward)`가 실제 전환된 경우만 `true` 반환 → 그때만 햅틱. 좌 스와이프=다음 탭(forward), 우 스와이프=이전 탭. **이전(backward) 방향은 부모 탭 우선** — 현재 탭이 `window.open`/`target=_blank`로 열린 자식(`parentTabId` 생존)이면 인접 탭 대신 부모 탭으로 복귀(back 제스처와 동일 멘탈모델), 부모가 없으면 평탄한 `_tabs` 순서 인접 탭(양 끝 멈춤, no-wrap).
 - **탭 전환 슬라이드 애니메이션:** 중앙 WebView 호스트를 `AnimatedContent(targetState = activeTabId)`로 감싸 스와이프 시 콘텐츠가 가로로 슬라이드(`slideIn/OutHorizontally`, tween 260ms). `switchDirection`(+1/-1/0) 상태로 방향 결정 — **스와이프만 애니메이션을 arm**하고 `LaunchedEffect(activeTabId)`가 매 전환 후 0으로 disarm해서 탭 닫기/스위처 선택은 무애니메이션 즉시 swap. 이유: 닫힌(=`webStates` GC로 `destroy()`된) 탭을 슬라이드 아웃하면 파괴된 WebView를 참조할 수 있음. 전환 콘텐츠는 target=현재 active면 `activeWebState`, 빠져나가는 탭은 `webStates[id]`를 **생성 없이** 조회(없으면 빈 Box)해 죽은 탭 부활/크래시 방지.
 - **탭 그룹 / 부모-자식:** `TabState`에 `groupId` + `parentTabId` 필드. `TabGroup`(id, name, color)은 `BrowserViewModel._groups` StateFlow + `TabPersistence`의 JSON에 함께 저장 (Room 마이그레이션 비용 회피). 그룹 삭제 시 탭은 살아남고 `groupId`만 null로 떨어짐. **그룹 순서 = `_groups` 리스트 순서**(스위처 섹션 렌더/JSON 영속화 모두 이 순서를 따름) — 그룹 헤더 ⋮ 메뉴의 "위로 이동"/"아래로 이동"이 `viewModel.moveGroup(id, up)`으로 인접 항목을 스왑. 양 끝에서는 해당 메뉴 항목을 숨김.

@@ -6,7 +6,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 
 ### 브라우징
 - **상하단 분리 레이아웃** — 상단: 주소창 + 즐겨찾기 + Cast + 메뉴, 하단: 뒤로/앞으로/새로고침/홈/탭 (Opera 스타일)
-- **멀티탭** — 탭별 WebView 인스턴스, 세션 영속화 (탭 + 그룹 + 부모 관계 모두 SharedPreferences로 저장)
+- **멀티탭** — 탭별 WebView 인스턴스, 세션 영속화 (탭 + 그룹 + 부모 관계 모두 SharedPreferences로 저장). 앱을 껐다 켜도 각 탭의 **뒤로/앞으로 히스토리**까지 유지해 뒤로가기가 방문한 페이지들을 되짚습니다
 - **스와이프로 탭 전환 (Chrome/Opera 스타일)** — 상단 주소창 바 또는 하단 내비 바를 좌/우로 스와이프하면 인접 탭으로 전환 (스위처를 열 필요 없음). 좌 스와이프 → 다음 탭, 우 스와이프 → 이전 탭. 전환 시 콘텐츠가 가로로 슬라이드되는 애니메이션 + 짧은 햅틱. 단, 새 창(`window.open` / `target=_blank`)으로 열린 탭에서 우 스와이프하면 그 창을 띄운 부모 탭으로 복귀 (인접 탭 대신). 부모가 없으면 양 끝에서 멈춤(no-wrap)
 - **검색어/URL 자동 인식** — URL이 아니면 Google 검색으로 폴백
 - **즐겨찾기 / 방문 기록** — 방문한 URL은 즐겨찾기 목록에서 ✓ 표시
@@ -98,6 +98,7 @@ app/src/main/
     data/                               # Room DB + 탭/이어보기 영속화
       AppDatabase.kt / Bookmark*.kt / HistoryEntry*.kt / BrowserRepository.kt
       TabPersistence.kt
+      TabWebStateStore.kt               # 탭별 WebView 뒤로/앞으로 히스토리 저장 (saveState/restoreState Bundle)
       WatchProgressStore.kt             # 동영상 이어보기 위치 저장 (SharedPreferences JSON)
     network/                            # 네트워크 인터셉트 / 프록시 / 진단
       AdBlocker.kt / AdBlockSwitch.kt   # 광고 차단

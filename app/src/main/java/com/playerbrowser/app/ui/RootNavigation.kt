@@ -4,10 +4,15 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLifecycleOwner
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import com.playerbrowser.app.data.TabWebStateStore
 
 object Routes {
     const val BROWSER = "browser"
@@ -28,8 +33,28 @@ fun RootNavigation(viewModel: BrowserViewModel) {
     // Lives next to webStates so captured gallery thumbnails survive navigation
     // to Bookmarks / History / Settings and back.
     val thumbnails = remember { TabThumbnailStore() }
+    // Persists each tab's back/forward history so a restart keeps in-tab
+    // navigation (Android back steps through visited pages instead of closing
+    // a freshly-reloaded tab).
+    val context = LocalContext.current
+    val tabWebStates = remember { TabWebStateStore(context) }
+
+    // Save every open tab's history whenever the app is backgrounded — the
+    // reliable "app is going away" hook before the system may kill the process.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                tabWebStates.saveAll(webStates.mapValues { it.value.webView })
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     DisposableEffect(Unit) {
         onDispose {
+            // Final flush before tearing the WebViews down.
+            tabWebStates.saveAll(webStates.mapValues { it.value.webView })
             webStates.values.forEach { runCatching { it.webView.destroy() } }
             webStates.clear()
         }
@@ -41,6 +66,7 @@ fun RootNavigation(viewModel: BrowserViewModel) {
                 viewModel = viewModel,
                 webStates = webStates,
                 thumbnails = thumbnails,
+                tabWebStates = tabWebStates,
                 onOpenBookmarks = { navController.navigate(Routes.BOOKMARKS) },
                 onOpenHistory = { navController.navigate(Routes.HISTORY) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) }

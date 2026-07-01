@@ -71,6 +71,7 @@ import android.widget.Toast
 import androidx.mediarouter.app.MediaRouteButton
 import com.google.android.gms.cast.framework.CastButtonFactory
 import com.playerbrowser.app.cast.VideoStreamSniffer
+import com.playerbrowser.app.data.TabWebStateStore
 import com.playerbrowser.app.network.UrlRecovery
 import com.playerbrowser.app.player.VideoPlayerActivity
 import com.playerbrowser.app.web.UrlUtils
@@ -80,6 +81,7 @@ fun BrowserScreen(
     viewModel: BrowserViewModel,
     webStates: SnapshotStateMap<String, BrowserWebViewState>,
     thumbnails: TabThumbnailStore,
+    tabWebStates: TabWebStateStore,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit
@@ -103,6 +105,7 @@ fun BrowserScreen(
             webStates.remove(id)?.webView?.let { runCatching { it.destroy() } }
         }
         thumbnails.retain(liveIds)
+        tabWebStates.retain(liveIds)
     }
 
     val tabIdForCreation: String = activeTabId
@@ -127,7 +130,12 @@ fun BrowserScreen(
             override fun onOpenInNewTab(url: String) {
                 viewModel.newTab(url, parentTabId = ownerId)
             }
-        }).also { it.load(initialUrl) }
+        }).also { state ->
+            // Restore this tab's saved back/forward history if we have it —
+            // restoreState reloads the current entry itself, so only fall back
+            // to a plain load when there's no (or an unusable) saved history.
+            if (!tabWebStates.restore(ownerId, state.webView)) state.load(initialUrl)
+        }
     }
 
     LaunchedEffect(pendingUrl) {

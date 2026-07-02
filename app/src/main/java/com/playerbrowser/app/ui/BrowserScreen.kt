@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
@@ -175,6 +176,36 @@ fun BrowserScreen(
         thumbnails.capture(activeTabId, activeWebState.webView)
     }
 
+    // Launch the built-in Media3 player with the stream sniffed for the current
+    // page. Shared by the ⋮ menu and the on-screen player button so both inject
+    // the same Referer/Cookie/UA context. Toasts when nothing was captured yet.
+    val launchPlayer: () -> Unit = {
+        val pageUrl = state.currentUrl
+        val host = runCatching { Uri.parse(pageUrl).host }.getOrNull()
+        val candidate = VideoStreamSniffer.current(host)
+        if (candidate == null) {
+            Toast.makeText(
+                context,
+                "재생할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생해 보세요)",
+                Toast.LENGTH_SHORT
+            ).show()
+        } else {
+            val ua = runCatching { activeWebState.webView.settings.userAgentString }.getOrNull()
+            val cookie = runCatching {
+                CookieManager.getInstance().getCookie(candidate.url)
+            }.getOrNull()
+            VideoPlayerActivity.start(
+                context = context,
+                url = candidate.url,
+                referer = pageUrl,
+                cookie = cookie,
+                userAgent = ua,
+                mime = candidate.mime,
+                title = state.currentTitle
+            )
+        }
+    }
+
     // Toolbar / nav-bar swipe → switch to the adjacent tab. A short haptic
     // only fires when the swap actually happens (i.e. not at the strip's edge).
     val switchAdjacentTab: (Boolean) -> Unit = { forward ->
@@ -186,6 +217,19 @@ fun BrowserScreen(
     }
 
     LaunchedEffect(Unit) { viewModel.checkForUpdates(silent = true) }
+
+    // Reactively surface an on-screen "play in player" button the moment the
+    // sniffer captures a stream for the page we're on. Collecting the revision
+    // recomputes the lookup whenever a new stream is seen or the page changes.
+    val streamRevision by VideoStreamSniffer.revision.collectAsState()
+    val hasPlayableStream = remember(streamRevision, state.currentUrl) {
+        val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
+        VideoStreamSniffer.current(host) != null
+    }
+    // Let the user hide the button; re-show it on every navigation so a fresh
+    // page with a fresh stream gets the affordance again.
+    var playerButtonDismissed by remember { mutableStateOf(false) }
+    LaunchedEffect(state.currentUrl) { playerButtonDismissed = false }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Top: URL bar + quick actions (bookmark, cast, menu).
@@ -291,34 +335,7 @@ fun BrowserScreen(
                                 leadingIcon = { Icon(Icons.Filled.PlayCircle, contentDescription = null) },
                                 onClick = {
                                     menuOpen = false
-                                    val pageUrl = state.currentUrl
-                                    val host = runCatching { Uri.parse(pageUrl).host }.getOrNull()
-                                    val candidate = VideoStreamSniffer.current(host)
-                                    if (candidate == null) {
-                                        Toast.makeText(
-                                            context,
-                                            "재생할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생해 보세요)",
-                                            Toast.LENGTH_SHORT
-                                        ).show()
-                                    } else {
-                                        // Hand the extracted stream to the native Media3 player with
-                                        // the page's Referer/Cookie/UA so protected CDNs still serve it.
-                                        val ua = runCatching {
-                                            activeWebState.webView.settings.userAgentString
-                                        }.getOrNull()
-                                        val cookie = runCatching {
-                                            CookieManager.getInstance().getCookie(candidate.url)
-                                        }.getOrNull()
-                                        VideoPlayerActivity.start(
-                                            context = context,
-                                            url = candidate.url,
-                                            referer = pageUrl,
-                                            cookie = cookie,
-                                            userAgent = ua,
-                                            mime = candidate.mime,
-                                            title = state.currentTitle
-                                        )
-                                    }
+                                    launchPlayer()
                                 }
                             )
                             DropdownMenuItem(
@@ -340,35 +357,56 @@ fun BrowserScreen(
             }
         }
         // Middle: web content fills remaining space between the two bars.
-        // AnimatedContent slides the outgoing/incoming tab horizontally when a
-        // swipe switched tabs; close/select keep switchDirection == 0 → instant.
-        AnimatedContent(
-            targetState = activeTabId,
-            transitionSpec = {
-                when {
-                    switchDirection > 0 ->
-                        slideInHorizontally(tween(260)) { it } togetherWith
-                            slideOutHorizontally(tween(260)) { -it }
-                    switchDirection < 0 ->
-                        slideInHorizontally(tween(260)) { -it } togetherWith
-                            slideOutHorizontally(tween(260)) { it }
-                    else -> EnterTransition.None togetherWith ExitTransition.None
+        // Wrapped in a Box so the on-screen player button can float over it.
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            // AnimatedContent slides the outgoing/incoming tab horizontally when
+            // a swipe switched tabs; close/select keep switchDirection == 0 → instant.
+            AnimatedContent(
+                targetState = activeTabId,
+                transitionSpec = {
+                    when {
+                        switchDirection > 0 ->
+                            slideInHorizontally(tween(260)) { it } togetherWith
+                                slideOutHorizontally(tween(260)) { -it }
+                        switchDirection < 0 ->
+                            slideInHorizontally(tween(260)) { -it } togetherWith
+                                slideOutHorizontally(tween(260)) { it }
+                        else -> EnterTransition.None togetherWith ExitTransition.None
+                    }
+                },
+                modifier = Modifier.fillMaxSize(),
+                label = "tab-switch"
+            ) { tabId ->
+                // Target tab uses the freshly-resolved active state; the outgoing tab
+                // is looked up without creating, so a closed (GC'd) tab renders blank
+                // instead of being resurrected.
+                val hostState = if (tabId == activeTabId) activeWebState else webStates[tabId]
+                if (hostState != null) {
+                    BrowserWebViewHost(
+                        state = hostState,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(modifier = Modifier.fillMaxSize())
                 }
-            },
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            label = "tab-switch"
-        ) { tabId ->
-            // Target tab uses the freshly-resolved active state; the outgoing tab
-            // is looked up without creating, so a closed (GC'd) tab renders blank
-            // instead of being resurrected.
-            val hostState = if (tabId == activeTabId) activeWebState else webStates[tabId]
-            if (hostState != null) {
-                BrowserWebViewHost(
-                    state = hostState,
-                    modifier = Modifier.fillMaxSize()
+            }
+            // Floating "play in player" pill — appears the moment a stream is
+            // sniffed for this page so the user can jump to the native player
+            // without opening the ⋮ menu. Dismissible so it never blocks content.
+            androidx.compose.animation.AnimatedVisibility(
+                visible = hasPlayableStream && !playerButtonDismissed,
+                enter = androidx.compose.animation.fadeIn() +
+                    androidx.compose.animation.scaleIn(initialScale = 0.8f),
+                exit = androidx.compose.animation.fadeOut() +
+                    androidx.compose.animation.scaleOut(targetScale = 0.8f),
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(end = 16.dp, bottom = 16.dp)
+            ) {
+                PlayerFab(
+                    onPlay = launchPlayer,
+                    onDismiss = { playerButtonDismissed = true }
                 )
-            } else {
-                Box(modifier = Modifier.fillMaxSize())
             }
         }
         // Bottom: Opera-style navigation bar (back / forward / reload / home / tabs).
@@ -453,6 +491,34 @@ fun BrowserScreen(
         onCancelDownload = { viewModel.cancelDownload() },
         onDismiss = { viewModel.dismissUpdate() }
     )
+}
+
+@Composable
+private fun PlayerFab(onPlay: () -> Unit, onDismiss: () -> Unit) {
+    Surface(
+        onClick = onPlay,
+        shape = RoundedCornerShape(24.dp),
+        color = MaterialTheme.colorScheme.primary,
+        contentColor = MaterialTheme.colorScheme.onPrimary,
+        tonalElevation = 6.dp,
+        shadowElevation = 6.dp
+    ) {
+        Row(
+            modifier = Modifier.padding(start = 16.dp, end = 6.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            Icon(Icons.Filled.PlayCircle, contentDescription = null, modifier = Modifier.size(22.dp))
+            Text("플레이어로 재생", fontSize = 14.sp, fontWeight = FontWeight.SemiBold)
+            IconButton(onClick = onDismiss, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "닫기",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
+    }
 }
 
 @Composable

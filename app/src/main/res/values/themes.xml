@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.PlayerBrowser" parent="android:Theme.Material.Light.NoActionBar" />
+    <!-- AppCompat descendant: MainActivity is an AppCompatActivity
+         (a FragmentActivity) so the Cast MediaRouteButton can show its
+         device-picker dialog without crashing, and so the route
+         chooser/controller dialogs theme correctly. The Player theme below
+         keeps its own explicit parent and is unaffected. -->
+    <style name="Theme.PlayerBrowser" parent="Theme.AppCompat.Light.NoActionBar" />
 
     <!-- Dedicated black, edge-to-edge theme for the native Media3 video player. -->
     <style name="Theme.PlayerBrowser.Player" parent="android:Theme.Material.NoActionBar">

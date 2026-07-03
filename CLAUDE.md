@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 내장 Media3 플레이어(스트림 추출 후 네이티브 재생, 스트림 감지 시 화면에 재생 버튼 자동 표시) + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(썸네일 갤러리/그룹/그룹순서변경/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 이동·탭 사이 재정렬/바 스와이프 탭 전환/탭별 히스토리 영속화) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 자동/수동 복구 + 링크 항상 새 탭 열기 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.45.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 내장 Media3 플레이어(스트림 추출 후 네이티브 재생, 스트림 감지 시 화면에 재생 버튼 자동 표시) + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(썸네일 갤러리/그룹/그룹순서변경/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 이동·탭 사이 재정렬/바 스와이프 탭 전환/탭별 히스토리 영속화) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 자동/수동 복구 + 링크 항상 새 탭 열기 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.46.
 
 ## 빌드 / 배포
 
@@ -75,7 +75,7 @@ app/src/main/
 
 ## 핵심 아키텍처 메모
 
-- **단일 액티비티 + Compose:** `MainActivity` → `RootNavigation` → 화면별 Composable. `MainActivity`는 `CastSessionBridge` lifecycle만 관리.
+- **단일 액티비티 + Compose:** `MainActivity` → `RootNavigation` → 화면별 Composable. `MainActivity`는 `CastSessionBridge` lifecycle만 관리. **`MainActivity`는 `AppCompatActivity`(= `FragmentActivity`)여야 함(v1.3.46)** — Cast `MediaRouteButton`을 탭하면 기기 선택 다이얼로그를 `getSupportFragmentManager()`로 띄우는데, 예전처럼 `ComponentActivity`면 `IllegalStateException("The activity must be a subclass of FragmentActivity")`로 **버튼 누르는 순간 크래시**했음. 이 때문에 앱 테마 `Theme.PlayerBrowser`도 `Theme.AppCompat.Light.NoActionBar`(AppCompat 계열)로 둠(AppCompatActivity 요구 + Cast 다이얼로그 테마링). `VideoPlayerActivity`는 Cast/프래그먼트 미사용이라 `ComponentActivity` + Material 테마 그대로 둠.
 - **상태 관리:** `BrowserViewModel` (탭 / 그룹 / 현재 URL / 제목 / 즐겨찾기 / 업데이트 상태), `SettingsViewModel` (네트워크 설정)
 - **WebView:** `buildBrowserWebView()`에서 단건 생성. `WebViewClient.shouldInterceptRequest`가 **AdBlocker → VideoStreamSniffer → SniBypassClient → IframeScriptInjector** 순서로 체이닝. `onPageFinished`에서 `video_gestures.js` + (광고차단 켜져있으면) `AdBlocker.HIDE_CSS_JS` + (쿠키배너 켜져있으면) `CookieBannerKiller.SCRIPT` inject.
 - **멀티탭:** 탭 전환 시 WebView 자체를 swap (단일 WebView 재사용 X). `SnapshotStateMap<TabId, BrowserWebViewState>`로 보관. 탭 닫히면 `webView.destroy()`로 GC.

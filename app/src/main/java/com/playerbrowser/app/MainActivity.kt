@@ -1,8 +1,8 @@
 package com.playerbrowser.app
 
 import android.os.Bundle
-import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.appcompat.app.AppCompatActivity
 import androidx.activity.viewModels
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -13,7 +13,11 @@ import com.playerbrowser.app.cast.CastSessionBridge
 import com.playerbrowser.app.ui.BrowserViewModel
 import com.playerbrowser.app.ui.RootNavigation
 
-class MainActivity : ComponentActivity() {
+// AppCompatActivity (a FragmentActivity) is required by the Cast
+// MediaRouteButton: tapping it opens a device-picker dialog that needs the
+// host's support FragmentManager. A plain ComponentActivity crashes with
+// "The activity must be a subclass of FragmentActivity".
+class MainActivity : AppCompatActivity() {
     private val viewModel: BrowserViewModel by viewModels()
     private val castBridge: CastSessionBridge by lazy {
         CastSessionBridge(this) {

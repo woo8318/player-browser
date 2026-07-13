@@ -108,6 +108,7 @@ internal fun TabSwitcherOverlay(
     onRenameGroup: (String, String) -> Unit,
     onDeleteGroup: (String) -> Unit,
     onMoveGroup: (String, Boolean) -> Unit,
+    onReorderGroup: (String, String?, Boolean) -> Unit,
     onNewTab: (String?) -> Unit,
     onDismiss: () -> Unit
 ) {
@@ -126,7 +127,7 @@ internal fun TabSwitcherOverlay(
     val gridState = rememberLazyGridState()
     val haptics = LocalHapticFeedback.current
     dragState.edgeZonePx = with(LocalDensity.current) { 64.dp.toPx() }
-    val isDragging = dragState.draggingIds != null
+    val isTabDragging = dragState.draggingIds != null
 
     // Edge auto-scroll while a card is being dragged near the top/bottom of the grid.
     LaunchedEffect(dragState, gridState) {
@@ -200,40 +201,54 @@ internal fun TabSwitcherOverlay(
             }
         }
     ) { padding ->
-        // While dragging, the empty "no group" section stays visible so a tab can
-        // always be dragged OUT of its group, even when every tab is grouped.
-        val groupedSections = remember(tabs, groups, isDragging) {
-            buildGroupedSections(tabs, groups, includeEmptyUngrouped = isDragging)
+        // While dragging a tab, the empty "no group" section stays visible so a
+        // tab can always be dragged OUT of its group, even when every tab is
+        // grouped. (Group drags don't need it — dropping past the last group's
+        // header bottom half already means "move to end".)
+        val groupedSections = remember(tabs, groups, isTabDragging) {
+            buildGroupedSections(tabs, groups, includeEmptyUngrouped = isTabDragging)
         }
         // On open, jump to the tab the user was just viewing so the switcher
         // lands on it instead of always starting at the top of the list. The
         // overlay is composed fresh each time it opens, so a Unit-keyed effect
         // runs exactly once per open with the active tab captured at open time.
         LaunchedEffect(Unit) {
-            val target = activeTabLazyIndex(groupedSections, activeTabId, isDragging)
+            val target = activeTabLazyIndex(groupedSections, activeTabId, isTabDragging)
             if (target >= 0) gridState.scrollToItem(target)
         }
-        // Resolves the release position to a landing spot. A single dragged card
-        // over another card inserts relative to it (reorder); anything else — a
-        // multi-selection, a header, or an empty section — moves into that group.
+        // Resolves the release position to a landing spot. A dragged group header
+        // reorders the group sections; a single dragged card over another card
+        // inserts relative to it (reorder); anything else — a multi-selection, a
+        // header, or an empty section — moves the tabs into that group.
         val performDrop: () -> Unit = {
-            val ids = dragState.draggingIds
-            val res = dragState.resolve()
-            if (ids != null && res != null) {
-                val group = res.sectionKey.takeUnless { it == UNGROUPED_SECTION_KEY }
-                if (ids.size == 1 && res.anchorTabId != null) {
-                    onMoveTab(ids.first(), res.anchorTabId, res.placeAfter, group)
-                } else {
-                    onMoveToGroup(ids, group)
+            val groupDrag = dragState.draggingGroupId
+            if (groupDrag != null) {
+                dragState.resolveGroupDrop()?.let { res ->
+                    onReorderGroup(groupDrag, res.anchorGroupId, res.placeAfter)
                 }
+            } else {
+                val ids = dragState.draggingIds
+                val res = dragState.resolve()
+                if (ids != null && res != null) {
+                    val group = res.sectionKey.takeUnless { it == UNGROUPED_SECTION_KEY }
+                    if (ids.size == 1 && res.anchorTabId != null) {
+                        onMoveTab(ids.first(), res.anchorTabId, res.placeAfter, group)
+                    } else {
+                        onMoveToGroup(ids, group)
+                    }
+                }
+                selectedIds = emptySet()
             }
-            selectedIds = emptySet()
         }
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .onGloballyPositioned { dragState.gridBounds = it.boundsInRoot() }
+                // Owns drag movement + release for every session started on a
+                // card/header below — survives the source item being disposed
+                // by edge auto-scroll (the item-owned drag died mid-scroll).
+                .tabDragContainer(dragState, performDrop)
         ) {
             LazyVerticalGrid(
                 columns = GridCells.Fixed(2),
@@ -246,7 +261,7 @@ internal fun TabSwitcherOverlay(
             ) {
                 groupedSections.forEach { section ->
                     val sectionKey = section.group?.id ?: UNGROUPED_SECTION_KEY
-                    if (section.group != null || section.tabs.isNotEmpty() || isDragging) {
+                    if (section.group != null || section.tabs.isNotEmpty() || isTabDragging) {
                         item(
                             span = { GridItemSpan(maxLineSpan) },
                             key = "header-${section.group?.id ?: "none"}"
@@ -255,11 +270,31 @@ internal fun TabSwitcherOverlay(
                                 group = section.group,
                                 tabCount = section.tabs.size,
                                 isDropHover = dragState.hoverSectionKey == sectionKey,
-                                modifier = Modifier.tabDropRegion(
-                                    dragState = dragState,
-                                    regionId = "header-$sectionKey",
-                                    sectionKey = sectionKey
-                                ),
+                                insertSide = when {
+                                    dragState.draggingGroupId == null -> InsertSide.NONE
+                                    dragState.draggingGroupId == sectionKey -> InsertSide.NONE
+                                    dragState.hoverSectionKey != sectionKey -> InsertSide.NONE
+                                    section.group == null -> InsertSide.NONE
+                                    dragState.hoverAfterSection -> InsertSide.AFTER
+                                    else -> InsertSide.BEFORE
+                                },
+                                modifier = Modifier
+                                    .tabDropRegion(
+                                        dragState = dragState,
+                                        regionId = "header-$sectionKey",
+                                        sectionKey = sectionKey
+                                    )
+                                    .then(
+                                        // Long-press-drag the header to reorder
+                                        // whole groups (same infra as tab drags).
+                                        if (section.group != null) {
+                                            Modifier.groupDragSource(
+                                                dragState = dragState,
+                                                haptics = haptics,
+                                                groupId = section.group.id
+                                            )
+                                        } else Modifier
+                                    ),
                                 onRename = if (section.group != null) {
                                     { renamingGroupId = section.group.id }
                                 } else null,
@@ -313,8 +348,7 @@ internal fun TabSwitcherOverlay(
                                 // Dragging a selected card carries the whole selection;
                                 // the long press that precedes the drag has already
                                 // added this tab to the set.
-                                draggedIds = { (selectedIds + tab.id).toList() },
-                                onDrop = performDrop
+                                draggedIds = { (selectedIds + tab.id).toList() }
                             ),
                             onSelect = {
                                 if (inSelectMode) {
@@ -346,7 +380,9 @@ internal fun TabSwitcherOverlay(
             // pick-up (the source cards only dim in place). Positioned in Box-local
             // space by subtracting the Box's own root offset from the finger point.
             val draggingCount = dragState.draggingIds?.size ?: 0
-            if (draggingCount > 0) {
+            val draggingGroup = dragState.draggingGroupId
+                ?.let { id -> groups.firstOrNull { it.id == id } }
+            if (draggingCount > 0 || draggingGroup != null) {
                 val boxTopLeft = dragState.gridBounds?.topLeft ?: Offset.Zero
                 val local = dragState.pointer - boxTopLeft
                 Surface(
@@ -362,7 +398,11 @@ internal fun TabSwitcherOverlay(
                         }
                 ) {
                     Text(
-                        text = if (draggingCount > 1) "$draggingCount 탭" else "이동",
+                        text = when {
+                            draggingGroup != null -> draggingGroup.name
+                            draggingCount > 1 -> "$draggingCount 탭"
+                            else -> "이동"
+                        },
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onPrimary,
@@ -482,6 +522,7 @@ private fun GroupHeader(
     group: TabGroup?,
     tabCount: Int,
     isDropHover: Boolean,
+    insertSide: InsertSide = InsertSide.NONE,
     modifier: Modifier = Modifier,
     onRename: (() -> Unit)?,
     onDelete: (() -> Unit)?,
@@ -497,9 +538,24 @@ private fun GroupHeader(
         accent != null -> accent.copy(alpha = 0.14f)
         else -> Color.Transparent
     }
+    val insertBarColor = MaterialTheme.colorScheme.secondary
+    val insertBarHeight = with(LocalDensity.current) { 3.dp.toPx() }
     Row(
         modifier = modifier
             .fillMaxWidth()
+            // Group-reorder insertion bar: shows whether the dragged group will
+            // land above (BEFORE) or below (AFTER) this section.
+            .drawWithContent {
+                drawContent()
+                if (insertSide != InsertSide.NONE) {
+                    val top = if (insertSide == InsertSide.AFTER) size.height - insertBarHeight else 0f
+                    drawRect(
+                        color = insertBarColor,
+                        topLeft = Offset(0f, top),
+                        size = Size(size.width, insertBarHeight)
+                    )
+                }
+            }
             .background(color = rowBg, shape = RoundedCornerShape(10.dp))
             .padding(horizontal = 10.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically

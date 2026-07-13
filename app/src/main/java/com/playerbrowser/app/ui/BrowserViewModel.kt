@@ -313,6 +313,26 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * Drag-to-reorder for group sections. Repositions [groupId] in [_groups] to
+     * sit next to [anchorGroupId] (before it, or after when [placeAfter]); a null
+     * anchor moves it to the end. Same list-order-is-display-order contract as
+     * [moveGroup], just with an arbitrary target instead of an adjacent swap.
+     */
+    fun reorderGroup(groupId: String, anchorGroupId: String?, placeAfter: Boolean) {
+        if (groupId == anchorGroupId) return
+        val current = _groups.value
+        val moving = current.firstOrNull { it.id == groupId } ?: return
+        val without = current.filterNot { it.id == groupId }
+        val idx = anchorGroupId?.let { a -> without.indexOfFirst { it.id == a } } ?: -1
+        val insertAt = when {
+            idx < 0 -> without.size
+            placeAfter -> idx + 1
+            else -> idx
+        }
+        _groups.value = without.toMutableList().apply { add(insertAt, moving) }
+    }
+
     fun deleteGroup(id: String) {
         // Removing a group does NOT close its tabs — they fall back to the
         // ungrouped section so the user doesn't lose work by mistake.

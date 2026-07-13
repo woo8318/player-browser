@@ -476,6 +476,7 @@ fun BrowserScreen(
             onRenameGroup = { id, name -> viewModel.renameGroup(id, name) },
             onDeleteGroup = { viewModel.deleteGroup(it) },
             onMoveGroup = { id, up -> viewModel.moveGroup(id, up) },
+            onReorderGroup = { id, anchor, after -> viewModel.reorderGroup(id, anchor, after) },
             onNewTab = { groupId ->
                 viewModel.newTab(groupId = groupId)
                 tabSwitcherOpen = false

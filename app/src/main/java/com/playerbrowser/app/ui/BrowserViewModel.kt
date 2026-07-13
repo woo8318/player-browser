@@ -181,11 +181,13 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
 
     fun newTab(
         initialUrl: String = BrowserUiState.HOME_URL,
-        parentTabId: String? = null
+        parentTabId: String? = null,
+        groupId: String? = null
     ): String {
-        // Inherit the parent's group so popups land next to their opener instead
-        // of falling into the default bucket and visually breaking the group.
-        val inheritedGroupId = parentTabId?.let { pid ->
+        // An explicit groupId (switcher's per-group "+") wins; otherwise inherit
+        // the parent's group so popups land next to their opener instead of
+        // falling into the default bucket and visually breaking the group.
+        val inheritedGroupId = groupId ?: parentTabId?.let { pid ->
             _tabs.value.firstOrNull { it.id == pid }?.groupId
         }
         val tab = TabState.blank(initialUrl, parentTabId = parentTabId)

@@ -108,7 +108,7 @@ internal fun TabSwitcherOverlay(
     onRenameGroup: (String, String) -> Unit,
     onDeleteGroup: (String) -> Unit,
     onMoveGroup: (String, Boolean) -> Unit,
-    onNewTab: () -> Unit,
+    onNewTab: (String?) -> Unit,
     onDismiss: () -> Unit
 ) {
     // Selection mode is mutually exclusive with normal browsing — once any
@@ -192,7 +192,7 @@ internal fun TabSwitcherOverlay(
                         IconButton(onClick = { newGroupDialog = true }) {
                             Icon(Icons.Filled.Folder, contentDescription = "new group")
                         }
-                        IconButton(onClick = onNewTab) {
+                        IconButton(onClick = { onNewTab(null) }) {
                             Icon(Icons.Filled.Add, contentDescription = "new tab")
                         }
                     }
@@ -279,6 +279,9 @@ internal fun TabSwitcherOverlay(
                                 } else null,
                                 onCloseAll = if (section.tabs.isNotEmpty()) {
                                     { onCloseMany(section.tabs.map { it.id }) }
+                                } else null,
+                                onNewTab = if (section.group != null) {
+                                    { onNewTab(section.group.id) }
                                 } else null
                             )
                         }
@@ -484,7 +487,8 @@ private fun GroupHeader(
     onDelete: (() -> Unit)?,
     onMoveUp: (() -> Unit)?,
     onMoveDown: (() -> Unit)?,
-    onCloseAll: (() -> Unit)?
+    onCloseAll: (() -> Unit)?,
+    onNewTab: (() -> Unit)?
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     val accent = group?.let { Color(it.color) }
@@ -538,6 +542,18 @@ private fun GroupHeader(
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
+        }
+        // One-tap "new tab in this group" — the whole point of grouping is to
+        // keep related tabs together, so opening the next one shouldn't require
+        // creating it ungrouped and dragging it in afterwards.
+        if (onNewTab != null) {
+            IconButton(onClick = onNewTab, modifier = Modifier.size(32.dp)) {
+                Icon(
+                    Icons.Filled.Add,
+                    contentDescription = "new tab in group",
+                    modifier = Modifier.size(18.dp)
+                )
+            }
         }
         if (onRename != null || onDelete != null || onMoveUp != null ||
             onMoveDown != null || onCloseAll != null

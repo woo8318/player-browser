@@ -3,6 +3,7 @@ package com.playerbrowser.app.cast
 import android.webkit.WebResourceRequest
 import com.playerbrowser.app.network.DebugLog
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CopyOnWriteArrayList
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,19 +19,21 @@ data class StreamCandidate(
 }
 
 /**
- * Observes WebView subresource requests and remembers the most recent
- * castable video URL per main-frame host so the Chromecast button (and the
- * on-screen "play in player" affordance) can pick it up without the user
+ * Observes WebView subresource requests and remembers the castable video URLs
+ * seen per main-frame host so the Chromecast button, the ⋮ menu, and the
+ * on-screen "play in player" affordance can pick them up without the user
  * having to copy a URL manually.
  *
- * Prefers HLS over progressive MP4 when both are seen for the same host —
- * HLS adapts quality and resumes faster on the receiver. Falls back to
- * most-recent within the same priority tier.
+ * Keeps *all* distinct streams seen for a host (bounded) so a page with several
+ * videos can offer a per-stream picker. `current()` still returns a single best
+ * pick (HLS preferred, else most recent) for Cast / one-tap launch; `all()`
+ * exposes the full list for the picker dialog.
  */
 object VideoStreamSniffer {
 
     private const val TAG = "Cast"
-    private val candidates = ConcurrentHashMap<String, StreamCandidate>()
+    private const val MAX_PER_HOST = 12
+    private val candidates = ConcurrentHashMap<String, CopyOnWriteArrayList<StreamCandidate>>()
 
     // Bumped whenever a candidate is stored. Compose observers collect this to
     // reactively show/refresh the on-screen player button the moment a stream
@@ -51,16 +54,13 @@ object VideoStreamSniffer {
         if (method != "GET") return
         val url = request.url?.toString() ?: return
         val mime = detectMime(url) ?: return
-        val candidate = StreamCandidate(url, mime, System.currentTimeMillis())
-        val existing = candidates[mainFrameHost]
-        val replace = when {
-            existing == null -> true
-            candidate.isHls && !existing.isHls -> true
-            !candidate.isHls && existing.isHls -> false
-            else -> true
-        }
-        if (replace) {
-            candidates[mainFrameHost] = candidate
+        val list = candidates.getOrPut(mainFrameHost) { CopyOnWriteArrayList() }
+        // Keep every distinct stream (by URL) so a multi-video page can offer a
+        // per-stream fallback; bound the list so a long session doesn't grow it
+        // unbounded (drop the oldest).
+        if (list.none { it.url == url }) {
+            list.add(StreamCandidate(url, mime, System.currentTimeMillis()))
+            while (list.size > MAX_PER_HOST) list.removeAt(0)
             _revision.update { it + 1 }
             DebugLog.d(TAG, "captured $mime for $mainFrameHost -> $url")
         }
@@ -86,9 +86,35 @@ object VideoStreamSniffer {
         return null
     }
 
+    /** Single best pick for Cast / one-tap launch: newest HLS, else newest overall. */
     fun current(host: String?): StreamCandidate? {
         if (host.isNullOrBlank()) return null
-        return candidates[host]
+        val list = candidates[host] ?: return null
+        return list.filter { it.isHls }.maxByOrNull { it.capturedAt }
+            ?: list.maxByOrNull { it.capturedAt }
+    }
+
+    /** All distinct streams seen for the host, newest last (capture order). */
+    fun all(host: String?): List<StreamCandidate> {
+        if (host.isNullOrBlank()) return emptyList()
+        return candidates[host]?.toList() ?: emptyList()
+    }
+
+    /**
+     * Best stream matching a source URL read off a specific <video> element.
+     * When the DOM source is a direct media URL we can play it verbatim; when
+     * it's a blob:/MSE URL (no usable network URL) callers fall back to current().
+     */
+    fun matching(host: String?, domSrc: String?): StreamCandidate? {
+        val src = domSrc?.trim().orEmpty()
+        if (src.isEmpty() || src.startsWith("blob:", ignoreCase = true)) return null
+        val scheme = src.substringBefore(':').lowercase()
+        if (scheme != "http" && scheme != "https") return null
+        // Prefer an already-sniffed candidate (carries the detected mime), else
+        // synthesize one straight from the DOM URL.
+        all(host).firstOrNull { it.url == src }?.let { return it }
+        val mime = detectMime(src) ?: "video/mp4"
+        return StreamCandidate(src, mime, System.currentTimeMillis())
     }
 
     fun clear(host: String?) {

@@ -46,6 +46,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.playerbrowser.app.web.IframeScriptInjector
+import com.playerbrowser.app.web.PlayerBridge
 import com.playerbrowser.app.web.ResumeBridge
 import com.playerbrowser.app.web.WebAssetLoader
 
@@ -70,6 +71,9 @@ interface WebViewCallbacks {
     // "백그라운드 탭으로 열기"). Default routes to foreground so implementers that
     // don't care about backgrounding still work.
     fun onOpenInBackgroundTab(url: String) = onOpenInNewTab(url)
+    // A <video> was long-pressed; open it in the external player. `domSrc` is the
+    // element's source URL ("" when unresolvable — caller falls back to sniffer).
+    fun onPlayVideoExternally(domSrc: String) {}
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -102,6 +106,8 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             cm.setAcceptThirdPartyCookies(this, true)
         }
         addJavascriptInterface(resumeBridge, "PBResume")
+        // `window.PBPlayer` — video long-press → external player (see PlayerBridge).
+        addJavascriptInterface(PlayerBridge { src -> callbacks.onPlayVideoExternally(src) }, "PBPlayer")
         val gestureScript = WebAssetLoader.gestureScript(context)
         IframeScriptInjector.setScript(gestureScript)
         webViewClient = object : WebViewClient() {

@@ -71,6 +71,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import android.widget.Toast
 import androidx.mediarouter.app.MediaRouteButton
 import com.google.android.gms.cast.framework.CastButtonFactory
+import com.playerbrowser.app.cast.StreamCandidate
 import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.data.TabWebStateStore
 import com.playerbrowser.app.network.UrlRecovery
@@ -96,6 +97,12 @@ fun BrowserScreen(
     val pendingUrl by viewModel.pendingLoadUrl.collectAsState()
     val updateState by viewModel.updateState.collectAsState()
     val groups by viewModel.groups.collectAsState()
+
+    // Set by a long-press on a <video> (via the PBPlayer JS bridge) to the
+    // element's DOM source URL; a LaunchedEffect below resolves it to a stream
+    // and opens the external player. Reset to null after handling so a repeat
+    // long-press on the same video re-triggers.
+    var externalPlayRequest by remember { mutableStateOf<String?>(null) }
 
     // Garbage-collect WebViews for tabs that no longer exist, and prune their
     // gallery thumbnails in lock-step.
@@ -135,6 +142,12 @@ fun BrowserScreen(
             // user on the current page (activate = false).
             override fun onOpenInBackgroundTab(url: String) {
                 viewModel.newTab(url, parentTabId = ownerId, activate = false)
+            }
+            // Video long-press → open THAT video in the external player. Only the
+            // active tab is interactable, so resolving against the active page's
+            // context below is correct. Marshalled onto the main thread already.
+            override fun onPlayVideoExternally(domSrc: String) {
+                externalPlayRequest = domSrc
             }
         }).also { state ->
             // Restore this tab's saved back/forward history if we have it —
@@ -181,13 +194,10 @@ fun BrowserScreen(
         thumbnails.capture(activeTabId, activeWebState.webView)
     }
 
-    // Launch the built-in Media3 player with the stream sniffed for the current
-    // page. Shared by the ⋮ menu and the on-screen player button so both inject
-    // the same Referer/Cookie/UA context. Toasts when nothing was captured yet.
-    val launchPlayer: () -> Unit = {
-        val pageUrl = state.currentUrl
-        val host = runCatching { Uri.parse(pageUrl).host }.getOrNull()
-        val candidate = VideoStreamSniffer.current(host)
+    // Launch the built-in Media3 player with a specific stream, injecting the
+    // active page's Referer/Cookie/UA so protected CDNs receive the same context
+    // as the WebView. Toasts when there's nothing to play.
+    val playCandidate: (StreamCandidate?) -> Unit = { candidate ->
         if (candidate == null) {
             Toast.makeText(
                 context,
@@ -195,6 +205,7 @@ fun BrowserScreen(
                 Toast.LENGTH_SHORT
             ).show()
         } else {
+            val pageUrl = state.currentUrl
             val ua = runCatching { activeWebState.webView.settings.userAgentString }.getOrNull()
             val cookie = runCatching {
                 CookieManager.getInstance().getCookie(candidate.url)
@@ -209,6 +220,24 @@ fun BrowserScreen(
                 title = state.currentTitle
             )
         }
+    }
+
+    // ⋮ menu + on-screen FAB: single best pick (HLS preferred) for the page.
+    val launchPlayer: () -> Unit = {
+        val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
+        playCandidate(VideoStreamSniffer.current(host))
+    }
+
+    // Video long-press: resolve the long-pressed element's DOM source to a
+    // playable stream. A direct media URL plays that exact video; a blob:/MSE
+    // src (no usable URL) falls back to the page's sniffed network stream.
+    LaunchedEffect(externalPlayRequest) {
+        val src = externalPlayRequest ?: return@LaunchedEffect
+        val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
+        val candidate = VideoStreamSniffer.matching(host, src)
+            ?: VideoStreamSniffer.current(host)
+        playCandidate(candidate)
+        externalPlayRequest = null
     }
 
     // Toolbar / nav-bar swipe → switch to the adjacent tab. A short haptic

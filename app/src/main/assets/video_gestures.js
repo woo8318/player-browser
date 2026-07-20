@@ -651,6 +651,89 @@
     touchState = null;
   }, { passive: true, capture: true });
 
+  // ---- 외부 플레이어 연결 (long-press a video → open in external player) ----
+  //
+  // Long-pressing a <video> reads THAT element's source and asks Android to open
+  // it in the built-in Media3 player, so a page with several videos can send
+  // exactly the one under the finger (the single on-screen button couldn't say
+  // which video it meant). The DOM src is used verbatim when it's a direct media
+  // URL; blob:/MSE videos have no usable URL, so the native side falls back to
+  // the sniffed network stream. Cross-origin iframe players can't see the
+  // window.PBPlayer bridge, so the frame that owns the video relays the source
+  // up to the top frame via postMessage (each level re-relays until it reaches
+  // the frame that has the bridge) — same pattern as the fullscreen relay above.
+  (function initExternalPlayer() {
+    var LONG_PRESS_MS = 550;
+    var MOVE_CANCEL_PX = 12;
+    var lp = null; // { timer, x, y, video }
+
+    function videoSrc(v) {
+      if (!v) return '';
+      try {
+        if (v.currentSrc) return v.currentSrc;
+        if (v.src) return v.src;
+        var s = v.querySelector && v.querySelector('source[src]');
+        if (s && s.src) return s.src;
+      } catch (e) {}
+      return '';
+    }
+
+    // Deliver the source to the Android bridge, relaying up through parent frames
+    // when this frame has no bridge of its own (cross-origin iframe player).
+    function requestExternal(src) {
+      try {
+        if (window.PBPlayer && window.PBPlayer.openVideo) {
+          window.PBPlayer.openVideo(src || '');
+          return;
+        }
+      } catch (e) {}
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ __pbOpenVideo: src || '' }, '*');
+        }
+      } catch (e) {}
+    }
+
+    function clearLp() {
+      if (lp && lp.timer) clearTimeout(lp.timer);
+      lp = null;
+    }
+
+    document.addEventListener('touchstart', function (e) {
+      if (!e.touches || e.touches.length !== 1) { clearLp(); return; }
+      var t0 = e.touches[0];
+      // Strict on-video test (no active-video fallback) so a long-press on page
+      // chrome / links never hijacks into the player.
+      if (!isPointOnVideo(t0.clientX, t0.clientY)) { clearLp(); return; }
+      var v = videoAtPoint(t0.clientX, t0.clientY);
+      if (!v) { clearLp(); return; }
+      clearLp();
+      lp = { x: t0.clientX, y: t0.clientY, video: v, timer: null };
+      lp.timer = setTimeout(function () {
+        var cur = lp;
+        lp = null;
+        if (cur) { requestExternal(videoSrc(cur.video)); showToast('외부 플레이어로 여는 중…'); }
+      }, LONG_PRESS_MS);
+    }, { passive: true, capture: true });
+
+    document.addEventListener('touchmove', function (e) {
+      if (!lp || !e.touches || e.touches.length === 0) return;
+      var t0 = e.touches[0];
+      if (Math.abs(t0.clientX - lp.x) > MOVE_CANCEL_PX ||
+          Math.abs(t0.clientY - lp.y) > MOVE_CANCEL_PX) clearLp();
+    }, { passive: true, capture: true });
+
+    document.addEventListener('touchend', clearLp, { passive: true, capture: true });
+    document.addEventListener('touchcancel', clearLp, { passive: true, capture: true });
+
+    // A descendant frame long-pressed its video and relayed the source up.
+    window.addEventListener('message', function (ev) {
+      var d = ev && ev.data;
+      if (!d || typeof d.__pbOpenVideo === 'undefined') return;
+      requestExternal(d.__pbOpenVideo);
+    });
+  })();
+
   // ---- 이어보기 (resume playback) ----
   //
   // Records the active video's position via the Android PBResume bridge (keyed

@@ -1,5 +1,6 @@
 package com.playerbrowser.app.ui
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.webkit.CookieManager
@@ -229,15 +230,26 @@ fun BrowserScreen(
     }
 
     // Video long-press: resolve the long-pressed element's DOM source to a
-    // playable stream. A direct media URL plays that exact video; a blob:/MSE
-    // src (no usable URL) falls back to the page's sniffed network stream.
+    // playable stream, then offer a menu rather than auto-launching (a bare
+    // long-press used to fire an unwanted — and often broken — player). A direct
+    // media URL plays that exact video; a blob:/MSE src (no usable URL) falls
+    // back to the page's sniffed network stream. When nothing is resolvable we
+    // just toast — long-pressing an unplayable video shouldn't pop a useless menu.
     LaunchedEffect(externalPlayRequest) {
         val src = externalPlayRequest ?: return@LaunchedEffect
+        externalPlayRequest = null
         val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
         val candidate = VideoStreamSniffer.matching(host, src)
             ?: VideoStreamSniffer.current(host)
-        playCandidate(candidate)
-        externalPlayRequest = null
+        if (candidate == null) {
+            Toast.makeText(
+                context,
+                "재생할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생해 보세요)",
+                Toast.LENGTH_SHORT
+            ).show()
+        } else {
+            showVideoContextMenu(context, candidate) { playCandidate(candidate) }
+        }
     }
 
     // Toolbar / nav-bar swipe → switch to the adjacent tab. A short haptic
@@ -570,6 +582,36 @@ private fun CastButton() {
             }
         }
     )
+}
+
+/**
+ * Long-press-on-video menu. Shown once a stream has been resolved, so the user
+ * confirms the external player instead of it launching on a bare long-press.
+ * "영상 주소 복사" is a useful escape hatch when the resolved stream won't play.
+ */
+private fun showVideoContextMenu(
+    context: Context,
+    candidate: StreamCandidate,
+    onPlay: () -> Unit
+) {
+    val items = arrayOf("외부 플레이어로 재생", "영상 주소 복사")
+    androidx.appcompat.app.AlertDialog.Builder(context)
+        .setTitle("영상")
+        .setItems(items) { _, which ->
+            when (which) {
+                0 -> onPlay()
+                1 -> {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                        as? android.content.ClipboardManager
+                    clipboard?.setPrimaryClip(
+                        android.content.ClipData.newPlainText("video", candidate.url)
+                    )
+                    Toast.makeText(context, "영상 주소를 복사했어요", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        .setNegativeButton("취소", null)
+        .show()
 }
 
 @Composable

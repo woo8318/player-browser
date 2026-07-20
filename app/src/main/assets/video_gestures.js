@@ -712,7 +712,9 @@
       lp.timer = setTimeout(function () {
         var cur = lp;
         lp = null;
-        if (cur) { requestExternal(videoSrc(cur.video)); showToast('외부 플레이어로 여는 중…'); }
+        // The native side now shows a menu (or a "no stream" toast), so don't
+        // pre-announce "opening…" here — the long-press just requests the menu.
+        if (cur) { requestExternal(videoSrc(cur.video)); }
       }, LONG_PRESS_MS);
     }, { passive: true, capture: true });
 

@@ -131,6 +131,11 @@ fun BrowserScreen(
             override fun onOpenInNewTab(url: String) {
                 viewModel.newTab(url, parentTabId = ownerId)
             }
+            // Link long-press "백그라운드 탭": create the child tab but keep the
+            // user on the current page (activate = false).
+            override fun onOpenInBackgroundTab(url: String) {
+                viewModel.newTab(url, parentTabId = ownerId, activate = false)
+            }
         }).also { state ->
             // Restore this tab's saved back/forward history if we have it —
             // restoreState reloads the current entry itself, so only fall back

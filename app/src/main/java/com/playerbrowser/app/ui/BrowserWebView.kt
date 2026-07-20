@@ -66,6 +66,10 @@ interface WebViewCallbacks {
     fun onFinished(url: String, title: String, canGoBack: Boolean, canGoForward: Boolean)
     fun onOpenAppSettings()
     fun onOpenInNewTab(url: String)
+    // Open a link in a new tab without switching to it (link long-press
+    // "백그라운드 탭으로 열기"). Default routes to foreground so implementers that
+    // don't care about backgrounding still work.
+    fun onOpenInBackgroundTab(url: String) = onOpenInNewTab(url)
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -256,8 +260,61 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             }
         }
         webChromeClient = FullscreenAwareChromeClient(this, callbacks)
+        // Long-press a link → context menu ("새 탭에서 열기" / "백그라운드 탭으로
+        // 열기" / "링크 주소 복사"). Standard browser affordance so the user no
+        // longer has to flip the global "always open in new tab" setting.
+        setOnLongClickListener { v ->
+            val wv = v as? WebView ?: return@setOnLongClickListener false
+            val result = wv.hitTestResult
+            if (result.type != WebView.HitTestResult.SRC_ANCHOR_TYPE &&
+                result.type != WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE
+            ) {
+                return@setOnLongClickListener false
+            }
+            // For SRC_ANCHOR_TYPE `extra` is already the href; for an image inside
+            // an anchor it's the image src, so ask the WebView for the node's href
+            // and fall back to `extra` when it doesn't answer.
+            val handler = android.os.Handler(android.os.Looper.getMainLooper()) { msg ->
+                val href = msg.data?.getString("url")?.takeIf { it.isNotBlank() }
+                    ?: result.extra
+                showLinkContextMenu(wv.context, href, callbacks)
+                true
+            }
+            wv.requestFocusNodeHref(handler.obtainMessage())
+            true
+        }
     }
     return BrowserWebViewState(webView, callbacks)
+}
+
+/**
+ * Shows the link long-press context menu. Only surfaces for http(s) links —
+ * anything else (javascript:, mailto:, relative fragments) is ignored.
+ */
+private fun showLinkContextMenu(context: Context, url: String?, callbacks: WebViewCallbacks) {
+    val href = url?.trim().orEmpty()
+    val scheme = runCatching { Uri.parse(href).scheme?.lowercase() }.getOrNull()
+    if (scheme != "http" && scheme != "https") return
+
+    val items = arrayOf("새 탭에서 열기", "백그라운드 탭으로 열기", "링크 주소 복사")
+    androidx.appcompat.app.AlertDialog.Builder(context)
+        .setTitle(href)
+        .setItems(items) { _, which ->
+            when (which) {
+                0 -> callbacks.onOpenInNewTab(href)
+                1 -> {
+                    callbacks.onOpenInBackgroundTab(href)
+                    Toast.makeText(context, "백그라운드 탭에서 열었어요", Toast.LENGTH_SHORT).show()
+                }
+                2 -> {
+                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
+                        as? android.content.ClipboardManager
+                    clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("link", href))
+                    Toast.makeText(context, "링크 주소를 복사했어요", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        .show()
 }
 
 private class FullscreenAwareChromeClient(

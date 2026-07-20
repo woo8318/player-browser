@@ -182,7 +182,8 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     fun newTab(
         initialUrl: String = BrowserUiState.HOME_URL,
         parentTabId: String? = null,
-        groupId: String? = null
+        groupId: String? = null,
+        activate: Boolean = true
     ): String {
         // An explicit groupId (switcher's per-group "+") wins; otherwise inherit
         // the parent's group so popups land next to their opener instead of
@@ -193,8 +194,13 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         val tab = TabState.blank(initialUrl, parentTabId = parentTabId)
             .copy(groupId = inheritedGroupId)
         _tabs.value = _tabs.value + tab
-        _activeTabId.value = tab.id
-        _pendingLoadUrl.value = initialUrl
+        // A background tab (link long-press "open in background") keeps the user
+        // on the current page — its WebView is built lazily on first switch and
+        // loads `currentUrl` then, so we don't touch _activeTabId/_pendingLoadUrl.
+        if (activate) {
+            _activeTabId.value = tab.id
+            _pendingLoadUrl.value = initialUrl
+        }
         return tab.id
     }
 

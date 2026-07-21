@@ -699,7 +699,15 @@
       lp = null;
     }
 
-    document.addEventListener('touchstart', function (e) {
+    // NOTE: these listen on `window`, not `document`. The main gesture handler's
+    // touchend listener (on `document`, registered earlier) calls
+    // stopImmediatePropagation() on a recognized double-tap to kill the trailing
+    // click — which would also block a later `document` listener like clearLp,
+    // leaving the long-press timer from the 2nd tap alive so it fired the menu
+    // ~550ms after a double-tap (bug). Capture-phase `window` listeners run
+    // BEFORE any `document` listener, so our cancel always runs first and the
+    // double-tap correctly cancels the pending long-press.
+    window.addEventListener('touchstart', function (e) {
       if (!e.touches || e.touches.length !== 1) { clearLp(); return; }
       var t0 = e.touches[0];
       // Strict on-video test (no active-video fallback) so a long-press on page
@@ -718,15 +726,15 @@
       }, LONG_PRESS_MS);
     }, { passive: true, capture: true });
 
-    document.addEventListener('touchmove', function (e) {
+    window.addEventListener('touchmove', function (e) {
       if (!lp || !e.touches || e.touches.length === 0) return;
       var t0 = e.touches[0];
       if (Math.abs(t0.clientX - lp.x) > MOVE_CANCEL_PX ||
           Math.abs(t0.clientY - lp.y) > MOVE_CANCEL_PX) clearLp();
     }, { passive: true, capture: true });
 
-    document.addEventListener('touchend', clearLp, { passive: true, capture: true });
-    document.addEventListener('touchcancel', clearLp, { passive: true, capture: true });
+    window.addEventListener('touchend', clearLp, { passive: true, capture: true });
+    window.addEventListener('touchcancel', clearLp, { passive: true, capture: true });
 
     // A descendant frame long-pressed its video and relayed the source up.
     window.addEventListener('message', function (ev) {

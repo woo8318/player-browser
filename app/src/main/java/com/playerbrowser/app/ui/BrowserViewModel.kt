@@ -12,6 +12,7 @@ import com.playerbrowser.app.data.PersistedGroup
 import com.playerbrowser.app.data.PersistedSession
 import com.playerbrowser.app.data.PersistedTab
 import com.playerbrowser.app.data.TabPersistence
+import com.playerbrowser.app.network.TabTitlePrefetcher
 import com.playerbrowser.app.update.DownloadStep
 import com.playerbrowser.app.update.UpdateClient
 import com.playerbrowser.app.update.UpdateInstaller
@@ -200,8 +201,26 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
         if (activate) {
             _activeTabId.value = tab.id
             _pendingLoadUrl.value = initialUrl
+        } else {
+            // Background tab: no WebView yet, so no title. Fetch just the page
+            // <title> so the switcher card shows what was opened instead of a
+            // bare host placeholder — the whole point of "open in background".
+            prefetchBackgroundTitle(tab.id, initialUrl)
         }
         return tab.id
+    }
+
+    private fun prefetchBackgroundTitle(tabId: String, url: String) {
+        if (!url.startsWith("http", ignoreCase = true)) return
+        viewModelScope.launch {
+            val ua = runCatching {
+                android.webkit.WebSettings.getDefaultUserAgent(getApplication<Application>())
+            }.getOrNull()
+            val title = TabTitlePrefetcher.fetchTitle(url, ua) ?: return@launch
+            // Only fill it while the tab is still unloaded; if the user switched
+            // to it meanwhile, its WebView's onPageFinished title takes over.
+            updateTab(tabId) { if (it.currentTitle.isBlank()) it.copy(currentTitle = title) else it }
+        }
     }
 
     fun selectTab(id: String) {

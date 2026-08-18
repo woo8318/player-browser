@@ -28,8 +28,25 @@ import com.playerbrowser.app.network.DebugLog
  * 것 자체가 또 하나의 신호가 되고, 안티봇은 챌린지 이전 페이지에서도 지문을
  * 수집한다. 기기가 이 API를 지원하지 않으면 조용히 넘어간다.
  *
- * **한계:** `PaymentRequest` 부재 등 남는 표식이 더 있고, 셰이프를 어설프게
- * 흉내 내면 그 자체가 신호가 될 수 있어 널리 검증된 두 가지만 손댄다.
+ * **v1.3.62 — 추측 대신 진단 결과로 채운다.** v1.3.61의 [probeEnvironment]가 이
+ * 기기(SM-F776N / WebView Chrome 150)에서 실제로 없는 API 이름을 로그에 찍었다:
+ * `PaymentRequest`, `PublicKeyCredential`, `navigator.mediaSession`,
+ * `navigator.share`, `navigator.bluetooth`, `navigator.usb`,
+ * `navigator.presentation`, `navigator.getInstalledRelatedApps`,
+ * `speechSynthesis` — 아홉 개 전부 Chrome for Android엔 있다. 하나만 없어도
+ * WebView로 특정되므로 골라 채우는 건 의미가 없어 한 번에 전부 정의한다.
+ *
+ * **부작용을 안 만드는 방식으로 채운다:** 존재는 하되 capability 질의
+ * (`canShare` / `canMakePayment` / `getAvailability` /
+ * `isUserVerifyingPlatformAuthenticatorAvailable`)는 전부 false를 돌려준다.
+ * 그래서 사이트가 "공유"·"결제"·"생체인증" 버튼을 새로 그렸다가 눌러도 아무
+ * 일이 없는 상황이 생기지 않고, 실제로 못 쓰는 기능은 종전처럼 조용히 숨겨진다.
+ * `navigator.*`는 인스턴스가 아니라 `Navigator.prototype`에 정의해
+ * `Object.getOwnPropertyNames(Navigator.prototype)` 수준의 검사와도 어긋나지 않는다.
+ *
+ * **남는 한계:** `Function.prototype.toString`을 통째로 프록시하지는 않는다
+ * (섀도잉한 `toString`만 `[native code]`를 돌려준다). 라이브러리가 함수 소스를
+ * 들여다보는 사이트를 깨뜨릴 수 있어 다음 단계로 미뤄둔다.
  */
 object BrowserEnvPatch {
 
@@ -42,7 +59,12 @@ object BrowserEnvPatch {
         }
         runCatching {
             WebViewCompat.addDocumentStartJavaScript(view, SCRIPT, setOf("*"))
-            DebugLog.d(TAG, "JS 환경 정규화 주입: window.chrome + Notification")
+            DebugLog.d(
+                TAG,
+                "JS 환경 정규화 주입: window.chrome + Notification + PaymentRequest / " +
+                    "PublicKeyCredential / mediaSession / share / bluetooth / usb / " +
+                    "presentation / getInstalledRelatedApps / speechSynthesis"
+            )
         }.onFailure {
             DebugLog.w(TAG, "JS 환경 정규화 실패(무시): ${it.javaClass.simpleName}")
         }
@@ -100,7 +122,9 @@ object BrowserEnvPatch {
     has('navigator.getInstalledRelatedApps', function () { return navigator.getInstalledRelatedApps; });
     has('navigator.virtualKeyboard', function () { return navigator.virtualKeyboard; });
     has('navigator.userActivation', function () { return navigator.userActivation; });
+    has('navigator.canShare', function () { return navigator.canShare; });
     has('speechSynthesis', function () { return window.speechSynthesis; });
+    has('SpeechSynthesisUtterance', function () { return window.SpeechSynthesisUtterance; });
     has('BeforeInstallPromptEvent', function () { return window.BeforeInstallPromptEvent; });
     has('BatteryManager', function () { return window.BatteryManager; });
     has('navigator.getBattery', function () { return navigator.getBattery; });
@@ -209,6 +233,173 @@ object BrowserEnvPatch {
       Object.defineProperty(window, 'Notification', {
         value: N, configurable: true, writable: true, enumerable: false
       });
+    }
+  } catch (e) {}
+
+  // ---- v1.3.62: 진단이 이름을 직접 찍어준 나머지 9개 --------------------------
+  // 전부 Chrome for Android엔 있고 WebView엔 없다. 하나만 걸려도 WebView로
+  // 특정되므로 부분만 채우는 건 의미가 없어 한 번에 채운다.
+  //
+  // 원칙: **존재는 하되 "쓸 수 없다"고 정직하게 답한다.** 기능 감지(typeof/in)는
+  // 통과하지만 capability 질의(canShare / canMakePayment / getAvailability /
+  // isUserVerifyingPlatformAuthenticatorAvailable)는 false를 돌려주므로, 사이트가
+  // 눌러도 아무 일 없는 버튼을 새로 그리지 않는다.
+  var navProto = (window.Navigator && window.Navigator.prototype) || navigator;
+
+  var defGet = function (obj, name, getter) {
+    try {
+      if (name in obj) { return; }
+      Object.defineProperty(obj, name, {
+        get: nativeLike(getter, 'get ' + name), configurable: true, enumerable: true
+      });
+    } catch (e) {}
+  };
+  var defVal = function (obj, name, value, enumerable) {
+    try {
+      if (name in obj) { return; }
+      Object.defineProperty(obj, name, {
+        value: value, configurable: true, writable: true, enumerable: !!enumerable
+      });
+    } catch (e) {}
+  };
+  var fail = function (name, message) {
+    try { return Promise.reject(new DOMException(message, name)); }
+    catch (e) { return Promise.reject(new Error(message)); }
+  };
+  var noop = function (label) { return nativeLike(function () {}, label); };
+
+  try {
+    defVal(navProto, 'share', nativeLike(function (data) {
+      return fail('AbortError', 'Share canceled');
+    }, 'share'), true);
+    defVal(navProto, 'canShare', nativeLike(function (data) { return false; }, 'canShare'), true);
+  } catch (e) {}
+
+  try {
+    defVal(navProto, 'getInstalledRelatedApps', nativeLike(function () {
+      return Promise.resolve([]);
+    }, 'getInstalledRelatedApps'), true);
+  } catch (e) {}
+
+  try {
+    var mediaSession = {
+      metadata: null,
+      playbackState: 'none',
+      setActionHandler: noop('setActionHandler'),
+      setPositionState: noop('setPositionState'),
+      setMicrophoneActive: noop('setMicrophoneActive'),
+      setCameraActive: noop('setCameraActive')
+    };
+    defGet(navProto, 'mediaSession', function () { return mediaSession; });
+  } catch (e) {}
+
+  try {
+    var bluetooth = {
+      getAvailability: nativeLike(function () { return Promise.resolve(false); }, 'getAvailability'),
+      requestDevice: nativeLike(function () {
+        return fail('NotFoundError', 'User cancelled the requestDevice() chooser.');
+      }, 'requestDevice'),
+      getDevices: nativeLike(function () { return Promise.resolve([]); }, 'getDevices'),
+      addEventListener: noop('addEventListener'),
+      removeEventListener: noop('removeEventListener'),
+      dispatchEvent: nativeLike(function () { return false; }, 'dispatchEvent')
+    };
+    defGet(navProto, 'bluetooth', function () { return bluetooth; });
+  } catch (e) {}
+
+  try {
+    var usb = {
+      getDevices: nativeLike(function () { return Promise.resolve([]); }, 'getDevices'),
+      requestDevice: nativeLike(function () {
+        return fail('NotFoundError', 'No device selected.');
+      }, 'requestDevice'),
+      addEventListener: noop('addEventListener'),
+      removeEventListener: noop('removeEventListener'),
+      dispatchEvent: nativeLike(function () { return false; }, 'dispatchEvent')
+    };
+    defGet(navProto, 'usb', function () { return usb; });
+  } catch (e) {}
+
+  try {
+    var presentation = { defaultRequest: null, receiver: null };
+    defGet(navProto, 'presentation', function () { return presentation; });
+  } catch (e) {}
+
+  try {
+    if (typeof window.PaymentRequest === 'undefined') {
+      var PR = function PaymentRequest(methodData, details, options) {
+        if (!(this instanceof PR)) {
+          throw new TypeError(
+            "Failed to construct 'PaymentRequest': Please use the 'new' operator."
+          );
+        }
+        if (arguments.length < 2) {
+          throw new TypeError(
+            "Failed to construct 'PaymentRequest': 2 arguments required."
+          );
+        }
+        this.id = String(Math.random()).slice(2);
+        this.shippingAddress = null;
+        this.shippingOption = null;
+        this.shippingType = null;
+        this.onshippingaddresschange = null;
+        this.onshippingoptionchange = null;
+        this.onpaymentmethodchange = null;
+      };
+      nativeLike(PR, 'PaymentRequest');
+      PR.prototype.show = nativeLike(function () {
+        return fail('NotSupportedError', 'The payment method is not supported.');
+      }, 'show');
+      PR.prototype.abort = nativeLike(function () { return Promise.resolve(); }, 'abort');
+      PR.prototype.canMakePayment = nativeLike(function () {
+        return Promise.resolve(false);
+      }, 'canMakePayment');
+      PR.prototype.addEventListener = noop('addEventListener');
+      PR.prototype.removeEventListener = noop('removeEventListener');
+      defVal(window, 'PaymentRequest', PR, false);
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window.PublicKeyCredential === 'undefined') {
+      var PKC = function PublicKeyCredential() {
+        throw new TypeError('Illegal constructor');
+      };
+      nativeLike(PKC, 'PublicKeyCredential');
+      PKC.isUserVerifyingPlatformAuthenticatorAvailable = nativeLike(function () {
+        return Promise.resolve(false);
+      }, 'isUserVerifyingPlatformAuthenticatorAvailable');
+      PKC.isConditionalMediationAvailable = nativeLike(function () {
+        return Promise.resolve(false);
+      }, 'isConditionalMediationAvailable');
+      defVal(window, 'PublicKeyCredential', PKC, false);
+    }
+  } catch (e) {}
+
+  try {
+    if (typeof window.speechSynthesis === 'undefined') {
+      var SSU = function SpeechSynthesisUtterance(text) {
+        this.text = text === undefined ? '' : String(text);
+        this.lang = ''; this.voice = null;
+        this.volume = 1; this.rate = 1; this.pitch = 1;
+        this.onstart = null; this.onend = null; this.onerror = null;
+        this.onpause = null; this.onresume = null;
+        this.onmark = null; this.onboundary = null;
+      };
+      nativeLike(SSU, 'SpeechSynthesisUtterance');
+      SSU.prototype.addEventListener = noop('addEventListener');
+      SSU.prototype.removeEventListener = noop('removeEventListener');
+      var synth = {
+        pending: false, speaking: false, paused: false, onvoiceschanged: null,
+        getVoices: nativeLike(function () { return []; }, 'getVoices'),
+        speak: noop('speak'), cancel: noop('cancel'),
+        pause: noop('pause'), resume: noop('resume'),
+        addEventListener: noop('addEventListener'),
+        removeEventListener: noop('removeEventListener'),
+        dispatchEvent: nativeLike(function () { return false; }, 'dispatchEvent')
+      };
+      defVal(window, 'SpeechSynthesisUtterance', SSU, false);
+      defGet(window, 'speechSynthesis', function () { return synth; });
     }
   } catch (e) {}
 })();

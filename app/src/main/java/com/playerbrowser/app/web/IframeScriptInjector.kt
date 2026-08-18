@@ -64,6 +64,12 @@ object IframeScriptInjector {
                 ChallengeDetector.noteSkipped("iframe", u)
                 return upstream
             }
+            // 챌린지를 내려준 적 있는 호스트는 iframe도 손대지 않는다 —
+            // 재요청은 TLS 지문이 달라 통과 쿠키를 무효화시킨다.
+            if (ChallengeDetector.isQuarantinedHost(u.host)) {
+                ChallengeDetector.noteSkipped("iframe-격리", u)
+                return upstream
+            }
         }
 
         if (upstream != null) {

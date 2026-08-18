@@ -111,6 +111,15 @@ object SniBypassClient {
             return null
         }
 
+        // 챌린지를 내려준 적이 있는 호스트는 **메인 프레임 문서까지 포함해** 통째로
+        // 네이티브 로더에 맡긴다. 검증 POST는 어차피 우리 손이 닿지 않으므로,
+        // 문서만 우리 OkHttp로 받으면 챌린지를 푼 지문과 문서를 받은 지문이 갈려
+        // `cf_clearance`가 무효화되고 캡차가 무한 반복된다.
+        if (ChallengeDetector.isQuarantinedHost(host)) {
+            ChallengeDetector.noteSkipped("sni-격리", url)
+            return null
+        }
+
         // Main-frame requests are always intercepted (cheap insurance for any
         // host that turns out to be DPI-blocked). Subresource gating:
         //  - same-host of a bypassed page (`bypassedHosts`): unchanged — routed
@@ -166,7 +175,27 @@ object SniBypassClient {
         }
         var resp: Response? = null
         return try {
-            resp = execute(client, builder.build(), request.isForMainFrame, host)
+            val response = execute(client, builder.build(), request.isForMainFrame, host)
+            resp = response
+
+            // 이 응답이 Cloudflare 챌린지 페이지면 우리가 잡고 있을수록 손해다 —
+            // 호스트를 격리하고 null을 돌려줘 WebView가 처음부터 네이티브로
+            // 다시 요청하게 한다(챌린지 GET/POST/재로드가 한 경로에서 돈다).
+            if (request.isForMainFrame &&
+                ChallengeDetector.isChallengeResponse(response.code) { response.header(it) }
+            ) {
+                val hasClearance =
+                    cookieManager?.getCookie(urlString)?.contains("cf_clearance") == true
+                ChallengeDetector.markChallengedHost(
+                    host,
+                    "응답 ${response.code}, cf-mitigated=${response.header("cf-mitigated")}, " +
+                        "cf_clearance 보유=$hasClearance"
+                )
+                if (host.isNotBlank()) bypassedHosts.remove(host)
+                response.close()
+                return null
+            }
+
             val contentType = resp.header("Content-Type")
             val mime = contentType?.substringBefore(';')?.trim()?.ifBlank { null }
                 ?: "application/octet-stream"

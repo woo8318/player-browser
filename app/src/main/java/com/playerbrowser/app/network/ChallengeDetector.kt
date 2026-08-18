@@ -71,6 +71,86 @@ object ChallengeDetector {
         return CHALLENGE_PATHS.any { path.contains(it) }
     }
 
+    // ---------------------------------------------------------------------
+    // 챌린지 호스트 격리 (v1.3.56)
+    //
+    // 위 목록은 "챌린지 요청"만 걸러낸다. 그런데 Cloudflare 챌린지 페이지 자체는
+    // 사이트 루트(`https://example.com/`)가 403으로 내려주는 **메인 프레임 문서**라
+    // 호스트/경로 어느 쪽에도 안 걸려 여전히 우리 OkHttp가 가져간다. 반면 챌린지를
+    // 실제로 푸는 검증 POST는 `shouldInterceptRequest`가 본문을 못 봐서 **영원히**
+    // 네이티브 로더로 나간다. 결과적으로
+    //
+    //   * 챌린지를 푸는 건 네이티브(Chromium TLS 지문)
+    //   * 통과 후 문서를 다시 받는 건 우리 OkHttp(OkHttp TLS 지문 + Chrome UA)
+    //
+    // 로 갈라지는데, Cloudflare가 발급하는 `cf_clearance`는 IP + UA + TLS 지문에
+    // 묶여 있어 지문이 어긋나면 무효 처리 → 또 챌린지 → 무한 루프가 된다(같은
+    // 쿠키가 서로 다른 지문에서 오는 것 자체가 강한 봇 신호이기도 하다).
+    //
+    // POST를 가로챌 방법이 없는 이상 일관성을 얻는 유일한 길은 **그 호스트를
+    // 통째로 네이티브에 맡기는 것**이다. 챌린지 응답/위젯을 한 번이라도 본
+    // 호스트는 여기 격리해 두고, [SniBypassClient]와 [IframeScriptInjector]가
+    // 그 호스트의 모든 요청에서 손을 뗀다.
+    // ---------------------------------------------------------------------
+
+    /** 격리 TTL — 사실상 세션 내내. 챌린지를 쓰는 사이트는 계속 쓰기 때문. */
+    private const val QUARANTINE_MS = 6L * 60L * 60L * 1000L
+
+    /** host -> 격리 만료 시각(ms). */
+    private val quarantined = ConcurrentHashMap<String, Long>()
+
+    /**
+     * 이 메인 프레임 응답이 Cloudflare 챌린지 페이지인가?
+     * 챌린지는 403(managed challenge) 또는 503(legacy JS challenge)으로 내려오고
+     * Cloudflare가 `cf-mitigated: challenge` 헤더를 붙인다. 구버전 대비로
+     * `cf-ray`(Cloudflare 경유 표식)도 함께 인정한다.
+     */
+    fun isChallengeResponse(code: Int, header: (String) -> String?): Boolean {
+        if (code != 403 && code != 503 && code != 429) return false
+        if (!header("cf-mitigated").isNullOrBlank()) return true
+        return !header("cf-ray").isNullOrBlank()
+    }
+
+    fun markChallengedHost(host: String?, why: String) {
+        val h = host?.lowercase()?.trim().orEmpty()
+        if (h.isBlank()) return
+        val now = System.currentTimeMillis()
+        val prev = quarantined.put(h, now + QUARANTINE_MS)
+        // 만료분만 걷어낸다 — 진단용 맵과 달리 통째로 비우면 루프가 되살아난다.
+        if (quarantined.size > 64) {
+            quarantined.entries.removeAll { it.value <= now }
+        }
+        if (prev == null || prev < now) {
+            DebugLog.w(TAG, "챌린지 호스트 → 네이티브 전담: $h ($why)")
+            DebugLog.w(TAG, "  설정 상태: ${switchSnapshot()}")
+        }
+    }
+
+    fun isQuarantinedHost(host: String?): Boolean {
+        val h = host?.lowercase()?.trim().orEmpty()
+        if (h.isBlank()) return false
+        val until = quarantined[h] ?: return false
+        if (System.currentTimeMillis() >= until) {
+            quarantined.remove(h)
+            return false
+        }
+        return true
+    }
+
+    /**
+     * 격리된 호스트가 **접속 자체에 실패**하면(= DPI 차단) 격리를 푼다.
+     * 네이티브 경로는 ClientHello 단편화가 없어 차단 사이트에선 아예 못 뚫는데,
+     * 그대로 두면 캡차 대신 접속 실패로 바뀔 뿐이라 다음 시도는 SNI 우회
+     * 경로로 되돌린다(캡차 루프 < 접속 불가).
+     */
+    fun clearQuarantine(host: String?) {
+        val h = host?.lowercase()?.trim().orEmpty()
+        if (h.isBlank()) return
+        if (quarantined.remove(h) != null) {
+            DebugLog.w(TAG, "네이티브 전담 해제(접속 실패) → 우회 경로 복귀: $h")
+        }
+    }
+
     /**
      * 우리가 가로채기를 포기한 챌린지 요청을 로그로 남긴다. 챌린지는 요청이
      * 수십 개씩 쏟아지므로 (호스트, 종류)당 30초에 한 번만 기록.
@@ -129,6 +209,13 @@ object ChallengeDetector {
         val count = (hits[key] ?: 0) + 1
         hits[key] = count
         DebugLog.w(TAG, "감지 #$count: $key → $markers")
+        // 응답 헤더로 못 잡은 챌린지(200으로 내려오는 인터스티셜 등)도 격리한다.
+        // 단 **가로막는 인터스티셜일 때만** — 로그인 폼에 얹힌 reCAPTCHA 위젯까지
+        // 격리하면 멀쩡한 사이트가 SNI 우회 경로를 잃는다. 판별은 "Just a moment"
+        // 류 제목(=문서 전체가 챌린지) 또는 Cloudflare 챌린지 폼 존재로 한정.
+        if (markers.contains("title=") || markers.contains("cf-challenge")) {
+            markChallengedHost(runCatching { Uri.parse(url).host }.getOrNull(), "DOM 인터스티셜")
+        }
         if (count == 1 || count % 3 == 0) DebugLog.w(TAG, "  설정 상태: ${switchSnapshot()}")
         if (count >= 3) {
             DebugLog.e(TAG, "루프 의심: 같은 주소에서 캡차가 ${count}회 반복됨 — $key")

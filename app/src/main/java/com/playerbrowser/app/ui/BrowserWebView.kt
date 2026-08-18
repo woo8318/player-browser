@@ -200,6 +200,16 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 val code = error.errorCode
                 val desc = error.description?.toString().orEmpty()
 
+                // 캡차 때문에 네이티브 전담(격리)으로 돌린 호스트가 접속 자체에
+                // 실패했다면 DPI에 막힌 것이다 — 네이티브 경로엔 ClientHello
+                // 단편화가 없다. 격리를 풀어 다음 시도는 다시 SNI 우회 경로로
+                // 나가게 한다(캡차 루프보다 접속 불가가 더 나쁘다).
+                if (UrlRecovery.shouldProbe(code)) {
+                    ChallengeDetector.clearQuarantine(
+                        runCatching { Uri.parse(failingUrl).host }.getOrNull()
+                    )
+                }
+
                 // URL의 숫자가 바뀐 사이트(예: newtoki123 → newtoki124)일 수 있으니,
                 // 접속 실패성 에러면 숫자 증감 후보를 백그라운드로 확인해 살아있는
                 // 주소로 자동 이동한다. 후보가 없거나 못 찾으면 평소 에러 페이지.

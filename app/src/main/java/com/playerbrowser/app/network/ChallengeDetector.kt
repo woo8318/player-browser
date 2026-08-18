@@ -2,6 +2,7 @@ package com.playerbrowser.app.network
 
 import android.net.Uri
 import android.webkit.WebView
+import android.widget.Toast
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -249,11 +250,11 @@ object ChallengeDetector {
     private fun runProbe(view: WebView, url: String, token: Int, final: Boolean) {
         // 탭이 닫혀 WebView가 destroy됐으면 throw — 지연 프로브라 정상적인 경우다.
         runCatching {
-            view.evaluateJavascript(PROBE_JS) { raw -> report(url, decode(raw), token, final) }
+            view.evaluateJavascript(PROBE_JS) { raw -> report(view, url, decode(raw), token, final) }
         }
     }
 
-    private fun report(url: String, markers: String, token: Int, final: Boolean) {
+    private fun report(view: WebView, url: String, markers: String, token: Int, final: Boolean) {
         val key = normalize(url)
         if (markers.isBlank()) {
             // 지연 프로브까지 아무것도 없으면 이 페이지엔 캡차가 없다 = 통과.
@@ -293,8 +294,37 @@ object ChallengeDetector {
             DebugLog.e(TAG, "루프 의심: 같은 주소에서 캡차가 ${count}회 반복됨 — $key")
             DebugLog.e(TAG, "  쿠키 상태: ${ChallengeCookies.describe(host)}")
             resetCookiesIfLooping(host)
+            notifyStuck(view, host)
         }
     }
+
+    /**
+     * 루프가 확정되면 **사용자에게 직접 알린다** (v1.3.59).
+     *
+     * Cloudflare의 비대화형(managed) 챌린지는 체크박스가 없어 사용자가 눌러서
+     * 풀 수 있는 게 아니라, 브라우저 환경 점수만으로 자동 판정된다. Android
+     * WebView는 `window.chrome` 부재 등 우리가 지울 수 없는 표식이 남아 있어
+     * 보안 등급이 높은 사이트에선 통과가 구조적으로 불가능할 수 있다. 그때
+     * 무한 스피너만 돌면 사용자는 앱이 고장난 줄 알게 되므로, 확실한 우회
+     * 수단(⋮ 메뉴 → 외부 브라우저로 열기)을 안내한다. 호스트당 60초 1회.
+     */
+    private fun notifyStuck(view: WebView, host: String?) {
+        val h = host?.lowercase()?.trim().orEmpty()
+        if (h.isBlank()) return
+        val now = System.currentTimeMillis()
+        val last = lastStuckNotice[h]
+        if (last != null && now - last < 60_000L) return
+        lastStuckNotice[h] = now
+        runCatching {
+            Toast.makeText(
+                view.context,
+                "보안 확인이 반복됩니다.\n⋮ 메뉴 → '외부 브라우저로 열기'로 열어 보세요.",
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
+
+    private val lastStuckNotice = ConcurrentHashMap<String, Long>()
 
     private fun switchSnapshot(): String =
         "SNI우회=${SniBypassSwitch.enabled}, 프라이빗DNS=${PrivateDnsSwitch.enabled}, " +

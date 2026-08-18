@@ -107,6 +107,9 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             // (v1.3.58). 임의 접미사를 붙이던 예전 시도와 달리 표준 형태로
             // 되돌리는 방향이라 ERR_CONNECTION_RESET 위험은 없다.
             userAgentString = UserAgentSpoof.chromeLike(userAgentString)
+            // UA 문자열만 고치면 `Sec-CH-UA`는 여전히 "Android WebView"라고 나가
+            // 둘이 서로 모순된다(= 더 강한 봇 신호). 브랜드 힌트도 같이 맞춘다 (v1.3.59).
+            UserAgentSpoof.applyClientHints(this, userAgentString)
         }
         CookieManager.getInstance().also { cm ->
             cm.setAcceptCookie(true)

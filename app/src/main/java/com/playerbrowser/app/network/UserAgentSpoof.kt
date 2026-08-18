@@ -1,5 +1,10 @@
 package com.playerbrowser.app.network
 
+import android.webkit.WebSettings
+import androidx.webkit.UserAgentMetadata
+import androidx.webkit.WebSettingsCompat
+import androidx.webkit.WebViewFeature
+
 /**
  * WebView 기본 User-Agent를 **평범한 Chrome for Android UA로 정규화**한다.
  *
@@ -52,4 +57,49 @@ object UserAgentSpoof {
         }
         return out
     }
+
+    /**
+     * UA 문자열과 **짝을 맞춰** UA Client Hints(`Sec-CH-UA`)도 Chrome으로 맞춘다.
+     *
+     * [chromeLike]만 적용하면 UA 문자열은 "Chrome"이라고 하는데 `Sec-CH-UA`는
+     * 여전히 `"Android WebView";v="150"`을 보낸다. 안티봇은 이 둘을 교차 검증하므로
+     * **어긋난 상태가 정직한 WebView보다 더 나쁜 신호**가 된다 — v1.3.58에서 UA만
+     * 바꿨는데도 Cloudflare 챌린지가 그대로 반복된 이유로 의심되는 부분.
+     *
+     * 그래서 브랜드 목록만 평범한 Chrome 조합으로 갈아끼운다. 플랫폼/기기/버전 등
+     * 나머지 필드는 기존 메타데이터를 그대로 복사해 UA 문자열과 계속 일치시킨다.
+     * 기기가 이 API를 지원하지 않으면(구형 WebView) 조용히 넘어간다 — 그 경우
+     * `Sec-CH-UA` 자체를 안 보내는 버전이라 어긋남도 없다.
+     */
+    fun applyClientHints(settings: WebSettings, ua: String) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.USER_AGENT_METADATA)) return
+        val full = CHROME_VERSION.find(ua)?.groupValues?.getOrNull(1)?.takeIf { it.isNotBlank() }
+            ?: return
+        val major = full.substringBefore('.')
+        runCatching {
+            val brands = listOf(
+                brand("Chromium", major, full),
+                brand("Google Chrome", major, full),
+                // GREASE 항목 — 진짜 Chrome도 파서 관용성 확인용으로 하나 끼워 보낸다.
+                brand("Not)A;Brand", "8", "8.0.0.0")
+            )
+            val current = WebSettingsCompat.getUserAgentMetadata(settings)
+            val updated = UserAgentMetadata.Builder(current)
+                .setBrandVersionList(brands)
+                .build()
+            WebSettingsCompat.setUserAgentMetadata(settings, updated)
+            DebugLog.d(TAG, "Sec-CH-UA 브랜드 → Chromium/Google Chrome $major (WebView 표식 제거)")
+        }.onFailure {
+            DebugLog.w(TAG, "Sec-CH-UA 조정 실패(무시): ${it.javaClass.simpleName}")
+        }
+    }
+
+    private fun brand(name: String, major: String, full: String): UserAgentMetadata.BrandVersion =
+        UserAgentMetadata.BrandVersion.Builder()
+            .setBrand(name)
+            .setMajorVersion(major)
+            .setFullVersion(full)
+            .build()
+
+    private val CHROME_VERSION = Regex("""Chrome/([0-9][0-9.]*)""")
 }

@@ -47,6 +47,7 @@ import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
+import com.playerbrowser.app.web.BrowserEnvPatch
 import com.playerbrowser.app.web.IframeScriptInjector
 import com.playerbrowser.app.web.PlayerBridge
 import com.playerbrowser.app.web.ResumeBridge
@@ -115,6 +116,9 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             cm.setAcceptCookie(true)
             cm.setAcceptThirdPartyCookies(this, true)
         }
+        // 페이지 스크립트보다 먼저 실행돼 WebView 특유의 JS 환경 표식을 지운다
+        // (window.chrome / Notification 부재). 네트워크는 건드리지 않는다 (v1.3.60).
+        BrowserEnvPatch.install(this)
         addJavascriptInterface(resumeBridge, "PBResume")
         // `window.PBPlayer` — video long-press → external player (see PlayerBridge).
         addJavascriptInterface(playerBridge, "PBPlayer")

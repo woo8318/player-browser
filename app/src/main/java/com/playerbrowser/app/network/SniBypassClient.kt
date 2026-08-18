@@ -166,7 +166,7 @@ object SniBypassClient {
         }
         var resp: Response? = null
         return try {
-            resp = client.newCall(builder.build()).execute()
+            resp = execute(client, builder.build(), request.isForMainFrame, host)
             val contentType = resp.header("Content-Type")
             val mime = contentType?.substringBefore(';')?.trim()?.ifBlank { null }
                 ?: "application/octet-stream"
@@ -198,7 +198,15 @@ object SniBypassClient {
             if (request.isForMainFrame && host.isNotBlank() && resp.code in 200..399) {
                 bypassedHosts.add(host)
             }
-            if (request.isForMainFrame) DebugLog.d("SniBypass", "intercept ok: $host -> ${resp.code}")
+            if (request.isForMainFrame) {
+                DebugLog.d("SniBypass", "intercept ok: $host -> ${resp.code}")
+                // 메인 프레임 3xx는 우리가 따라가지 않고 WebView에 넘긴다(주소창
+                // 동기화 때문). 리다이렉트 목적지를 남겨 두면 "빈 화면으로 멈춤"
+                // 같은 증상이 왔을 때 여기서 끊긴 건지 바로 알 수 있다.
+                if (resp.code in 300..399) {
+                    DebugLog.d("SniBypass", "  main-frame redirect → ${resp.header("Location")}")
+                }
+            }
             val reason = resp.message.ifBlank { reasonFor(resp.code) }
             // Stream the body through to the WebView instead of buffering the
             // entire response in memory. The wrapper closes the OkHttp
@@ -220,6 +228,33 @@ object SniBypassClient {
             resp?.close()
             DebugLog.w("SniBypass", "intercept err: $host", t)
             null
+        }
+    }
+
+    /**
+     * 메인 프레임은 실패하면 **즉시 한 번 재시도**한다. ClientHello 단편화가
+     * DPI를 뚫는지는 확률적이라(미들박스의 재조립 타이밍·경로에 따라 갈린다)
+     * 한 번 실패했다고 null을 돌려주면 WebView가 단편화 없는 네이티브 로더로
+     * 떨어져 그대로 차단당한다 — "사이트가 한 번에 안 열리고 새로고침하면
+     * 열리는" 증상의 마지막 조각. 재시도는 새 커넥션(메인 프레임 풀은 5초라
+     * 죽은 커넥션이 남지 않음)으로 나가므로 단편화를 다시 시도하게 된다.
+     *
+     * 서브리소스는 재시도하지 않는다 — 한 CDN 호스트로 이미지 수십 개가
+     * 몰리는 구간이라 재시도가 곱해지면 오히려 전체가 밀린다.
+     */
+    private fun execute(
+        client: OkHttpClient,
+        req: Request,
+        mainFrame: Boolean,
+        host: String
+    ): Response {
+        try {
+            return client.newCall(req).execute()
+        } catch (e: IOException) {
+            if (!mainFrame) throw e
+            DebugLog.w("SniBypass", "main-frame 1차 실패 → 재시도: $host", e)
+            // Call은 1회용이라 새로 만든다.
+            return client.newCall(req).execute()
         }
     }
 

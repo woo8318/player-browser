@@ -189,7 +189,9 @@ object SniBypassClient {
                 ChallengeDetector.markChallengedHost(
                     host,
                     "응답 ${response.code}, cf-mitigated=${response.header("cf-mitigated")}, " +
-                        "cf_clearance 보유=$hasClearance"
+                        "cf_clearance 보유=$hasClearance",
+                    // 아직 챌린지 화면이 뜨기 전 — 진행 상태 쿠키까지 비워도 안전.
+                    preflight = true
                 )
                 if (host.isNotBlank()) bypassedHosts.remove(host)
                 response.close()

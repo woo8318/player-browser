@@ -111,7 +111,14 @@ object ChallengeDetector {
         return !header("cf-ray").isNullOrBlank()
     }
 
-    fun markChallengedHost(host: String?, why: String) {
+    /**
+     * @param preflight 아직 챌린지 흐름이 **시작되기 전**인가. `SniBypassClient`가
+     *   403 응답을 버리고 네이티브로 재요청시키는 순간이 여기 해당하며, 그때만
+     *   진행 상태 쿠키까지 통째로 비우는 게 안전하다. 챌린지 화면이 이미 떠 있는
+     *   DOM 감지 경로에서 `__cf_bm`/`cf_chl*`을 지우면 **우리가 진행 중인 흐름을
+     *   끊어** 통과 자체가 불가능해진다(v1.3.57이 그랬다).
+     */
+    fun markChallengedHost(host: String?, why: String, preflight: Boolean = false) {
         val h = host?.lowercase()?.trim().orEmpty()
         if (h.isBlank()) return
         val now = System.currentTimeMillis()
@@ -124,10 +131,13 @@ object ChallengeDetector {
         if (prev == null || prev < now) {
             DebugLog.w(TAG, "챌린지 호스트 → 네이티브 전담: $h ($why)")
             DebugLog.w(TAG, "  설정 상태: ${switchSnapshot()}")
-            // 우리가 예전에 심어놓은 낡은 통과 쿠키가 남아 있으면 새로 받은
-            // 토큰과 함께 나가 Cloudflare가 거부한다 — 깨끗이 지우고 시작.
-            ChallengeCookies.reset(h)
-            lastCookieReset[h] = now
+            DebugLog.w(TAG, "  쿠키 상태: ${ChallengeCookies.describe(h)}")
+            if (preflight) {
+                // 우리가 예전에 심어놓은 낡은 통과 쿠키가 남아 있으면 새로 받은
+                // 토큰과 함께 나가 Cloudflare가 거부한다 — 깨끗이 지우고 시작.
+                ChallengeCookies.resetAll(h)
+                lastCookieReset[h] = now
+            }
         }
     }
 
@@ -143,7 +153,8 @@ object ChallengeDetector {
         val last = lastCookieReset[h]
         if (last != null && now - last < 60_000L) return
         lastCookieReset[h] = now
-        ChallengeCookies.reset(h)
+        // 진행 상태(`__cf_bm`/`cf_chl*`)는 그대로 둔다 — 지금 돌고 있는 흐름이다.
+        ChallengeCookies.resetClearance(h)
     }
 
     private val lastCookieReset = ConcurrentHashMap<String, Long>()
@@ -278,8 +289,10 @@ object ChallengeDetector {
         }
         if (count == 1 || count % 3 == 0) DebugLog.w(TAG, "  설정 상태: ${switchSnapshot()}")
         if (count >= 3) {
+            val host = runCatching { Uri.parse(url).host }.getOrNull()
             DebugLog.e(TAG, "루프 의심: 같은 주소에서 캡차가 ${count}회 반복됨 — $key")
-            resetCookiesIfLooping(runCatching { Uri.parse(url).host }.getOrNull())
+            DebugLog.e(TAG, "  쿠키 상태: ${ChallengeCookies.describe(host)}")
+            resetCookiesIfLooping(host)
         }
     }
 

@@ -42,6 +42,7 @@ import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.LinkNewTabSwitch
 import com.playerbrowser.app.network.SniBypassClient
 import com.playerbrowser.app.network.UrlRecovery
+import com.playerbrowser.app.network.UserAgentSpoof
 import android.widget.Toast
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
@@ -100,8 +101,12 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             cacheMode = WebSettings.LOAD_DEFAULT
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
-            // Use Chrome's default UA — appending a custom suffix triggered anti-bot
-            // rules on some sites and caused ERR_CONNECTION_RESET.
+            // WebView 기본 UA에서 `; wv` / `Version/4.0` 표식만 걷어내 같은 기기의
+            // 진짜 Chrome UA와 형태를 맞춘다. 이 토큰이 남아 있으면 Cloudflare가
+            // "WebView"로 분류해 챌린지를 풀어도 통과 점수를 안 줘 무한 반복된다
+            // (v1.3.58). 임의 접미사를 붙이던 예전 시도와 달리 표준 형태로
+            // 되돌리는 방향이라 ERR_CONNECTION_RESET 위험은 없다.
+            userAgentString = UserAgentSpoof.chromeLike(userAgentString)
         }
         CookieManager.getInstance().also { cm ->
             cm.setAcceptCookie(true)

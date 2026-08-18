@@ -55,9 +55,10 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 - **프라이빗 DNS (DoH)** — DNS 조회를 ISP 대신 선택한 DNS-over-HTTPS 제공자(Cloudflare / Google / Quad9 / AdGuard, 또는 커스텀 URL)로 암호화. 켜면 SNI 우회와 별개로 모든 페이지에 적용되며, AdGuard 선택 시 DNS 단에서 광고·추적 도메인도 차단. RFC 8484 wire-format이라 임의의 DoH 엔드포인트(NextDNS 등) 지원. 설정에서 토글.
 - **URL 숫자 자동 복구** — 접속 자체가 안 되는 페이지의 URL에 숫자가 있으면(예: `newtoki123.com`), 다음 번호들(`+1~+10`, `-1~-3`)을 백그라운드로 확인해 살아있는 가장 가까운 주소로 자동 이동. 도메인 끝 숫자가 주기적으로 바뀌는 사이트 대응. 도메인에 숫자가 없으면 경로/쿼리의 마지막 숫자로 폴백.
 - **URL 숫자 수동 복구** — 페이지가 정상 로드됐지만(예: 404 안내 페이지가 200으로 뜨거나 내용이 바뀐 경우) 새 주소를 직접 찾고 싶을 때, 상단 ⋮ 메뉴 → **주소 복구 (URL 찾기)**로 현재 주소 기준 숫자 후보를 즉석에서 확인해 살아있는 주소로 이동. 자동 복구가 발동하지 않는 상황을 보완.
+- **캡차("사람인지 확인") 흐름 보호** — Cloudflare Turnstile / hCaptcha / reCAPTCHA / DataDome 등 안티봇 챌린지 요청은 iframe 스크립트 주입도 SNI 우회 가로채기도 하지 않고 WebView 네이티브 로더에 그대로 맡긴다. 예전엔 챌린지 iframe을 앱이 다시 받아 CSP를 벗기고 스크립트를 끼워 넣었고, SNI 우회 시엔 챌린지 GET만 가로채고 검증 POST는 네이티브로 나가 커넥션이 갈라지는 바람에 체크를 해도 확인 화면만 무한 반복됐음. 통과 쿠키(`cf_clearance` 등)는 `CookieManager.flush()`로 디스크에 확정해 앱을 껐다 켜도 유지. 캡차가 감지되면 디버그 로그에 종류·주소·설정 상태가 남고, 같은 주소에서 3회 이상 반복되면 "루프 의심"으로 기록.
 - **HTTP/HTTPS 프록시** — 인증 포함 외부 프록시 경유 (WebView 트래픽)
 - **크래시 로깅** — `Thread.setDefaultUncaughtExceptionHandler` + `WebViewClient.onRenderProcessGone`으로 메인 프로세스/WebView 렌더러 충돌을 `filesDir/crashes/`에 영구 저장. 디버그 로그 화면에서 조회/복사.
-- **인앱 디버그 로그** — `DebugLog`가 SNI 우회 / 광고 차단 / 캐스트 이벤트 등을 메모리 링버퍼 + 화면에 표시
+- **인앱 디버그 로그** — `DebugLog`가 SNI 우회 / 광고 차단 / 캐스트 / 캡차 감지 이벤트 등을 메모리 링버퍼 + 화면에 표시
 
 ## 갤럭시 S24에 설치하기
 
@@ -108,6 +109,8 @@ app/src/main/
     network/                            # 네트워크 인터셉트 / 프록시 / 진단
       AdBlocker.kt / AdBlockSwitch.kt   # 광고 차단
       CookieBannerKiller.kt / CookieBannerSwitch.kt  # 쿠키 동의 배너 자동 거부
+      ChallengeDetector.kt              # 캡차/안티봇 챌린지 가로채기 금지 목록 + 감지 로그
+      CookieFlusher.kt                  # CookieManager.flush() 디바운서 (통과 쿠키 영속화)
       ResumeSwitch.kt                   # 이어보기 토글
       LinkNewTabSwitch.kt               # 링크 항상 새 탭 열기 토글 (shouldOverrideUrlLoading hot path)
       SniBypassClient.kt / SniBypassSwitch.kt / FragmentingSocketFactory.kt / DohClient.kt

@@ -13,6 +13,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.playerbrowser.app.data.TabWebStateStore
+import com.playerbrowser.app.network.CookieFlusher
 
 object Routes {
     const val BROWSER = "browser"
@@ -46,6 +47,10 @@ fun RootNavigation(viewModel: BrowserViewModel) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_STOP) {
                 tabWebStates.saveAll(webStates.mapValues { it.value.webView })
+                // Cookies our interceptors planted via CookieManager.setCookie
+                // are memory-only until flushed — without this a captcha
+                // clearance cookie (cf_clearance …) dies with the process.
+                CookieFlusher.flushNow()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)

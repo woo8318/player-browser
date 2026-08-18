@@ -34,6 +34,7 @@ import android.webkit.RenderProcessGoneDetail
 import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.network.AdBlockSwitch
 import com.playerbrowser.app.network.AdBlocker
+import com.playerbrowser.app.network.ChallengeDetector
 import com.playerbrowser.app.network.CookieBannerKiller
 import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
@@ -126,10 +127,14 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 // Gated to genuine link taps — typed URLs (loadUrl never hits this
                 // callback), server redirects, and JS navigations without a user
                 // gesture are left to load in place.
+                // GET만 대상 — 폼 전송(POST)을 새 탭으로 돌리면 본문이 사라진
+                // 맨 GET으로 다시 열려 흐름이 깨진다(캡차 통과 직후의 챌린지
+                // 폼이 대표적: 새 탭에서 처음부터 다시 "사람인지 확인"이 뜸).
                 if (LinkNewTabSwitch.enabled &&
                     request.isForMainFrame &&
                     request.hasGesture() &&
-                    !request.isRedirect
+                    !request.isRedirect &&
+                    request.method?.equals("GET", ignoreCase = true) != false
                 ) {
                     val scheme = uri.scheme?.lowercase()
                     if (scheme == "http" || scheme == "https") {
@@ -171,6 +176,9 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 if (CookieBannerSwitch.enabled) {
                     view?.evaluateJavascript(CookieBannerKiller.SCRIPT, null)
                 }
+                // "사람인지 확인" 위젯이 떠 있는지 살펴 디버그 로그에 기록
+                // (어떤 사이트가 어떤 캡차를 쓰는지 / 루프에 빠졌는지 추적용).
+                ChallengeDetector.probe(view, url)
                 if (view != null && url != null) {
                     callbacks.onFinished(
                         url = url,

@@ -3,6 +3,8 @@ package com.playerbrowser.app.web
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import com.playerbrowser.app.network.ChallengeDetector
+import com.playerbrowser.app.network.CookieFlusher
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.ByteArrayInputStream
@@ -49,6 +51,20 @@ object IframeScriptInjector {
         val method = request.method?.uppercase() ?: "GET"
         if (method != "GET") return upstream
         if (!looksLikeIframeDoc(request)) return upstream
+
+        // 안티봇 챌린지(Cloudflare Turnstile / hCaptcha / reCAPTCHA …) iframe은
+        // 손대지 않는다. 이 경로는 iframe 문서를 우리 OkHttp로 "다시" 받아
+        // CSP를 벗기고 스크립트를 끼워 넣고 본문을 재인코딩하는데, 챌린지
+        // 문서에 그걸 하면 문서를 받은 커넥션과 그 안의 JS가 이후 날리는
+        // 검증 요청의 컨텍스트가 어긋나 통과가 안 된다 — 체크박스를 눌러도
+        // "사람인지 확인" 화면이 계속 다시 뜨는 원인. 어차피 캡차 iframe엔
+        // 비디오가 없어 제스처 스크립트도 쓸모없다.
+        request.url?.let { u ->
+            if (ChallengeDetector.isChallengeRequest(u)) {
+                ChallengeDetector.noteSkipped("iframe", u)
+                return upstream
+            }
+        }
 
         if (upstream != null) {
             val mime = upstream.mimeType?.lowercase().orEmpty()
@@ -115,7 +131,9 @@ object IframeScriptInjector {
                     if (n.equals("Content-Security-Policy", true)) return@forEach
                     if (n.equals("Content-Security-Policy-Report-Only", true)) return@forEach
                     if (n.equals("Set-Cookie", true)) {
-                        cookieMgr?.setCookie(urlStr, v); return@forEach
+                        cookieMgr?.setCookie(urlStr, v)
+                        CookieFlusher.schedule()
+                        return@forEach
                     }
                     headers[n] = v
                 }

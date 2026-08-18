@@ -101,6 +101,16 @@ object SniBypassClient {
         if (scheme != "https") return null
         val host = url.host?.lowercase().orEmpty()
 
+        // 안티봇 챌린지(캡차)는 절대 가로채지 않는다. shouldInterceptRequest는
+        // POST 본문을 볼 수 없어 챌린지 GET만 우리 OkHttp로 오고 검증 POST는
+        // 네이티브로 나가는데, 그러면 커넥션/DNS 경로가 갈라져 챌린지가 영영
+        // 완료되지 않는다(체크해도 "사람인지 확인" 화면만 반복). 흐름 전체를
+        // WebView 네이티브 로더 한 곳에 맡긴다.
+        if (ChallengeDetector.isChallengeRequest(url)) {
+            ChallengeDetector.noteSkipped("sni", url)
+            return null
+        }
+
         // Main-frame requests are always intercepted (cheap insurance for any
         // host that turns out to be DPI-blocked). Subresource gating:
         //  - same-host of a bypassed page (`bypassedHosts`): unchanged — routed
@@ -170,16 +180,21 @@ object SniBypassClient {
             val charset = parseCharset(contentType)
 
             val headers = LinkedHashMap<String, String>()
+            var sawSetCookie = false
             resp.headers.forEach { (name, value) ->
                 if (name.equals("Content-Encoding", true)) return@forEach
                 if (name.equals("Content-Length", true)) return@forEach
                 if (name.equals("Transfer-Encoding", true)) return@forEach
                 if (name.equals("Set-Cookie", true)) {
                     cookieManager?.setCookie(urlString, value)
+                    sawSetCookie = true
                     return@forEach
                 }
                 headers[name] = value
             }
+            // setCookie로 심은 쿠키는 WebView가 알아서 디스크에 쓰지 않는다 —
+            // 명시적으로 flush해야 프로세스가 죽어도 살아남는다(cf_clearance 등).
+            if (sawSetCookie) CookieFlusher.schedule()
             if (request.isForMainFrame && host.isNotBlank() && resp.code in 200..399) {
                 bypassedHosts.add(host)
             }

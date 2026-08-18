@@ -214,6 +214,8 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                     url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
                 )
                 if (!onChallenge) {
+                    // 이 기기의 WebView에 실제로 뭐가 빠져 있는지 1회 진단 (v1.3.61).
+                    view?.let { BrowserEnvPatch.probeEnvironment(it) }
                     view?.evaluateJavascript(gestureScript, null)
                     if (AdBlockSwitch.enabled) {
                         view?.evaluateJavascript(AdBlocker.HIDE_CSS_JS, null)

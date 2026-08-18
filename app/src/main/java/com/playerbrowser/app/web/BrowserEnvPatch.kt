@@ -48,6 +48,85 @@ object BrowserEnvPatch {
         }
     }
 
+    @Volatile private var probed = false
+
+    /**
+     * **어떤 표식이 남아 있는지 기기에서 직접 찍어본다 (v1.3.61).**
+     *
+     * WebView에 무엇이 없는지는 기기/WebView 버전마다 다르고, 목록을 추측으로
+     * 채우면 어설픈 셰이프가 오히려 신호가 된다. 그래서 진짜 Chrome for Android엔
+     * 있는 API들을 한 번 훑어 **없는 것만** 로그에 남긴다 — 다음 라운드에서 무엇을
+     * 채울지 로그가 직접 알려주게 하는 것이 목적. 앱 실행당 1회, 챌린지가 아닌
+     * 페이지에서만 돈다.
+     */
+    fun probeEnvironment(view: WebView) {
+        if (probed) return
+        probed = true
+        runCatching {
+            view.evaluateJavascript(PROBE_JS) { raw ->
+                val out = raw?.trim()?.removeSurrounding("\"").orEmpty()
+                    .replace("\\\"", "\"").replace("\\\\", "\\")
+                if (out.isNotBlank()) DebugLog.w(TAG, "JS 환경 진단 — 없는 것: $out")
+                else DebugLog.d(TAG, "JS 환경 진단: 확인한 항목 모두 존재")
+            }
+        }
+    }
+
+    /** Chrome for Android엔 있는 API 목록. 없는 것만 이름을 모아 돌려준다. */
+    private val PROBE_JS = """
+(function () {
+  try {
+    var miss = [];
+    var has = function (label, get) {
+      try { if (typeof get() === 'undefined' || get() === null) miss.push(label); }
+      catch (e) { miss.push(label + '!'); }
+    };
+    has('window.chrome', function () { return window.chrome; });
+    has('chrome.loadTimes', function () { return window.chrome && window.chrome.loadTimes; });
+    has('chrome.csi', function () { return window.chrome && window.chrome.csi; });
+    has('Notification', function () { return window.Notification; });
+    has('PaymentRequest', function () { return window.PaymentRequest; });
+    has('PublicKeyCredential', function () { return window.PublicKeyCredential; });
+    has('navigator.credentials', function () { return navigator.credentials; });
+    has('navigator.serviceWorker', function () { return navigator.serviceWorker; });
+    has('navigator.permissions', function () { return navigator.permissions; });
+    has('navigator.mediaSession', function () { return navigator.mediaSession; });
+    has('navigator.share', function () { return navigator.share; });
+    has('navigator.bluetooth', function () { return navigator.bluetooth; });
+    has('navigator.usb', function () { return navigator.usb; });
+    has('navigator.wakeLock', function () { return navigator.wakeLock; });
+    has('navigator.storage', function () { return navigator.storage; });
+    has('navigator.presentation', function () { return navigator.presentation; });
+    has('navigator.getInstalledRelatedApps', function () { return navigator.getInstalledRelatedApps; });
+    has('navigator.virtualKeyboard', function () { return navigator.virtualKeyboard; });
+    has('navigator.userActivation', function () { return navigator.userActivation; });
+    has('speechSynthesis', function () { return window.speechSynthesis; });
+    has('BeforeInstallPromptEvent', function () { return window.BeforeInstallPromptEvent; });
+    has('BatteryManager', function () { return window.BatteryManager; });
+    has('navigator.getBattery', function () { return navigator.getBattery; });
+    has('trustedTypes', function () { return window.trustedTypes; });
+    has('navigator.userAgentData', function () { return navigator.userAgentData; });
+
+    var extra = [];
+    try { extra.push('plugins=' + navigator.plugins.length); } catch (e) {}
+    try { extra.push('webdriver=' + navigator.webdriver); } catch (e) {}
+    try {
+      if (navigator.userAgentData && navigator.userAgentData.brands) {
+        extra.push('brands=' + navigator.userAgentData.brands.map(function (b) {
+          return b.brand + '/' + b.version;
+        }).join('|'));
+      }
+    } catch (e) {}
+    try {
+      var pb = [];
+      for (var k in window) { if (k.indexOf('PB') === 0) { pb.push(k); } }
+      if (pb.length) { extra.push('브리지=' + pb.join(',')); }
+    } catch (e) {}
+    return miss.join(', ') + (extra.length ? '  [' + extra.join(' ') + ']' : '');
+  } catch (e) { return 'probe error: ' + e; }
+})();
+""".trimIndent()
+
     /**
      * 모든 프레임에서 페이지 스크립트보다 먼저 실행된다. **이미 존재하면 손대지
      * 않는다** — 진짜로 값이 있는 환경을 우리가 덮어써 오히려 어긋나게 만들지

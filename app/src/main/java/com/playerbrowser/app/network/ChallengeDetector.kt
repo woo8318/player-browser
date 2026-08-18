@@ -115,6 +115,7 @@ object ChallengeDetector {
         val h = host?.lowercase()?.trim().orEmpty()
         if (h.isBlank()) return
         val now = System.currentTimeMillis()
+        markChallengeActive(h)
         val prev = quarantined.put(h, now + QUARANTINE_MS)
         // 만료분만 걷어낸다 — 진단용 맵과 달리 통째로 비우면 루프가 되살아난다.
         if (quarantined.size > 64) {
@@ -123,7 +124,60 @@ object ChallengeDetector {
         if (prev == null || prev < now) {
             DebugLog.w(TAG, "챌린지 호스트 → 네이티브 전담: $h ($why)")
             DebugLog.w(TAG, "  설정 상태: ${switchSnapshot()}")
+            // 우리가 예전에 심어놓은 낡은 통과 쿠키가 남아 있으면 새로 받은
+            // 토큰과 함께 나가 Cloudflare가 거부한다 — 깨끗이 지우고 시작.
+            ChallengeCookies.reset(h)
+            lastCookieReset[h] = now
         }
+    }
+
+    /**
+     * 격리했는데도 루프가 계속되면(=통과 토큰이 매번 거부됨) 쿠키 오염이
+     * 남아 있는 것이므로 한 번 더 정리한다. 진행 중인 챌린지를 반복해서
+     * 끊지 않도록 호스트당 60초에 한 번으로 제한.
+     */
+    private fun resetCookiesIfLooping(host: String?) {
+        val h = host?.lowercase()?.trim().orEmpty()
+        if (h.isBlank()) return
+        val now = System.currentTimeMillis()
+        val last = lastCookieReset[h]
+        if (last != null && now - last < 60_000L) return
+        lastCookieReset[h] = now
+        ChallengeCookies.reset(h)
+    }
+
+    private val lastCookieReset = ConcurrentHashMap<String, Long>()
+
+    // ---------------------------------------------------------------------
+    // "지금 챌린지가 떠 있는가" — 격리(6시간)와는 별개의 짧은 창.
+    //
+    // 네트워크 격리는 통과 후에도 유지해야 한다(통과 토큰은 그 흐름을 처리한
+    // TLS 지문에 묶여 있다). 하지만 페이지 쪽 기능 — 제스처 스크립트 주입,
+    // 광고차단 CSS, 쿠키배너 킬러, JS 브리지 — 까지 6시간 끄면 정작 그
+    // 사이트에서 동영상 제스처도 이어보기도 못 쓴다. 그래서 이것들은
+    // **챌린지 화면이 실제로 떠 있는 동안만** 접어둔다.
+    // ---------------------------------------------------------------------
+
+    private const val ACTIVE_MS = 60_000L
+    private val challengeActive = ConcurrentHashMap<String, Long>()
+
+    /** 챌린지 화면이 방금(60초 내) 감지된 호스트인가. */
+    fun isChallengeActive(host: String?): Boolean {
+        val h = host?.lowercase()?.trim().orEmpty()
+        if (h.isBlank()) return false
+        val until = challengeActive[h] ?: return false
+        if (System.currentTimeMillis() >= until) {
+            challengeActive.remove(h)
+            return false
+        }
+        return true
+    }
+
+    private fun markChallengeActive(host: String?) {
+        val h = host?.lowercase()?.trim().orEmpty()
+        if (h.isBlank()) return
+        challengeActive[h] = System.currentTimeMillis() + ACTIVE_MS
+        prune(challengeActive)
     }
 
     fun isQuarantinedHost(host: String?): Boolean {
@@ -194,7 +248,13 @@ object ChallengeDetector {
             // 지연 프로브까지 아무것도 없으면 이 페이지엔 캡차가 없다 = 통과.
             // 즉시 프로브의 공백은 "아직 안 그려짐"일 수 있어 판단하지 않는다.
             if (final && !reported.containsKey(token)) {
-                hits.remove(key)?.let { DebugLog.d(TAG, "챌린지 사라짐(통과): $key") }
+                hits.remove(key)?.let {
+                    DebugLog.d(TAG, "챌린지 사라짐(통과): $key")
+                    // 네트워크 격리는 유지(통과 토큰이 네이티브 지문에 묶임),
+                    // 페이지 기능만 곧바로 되살린다.
+                    runCatching { Uri.parse(url).host }.getOrNull()
+                        ?.lowercase()?.let { h -> challengeActive.remove(h) }
+                }
             }
             return
         }
@@ -219,6 +279,7 @@ object ChallengeDetector {
         if (count == 1 || count % 3 == 0) DebugLog.w(TAG, "  설정 상태: ${switchSnapshot()}")
         if (count >= 3) {
             DebugLog.e(TAG, "루프 의심: 같은 주소에서 캡차가 ${count}회 반복됨 — $key")
+            resetCookiesIfLooping(runCatching { Uri.parse(url).host }.getOrNull())
         }
     }
 

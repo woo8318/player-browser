@@ -81,6 +81,7 @@ interface WebViewCallbacks {
 fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserWebViewState {
     // "이어보기" bridge — keyed by the page URL kept in sync via the WebViewClient.
     val resumeBridge = ResumeBridge(context.applicationContext)
+    val playerBridge = PlayerBridge { src -> callbacks.onPlayVideoExternally(src) }
     val webView = WebView(context).apply {
         layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -108,7 +109,7 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
         }
         addJavascriptInterface(resumeBridge, "PBResume")
         // `window.PBPlayer` — video long-press → external player (see PlayerBridge).
-        addJavascriptInterface(PlayerBridge { src -> callbacks.onPlayVideoExternally(src) }, "PBPlayer")
+        addJavascriptInterface(playerBridge, "PBPlayer")
         val gestureScript = WebAssetLoader.gestureScript(context)
         IframeScriptInjector.setScript(gestureScript)
         webViewClient = object : WebViewClient() {
@@ -150,6 +151,14 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 request: WebResourceRequest?
             ): WebResourceResponse? {
                 if (request == null) return null
+                // 챌린지 호스트는 응답을 만들어내는 단계에서 전부 손을 뗀다 —
+                // 광고차단이 돌려주는 빈 204도 챌린지 스크립트에겐 로드 실패다.
+                // (스니퍼는 요청을 관찰만 하므로 그대로 둔다 — 격리됐다고 그
+                //  사이트의 동영상 감지까지 죽으면 정작 쓸 수가 없다.)
+                if (ChallengeDetector.isQuarantinedHost(request.url?.host)) {
+                    VideoStreamSniffer.observe(request, view?.tag as? String)
+                    return null
+                }
                 // Ad blocker first — cheapest check, returns an empty 204
                 // before we waste cycles on sniffer / SNI / iframe injection.
                 AdBlocker.intercept(request)?.let { return it }
@@ -162,19 +171,44 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 super.onPageStarted(view, url, favicon)
                 // Track host so the sniffer attributes captured stream URLs to
                 // the right page even when subresources come from CDNs.
-                view?.tag = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
+                val host = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
+                view?.tag = host
+                // `window.PBResume` / `window.PBPlayer` 같은 네이티브 브리지는
+                // 페이지가 window를 훑으면 그대로 보인다 — 안티봇이 자동화
+                // 브라우저로 판정하는 대표적 신호다. 챌린지 호스트에선 떼어낸다
+                // (챌린지 페이지엔 비디오도 이어보기도 없다).
+                if (view != null) {
+                    runCatching {
+                        if (ChallengeDetector.isChallengeActive(host)) {
+                            view.removeJavascriptInterface("PBResume")
+                            view.removeJavascriptInterface("PBPlayer")
+                        } else {
+                            view.addJavascriptInterface(resumeBridge, "PBResume")
+                            view.addJavascriptInterface(playerBridge, "PBPlayer")
+                        }
+                    }
+                }
                 resumeBridge.currentUrl = url
                 url?.let { callbacks.onStarted(it) }
             }
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 if (url != null) resumeBridge.currentUrl = url
-                view?.evaluateJavascript(gestureScript, null)
-                if (AdBlockSwitch.enabled) {
-                    view?.evaluateJavascript(AdBlocker.HIDE_CSS_JS, null)
-                }
-                if (CookieBannerSwitch.enabled) {
-                    view?.evaluateJavascript(CookieBannerKiller.SCRIPT, null)
+                // 챌린지 페이지엔 아무것도 주입하지 않는다. 제스처 스크립트는
+                // document에 캡처 리스너를 걸고, 광고차단 CSS는 위젯을 가릴 수
+                // 있고, 쿠키배너 킬러는 버튼을 눌러댄다 — 안티봇 입장에선 전부
+                // 자동화 신호이고 챌린지엔 어차피 쓸모가 없다.
+                val onChallenge = ChallengeDetector.isChallengeActive(
+                    url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
+                )
+                if (!onChallenge) {
+                    view?.evaluateJavascript(gestureScript, null)
+                    if (AdBlockSwitch.enabled) {
+                        view?.evaluateJavascript(AdBlocker.HIDE_CSS_JS, null)
+                    }
+                    if (CookieBannerSwitch.enabled) {
+                        view?.evaluateJavascript(CookieBannerKiller.SCRIPT, null)
+                    }
                 }
                 // "사람인지 확인" 위젯이 떠 있는지 살펴 디버그 로그에 기록
                 // (어떤 사이트가 어떤 캡차를 쓰는지 / 루프에 빠졌는지 추적용).

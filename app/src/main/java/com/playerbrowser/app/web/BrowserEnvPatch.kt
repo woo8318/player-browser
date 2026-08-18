@@ -44,9 +44,19 @@ import com.playerbrowser.app.network.DebugLog
  * `navigator.*`는 인스턴스가 아니라 `Navigator.prototype`에 정의해
  * `Object.getOwnPropertyNames(Navigator.prototype)` 수준의 검사와도 어긋나지 않는다.
  *
- * **남는 한계:** `Function.prototype.toString`을 통째로 프록시하지는 않는다
- * (섀도잉한 `toString`만 `[native code]`를 돌려준다). 라이브러리가 함수 소스를
- * 들여다보는 사이트를 깨뜨릴 수 있어 다음 단계로 미뤄둔다.
+ * **v1.3.63 — shim이 가짜라는 게 그대로 보이던 구멍을 막는다.** v1.3.62는 각
+ * shim 함수에 **자체 `toString`**을 심었는데, 안티봇이 실제로 쓰는 검사는
+ * `Function.prototype.toString.call(fn)` 형태라 자체 프로퍼티를 건너뛰고 원본을
+ * 호출한다 — `function share() {}` 가 그대로 나와 **"없음"보다 나쁜 "가짜가 있음"**
+ * 이 됐다. 게다가 native 함수엔 없는 own `toString` 프로퍼티가 남아 그 자체로
+ * 표식이었다. 이제 `Function.prototype.toString`을 한 번만 프록시하고 우리가
+ * 만든 함수(WeakSet 등록분)에 대해서만 `[native code]`를 돌려준다 — 나머지는
+ * 원본에 그대로 위임하므로 함수 소스를 읽는 라이브러리는 영향을 받지 않는다.
+ *
+ * 함께: `window.outerWidth/Height`가 0일 때만 inner 값으로 교정(헤드리스 판별의
+ * 고전 지표), 그리고 `Notification`을 채우면서 생긴 모순 —
+ * `navigator.permissions.query({name:'notifications'})`가 거부되던 것 — 을
+ * 'prompt'로 맞춰 준다.
  */
 object BrowserEnvPatch {
 
@@ -63,7 +73,8 @@ object BrowserEnvPatch {
                 TAG,
                 "JS 환경 정규화 주입: window.chrome + Notification + PaymentRequest / " +
                     "PublicKeyCredential / mediaSession / share / bluetooth / usb / " +
-                    "presentation / getInstalledRelatedApps / speechSynthesis"
+                    "presentation / getInstalledRelatedApps / speechSynthesis " +
+                    "+ toString 마스킹 / outerWidth / permissions 일관성"
             )
         }.onFailure {
             DebugLog.w(TAG, "JS 환경 정규화 실패(무시): ${it.javaClass.simpleName}")
@@ -88,8 +99,8 @@ object BrowserEnvPatch {
             view.evaluateJavascript(PROBE_JS) { raw ->
                 val out = raw?.trim()?.removeSurrounding("\"").orEmpty()
                     .replace("\\\"", "\"").replace("\\\\", "\\")
-                if (out.isNotBlank()) DebugLog.w(TAG, "JS 환경 진단 — 없는 것: $out")
-                else DebugLog.d(TAG, "JS 환경 진단: 확인한 항목 모두 존재")
+                if (out.isNotBlank()) DebugLog.w(TAG, "JS 환경 진단 — $out")
+                else DebugLog.w(TAG, "JS 환경 진단: 결과 없음(스크립트 실패?)")
             }
         }
     }
@@ -132,6 +143,49 @@ object BrowserEnvPatch {
     has('navigator.userAgentData', function () { return navigator.userAgentData; });
 
     var extra = [];
+    var val = function (label, get) {
+      try {
+        var v = get();
+        extra.push(label + '=' + (v === undefined ? 'undef' : v));
+      } catch (e) { extra.push(label + '=ERR'); }
+    };
+    // v1.3.63 — 존재 여부만이 아니라 **값**을 찍는다. 셰이프/일관성이 어긋난
+    // 항목은 부재보다 강한 신호라, 무엇이 어긋나 있는지 로그가 직접 말하게 한다.
+    val('outer', function () { return window.outerWidth + 'x' + window.outerHeight; });
+    val('inner', function () { return window.innerWidth + 'x' + window.innerHeight; });
+    val('screen', function () { return screen.width + 'x' + screen.height; });
+    val('dpr', function () { return window.devicePixelRatio; });
+    val('touch', function () { return navigator.maxTouchPoints; });
+    val('cores', function () { return navigator.hardwareConcurrency; });
+    val('mem', function () { return navigator.deviceMemory; });
+    val('lang', function () { return navigator.languages.join('/'); });
+    val('tz', function () { return Intl.DateTimeFormat().resolvedOptions().timeZone; });
+    val('pdf', function () { return navigator.pdfViewerEnabled; });
+    val('dispMode', function () {
+      var modes = ['browser', 'standalone', 'minimal-ui', 'fullscreen'];
+      for (var i = 0; i < modes.length; i++) {
+        if (window.matchMedia('(display-mode: ' + modes[i] + ')').matches) { return modes[i]; }
+      }
+      return 'none';
+    });
+    val('notifPerm', function () { return window.Notification && Notification.permission; });
+    val('chromeKeys', function () { return Object.keys(window.chrome).join('+') || '(empty)'; });
+    val('uaPlatform', function () {
+      return navigator.userAgentData.platform + '/mobile=' + navigator.userAgentData.mobile;
+    });
+    // 마스킹이 실제로 먹히는지 — 안티봇이 쓰는 그 형태 그대로 확인.
+    val('maskShare', function () {
+      return Function.prototype.toString.call(navigator.share).indexOf('[native code]') >= 0;
+    });
+    val('maskToString', function () {
+      return Function.prototype.toString.call(Function.prototype.toString)
+        .indexOf('[native code]') >= 0;
+    });
+    val('webgl', function () {
+      var gl = document.createElement('canvas').getContext('webgl');
+      var dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      return gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL);
+    });
     try { extra.push('plugins=' + navigator.plugins.length); } catch (e) {}
     try { extra.push('webdriver=' + navigator.webdriver); } catch (e) {}
     try {
@@ -146,7 +200,7 @@ object BrowserEnvPatch {
       for (var k in window) { if (k.indexOf('PB') === 0) { pb.push(k); } }
       if (pb.length) { extra.push('브리지=' + pb.join(',')); }
     } catch (e) {}
-    return miss.join(', ') + (extra.length ? '  [' + extra.join(' ') + ']' : '');
+    return '없음=[' + (miss.join(', ') || '-') + ']  ' + extra.join(' ');
   } catch (e) { return 'probe error: ' + e; }
 })();
 """.trimIndent()
@@ -159,14 +213,15 @@ object BrowserEnvPatch {
     private val SCRIPT = """
 (function () {
   'use strict';
+  // 우리가 만든 함수 목록. v1.3.63부터 `Function.prototype.toString`을 통째로
+  // 프록시해 이 목록의 함수만 `[native code]`로 답한다 — 자체 `toString`을 심는
+  // 예전 방식은 `Function.prototype.toString.call(fn)`(안티봇이 실제로 쓰는 형태)에
+  // 전혀 안 먹히고, 오히려 native엔 없는 own `toString` 프로퍼티가 남아
+  // "가짜가 있음"이라는 더 강한 신호가 됐다.
+  var faked = (typeof WeakSet === 'function') ? new WeakSet() : null;
   var nativeLike = function (fn, name) {
-    try {
-      Object.defineProperty(fn, 'name', { value: name, configurable: true });
-      Object.defineProperty(fn, 'toString', {
-        value: function toString() { return 'function ' + name + '() { [native code] }'; },
-        configurable: true, writable: true
-      });
-    } catch (e) {}
+    try { Object.defineProperty(fn, 'name', { value: name, configurable: true }); } catch (e) {}
+    try { if (faked) { faked.add(fn); } } catch (e) {}
     return fn;
   };
 
@@ -400,6 +455,77 @@ object BrowserEnvPatch {
       };
       defVal(window, 'SpeechSynthesisUtterance', SSU, false);
       defGet(window, 'speechSynthesis', function () { return synth; });
+    }
+  } catch (e) {}
+
+  // ---- v1.3.63 ---------------------------------------------------------------
+
+  // WebView는 `window.outerWidth/outerHeight`가 0으로 나오는 경우가 있다.
+  // 헤드리스 판별의 고전적 지표라 0일 때만(= 명백히 틀렸을 때만) inner 값으로 맞춘다.
+  try {
+    if (window.outerWidth === 0 || window.outerHeight === 0) {
+      Object.defineProperty(window, 'outerWidth', {
+        get: nativeLike(function () { return window.innerWidth; }, 'get outerWidth'),
+        configurable: true, enumerable: true
+      });
+      Object.defineProperty(window, 'outerHeight', {
+        get: nativeLike(function () { return window.innerHeight; }, 'get outerHeight'),
+        configurable: true, enumerable: true
+      });
+    }
+  } catch (e) {}
+
+  // v1.3.60이 `Notification`을 채우면서 생긴 **모순**을 없앤다.
+  // 진짜 Chrome은 `Notification.permission === 'default'` 면
+  // `navigator.permissions.query({name:'notifications'})` 가 'prompt'를 준다.
+  // WebView는 알림 자체를 모르니 이 질의가 거부(reject)되는데, 그 조합
+  // (Notification은 있는데 권한 질의는 실패)은 정직한 부재보다 나쁜 신호다.
+  try {
+    var perms = navigator.permissions;
+    if (perms && typeof perms.query === 'function') {
+      var origQuery = perms.query.bind(perms);
+      var synthetic = function (name, state) {
+        return {
+          name: name, state: state, status: state,
+          onchange: null,
+          addEventListener: noop('addEventListener'),
+          removeEventListener: noop('removeEventListener'),
+          dispatchEvent: nativeLike(function () { return false; }, 'dispatchEvent')
+        };
+      };
+      var patched = nativeLike(function query(desc) {
+        var name = desc && desc.name;
+        return origQuery(desc)['catch'](function (err) {
+          if (name === 'notifications') { return synthetic(name, 'prompt'); }
+          if (name === 'payment-handler') { return synthetic(name, 'denied'); }
+          throw err;
+        });
+      }, 'query');
+      Object.defineProperty(perms, 'query', {
+        value: patched, configurable: true, writable: true, enumerable: false
+      });
+    }
+  } catch (e) {}
+
+  // **마지막에 설치한다** — 위에서 만든 shim이 전부 `faked`에 등록된 뒤라야 한다.
+  // 우리 함수만 `[native code]`로 답하고 나머지는 원본에 그대로 위임하므로,
+  // 함수 소스를 들여다보는 라이브러리(DI 컨테이너 등)는 영향을 받지 않는다.
+  try {
+    if (faked) {
+      var origToString = Function.prototype.toString;
+      var masked = function toString() {
+        try {
+          if (faked.has(this)) {
+            return 'function ' + (this.name || '') + '() { [native code] }';
+          }
+        } catch (e) {}
+        return origToString.call(this);
+      };
+      nativeLike(masked, 'toString');
+      faked.add(origToString);
+      Object.defineProperty(Function.prototype, 'toString', {
+        value: masked, configurable: true, writable: true, enumerable: false
+      });
     }
   } catch (e) {}
 })();

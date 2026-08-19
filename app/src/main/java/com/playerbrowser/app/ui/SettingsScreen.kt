@@ -324,12 +324,14 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()
-            SectionTitle("JS 환경 위장")
+            SectionTitle("브라우저 위장")
             Text(
-                text = "이 브라우저가 앱 안의 WebView라는 것을 자바스크립트에서 알아볼 수 없게, " +
-                    "진짜 Chrome에는 있고 WebView에는 없는 항목들을 채워 넣습니다. " +
-                    "일부 사이트의 \"사람인지 확인\"이 무한 반복될 때, 이 위장이 오히려 " +
-                    "원인일 수 있으므로 꺼서 비교해 보세요. 바꾼 뒤에는 새 탭에서 열어야 적용됩니다.",
+                text = "이 브라우저가 앱 안의 WebView라는 것을 사이트가 알아볼 수 없게 만드는 " +
+                    "항목 전부를 켜고 끕니다 — User-Agent 정규화, Sec-CH-UA 브랜드, " +
+                    "X-Requested-With 헤더 제거, 자바스크립트 환경 보정. " +
+                    "끄면 아무것도 손대지 않은 순정 WebView 그대로 나가므로, " +
+                    "\"사람인지 확인\"이 무한 반복될 때 위장 자체가 원인인지 " +
+                    "기본 상태와 비교해 볼 수 있습니다. 바꾼 뒤에는 새 탭에서 열어야 적용됩니다.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
@@ -337,7 +339,7 @@ fun SettingsScreen(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("JS 환경 위장 사용", modifier = Modifier.padding(end = 12.dp))
+                Text("브라우저 위장 사용", modifier = Modifier.padding(end = 12.dp))
                 Spacer(modifier = Modifier.fillMaxWidth(0.6f))
                 Switch(
                     checked = saved.jsEnvSpoofEnabled,

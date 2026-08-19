@@ -39,6 +39,7 @@ import com.playerbrowser.app.network.CookieBannerKiller
 import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
+import com.playerbrowser.app.network.EnvSpoofSwitch
 import com.playerbrowser.app.network.LinkNewTabSwitch
 import com.playerbrowser.app.network.SniBypassClient
 import com.playerbrowser.app.network.UrlRecovery
@@ -102,15 +103,21 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             cacheMode = WebSettings.LOAD_DEFAULT
             setSupportMultipleWindows(true)
             javaScriptCanOpenWindowsAutomatically = true
-            // WebView 기본 UA에서 `; wv` / `Version/4.0` 표식만 걷어내 같은 기기의
-            // 진짜 Chrome UA와 형태를 맞춘다. 이 토큰이 남아 있으면 Cloudflare가
-            // "WebView"로 분류해 챌린지를 풀어도 통과 점수를 안 줘 무한 반복된다
-            // (v1.3.58). 임의 접미사를 붙이던 예전 시도와 달리 표준 형태로
-            // 되돌리는 방향이라 ERR_CONNECTION_RESET 위험은 없다.
-            userAgentString = UserAgentSpoof.chromeLike(userAgentString)
-            // UA 문자열만 고치면 `Sec-CH-UA`는 여전히 "Android WebView"라고 나가
-            // 둘이 서로 모순된다(= 더 강한 봇 신호). 브랜드 힌트도 같이 맞춘다 (v1.3.59).
-            UserAgentSpoof.applyClientHints(this, userAgentString)
+            // 브라우저 위장 — 토글 하나가 **전부** 를 끈다 (v1.3.71).
+            // 예전엔 이 토글이 JS 환경 주입만 껐고 UA/Sec-CH-UA 는 그대로
+            // 적용돼서, "끄고 테스트" 가 순정 WebView 테스트가 아니었다.
+            // 이제 끄면 진짜 아무것도 안 한 기본 WebView 로 나간다.
+            if (EnvSpoofSwitch.enabled) {
+                // `; wv` / `Version/4.0` 표식 제거 (v1.3.58).
+                userAgentString = UserAgentSpoof.chromeLike(userAgentString)
+                // UA 문자열과 `Sec-CH-UA` 브랜드를 짝 맞춤 (v1.3.59).
+                UserAgentSpoof.applyClientHints(this, userAgentString)
+                // WebView가 모든 요청에 붙이는 `X-Requested-With: <패키지명>` 제거 —
+                // 진짜 Chrome 은 이 헤더를 안 보낸다 (v1.3.71).
+                UserAgentSpoof.stripRequestedWithHeader(this)
+            } else {
+                DebugLog.d("UserAgent", "브라우저 위장 꺼짐 — 순정 WebView UA/헤더/JS 그대로")
+            }
         }
         CookieManager.getInstance().also { cm ->
             cm.setAcceptCookie(true)

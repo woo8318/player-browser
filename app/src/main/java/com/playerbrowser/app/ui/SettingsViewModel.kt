@@ -84,8 +84,8 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
         viewModelScope.launch {
             repository.update { it.copy(jsEnvSpoofEnabled = enabled) }
             _event.value = ProxyApplyEvent.Message(
-                if (enabled) "JS 환경 위장 켜짐 — 새 탭부터 적용"
-                else "JS 환경 위장 꺼짐 — 새 탭부터 적용"
+                if (enabled) "브라우저 위장 켜짐 (UA·Sec-CH-UA·헤더·JS) — 새 탭부터 적용"
+                else "브라우저 위장 꺼짐 — 순정 WebView, 새 탭부터 적용"
             )
         }
     }

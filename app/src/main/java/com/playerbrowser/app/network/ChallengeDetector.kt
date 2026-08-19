@@ -195,19 +195,39 @@ object ChallengeDetector {
     }
 
     /**
-     * 격리했는데도 루프가 계속되면(=통과 토큰이 매번 거부됨) 쿠키 오염이
-     * 남아 있는 것이므로 한 번 더 정리한다. 진행 중인 챌린지를 반복해서
-     * 끊지 않도록 호스트당 60초에 한 번으로 제한.
+     * **루프 중 통과 토큰 삭제를 중단한다 (v1.3.71).**
+     *
+     * v1.3.57이 이 삭제를 넣은 근거는 "우리가 심은 `cf_clearance`가 스코프
+     * 중복으로 두 벌 남아 거부된다"는 가설이었다. 그 가설은 이제 두 방향에서
+     * 모두 무너졌다.
+     *
+     *  1. **구조적으로 불가능하다.** v1.3.56 호스트 격리 이후 격리된 호스트의
+     *     요청은 [SniBypassClient]·`IframeScriptInjector`를 아예 안 거치므로
+     *     **우리가 그 호스트에 쿠키를 심는 경로가 없다.** 심지 않으니 중복도 없다.
+     *  2. **로그가 반증했다.** v1.3.58~70 내내 `cf_clearance=1`이었다.
+     *
+     * 반대로 이 삭제는 실제로 해를 끼칠 수 있는 모양이다 — 루프 판정(3회)은
+     * 챌린지가 도는 중에 내려지는데, 그 시점엔 방금 통과해 **새로 발급된**
+     * 토큰이 이미 들어와 있을 수 있다(로그의 토큰이 라운드마다 바뀌는 것이
+     * 그 증거다). 그걸 지우면 다음 요청은 토큰 없이 나가 100% 다시 챌린지다.
+     * 게다가 v1.3.69에서 `Secure` 스코프 버그를 고치면서 이 삭제가 **처음으로
+     * 실제로 먹히기 시작했다** — 그 전까진 조용한 no-op이었다.
+     *
+     * 그래서 이제는 **지우지 않고 관찰만 한다.** 토큰이 살아남은 채로도 서버가
+     * 403을 주면 원인은 쿠키가 아니라 환경 점수임이 확정되고, 반대로 통과되면
+     * 우리가 스스로 루프를 돌리고 있었던 것이다. 어느 쪽이든 답이 나온다.
+     *
+     * 챌린지가 **시작되기 전**의 [ChallengeCookies.resetAll](preflight)은 그대로
+     * 둔다 — 그 순간엔 진행 중인 흐름도, 방금 발급된 토큰도 없다.
      */
-    private fun resetCookiesIfLooping(host: String?) {
+    private fun noteLoopCookies(host: String?) {
         val h = host?.lowercase()?.trim().orEmpty()
         if (h.isBlank()) return
         val now = System.currentTimeMillis()
         val last = lastCookieReset[h]
         if (last != null && now - last < 60_000L) return
         lastCookieReset[h] = now
-        // 진행 상태(`__cf_bm`/`cf_chl*`)는 그대로 둔다 — 지금 돌고 있는 흐름이다.
-        ChallengeCookies.resetClearance(h)
+        DebugLog.w(TAG, "  통과 토큰은 그대로 둔다 (v1.3.71) — 삭제가 루프의 원인이었는지 확인")
     }
 
     private val lastCookieReset = ConcurrentHashMap<String, Long>()
@@ -384,7 +404,7 @@ object ChallengeDetector {
             val host = runCatching { Uri.parse(url).host }.getOrNull()
             DebugLog.e(TAG, "루프 의심: 같은 주소에서 캡차가 ${count}회 반복됨 — $key")
             DebugLog.e(TAG, "  쿠키 상태: ${ChallengeCookies.describe(host)}")
-            resetCookiesIfLooping(host)
+            noteLoopCookies(host)
             notifyStuck(view, host)
         }
     }

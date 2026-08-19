@@ -101,5 +101,41 @@ object UserAgentSpoof {
             .setFullVersion(full)
             .build()
 
+    /**
+     * `X-Requested-With: <packageName>` 헤더 제거 (v1.3.71).
+     *
+     * Android WebView는 자기가 내보내는 **모든** 요청에
+     * `X-Requested-With: com.playerbrowser.app` 을 자동으로 붙인다. 원래는 앱이
+     * 자기 트래픽을 서버에서 구분하라고 만든 헤더인데, 진짜 Chrome for Android는
+     * 이 헤더를 **절대 보내지 않는다**. 즉 이 한 줄이 "나는 인앱 WebView이고
+     * 패키지명은 이것이다"라고 매 요청마다 밝히는 셈이다.
+     *
+     * v1.3.58~70이 이걸 계속 놓친 이유는 **JS로 보이지 않기 때문**이다.
+     * [com.playerbrowser.app.web.BrowserEnvPatch]의 환경 진단은 `navigator`/`window`
+     * 만 훑으므로 요청 헤더는 시야 밖이고, UA 문자열·`Sec-CH-UA`를 아무리 맞춰도
+     * 이 헤더는 그대로 나갔다. v1.3.70 로그에서 네트워크 경로(네이티브 전담)와 JS
+     * 환경(위장 끔)이 모두 정리됐는데도 매 요청이 `403 cf-mitigated=challenge`로
+     * 떨어진 것과 앞뒤가 맞는다.
+     *
+     * 빈 allow-list를 주면 **어떤 origin에도** 헤더를 안 붙인다. 방향은 UA 규칙과
+     * 같은 "비표준 → 표준"(있는 표식을 지울 뿐, 없는 신호를 지어내지 않음)이라
+     * 안전하다. 미지원 WebView에선 조용히 넘어간다.
+     */
+    fun stripRequestedWithHeader(settings: WebSettings) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.REQUESTED_WITH_HEADER_ALLOW_LIST)) {
+            DebugLog.d(TAG, "X-Requested-With 제거 미지원 WebView — 건너뜀")
+            return
+        }
+        runCatching {
+            // 최신 WebView는 이 헤더를 기본으로 안 보낼 수도 있다(2022년 deprecated).
+            // 지금 이 기기가 어느 쪽인지 로그로 확정해 둔다.
+            val before = WebSettingsCompat.getRequestedWithHeaderOriginAllowList(settings)
+            WebSettingsCompat.setRequestedWithHeaderOriginAllowList(settings, emptySet())
+            DebugLog.d(TAG, "X-Requested-With 허용목록: ${before.size}개 → 0개 (헤더 미전송)")
+        }.onFailure {
+            DebugLog.w(TAG, "X-Requested-With 제거 실패(무시): ${it.javaClass.simpleName}")
+        }
+    }
+
     private val CHROME_VERSION = Regex("""Chrome/([0-9][0-9.]*)""")
 }

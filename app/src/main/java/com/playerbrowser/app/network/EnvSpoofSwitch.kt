@@ -38,7 +38,7 @@ object EnvSpoofSwitch {
                 .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 .getBoolean(KEY_ENABLED, true)
         }
-        DebugLog.d("UserAgent", "JS 환경 위장 설정 로드: ${if (enabled) "켬" else "끔"}")
+        DebugLog.d("UserAgent", "브라우저 위장 설정 로드: ${if (enabled) "켬" else "끔"}")
     }
 
     /** 설정이 저장될 때 미러도 함께 갱신한다. */

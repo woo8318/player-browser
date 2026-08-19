@@ -315,6 +315,9 @@ object ChallengeDetector {
         val count = (hits[key] ?: 0) + 1
         hits[key] = count
         DebugLog.w(TAG, "감지 #$count: $key → $markers")
+        // 매 라운드 쿠키 지문을 남긴다 (v1.3.67) — 토큰이 라운드마다 바뀌는지가
+        // "챌린지는 풀리는데 거부됨" 과 "챌린지 제출 자체가 실패" 를 가른다.
+        DebugLog.w(TAG, "  쿠키: ${ChallengeCookies.describe(runCatching { Uri.parse(url).host }.getOrNull())}")
         // 응답 헤더로 못 잡은 챌린지(200으로 내려오는 인터스티셜 등)도 격리한다.
         // 단 **가로막는 인터스티셜일 때만** — 로그인 폼에 얹힌 reCAPTCHA 위젯까지
         // 격리하면 멀쩡한 사이트가 SNI 우회 경로를 잃는다. 판별은 "Just a moment"

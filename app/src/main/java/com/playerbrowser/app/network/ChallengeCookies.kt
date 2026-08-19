@@ -81,7 +81,27 @@ object ChallengeCookies {
         val clearance = all.count { it.equals(CLEARANCE, ignoreCase = true) }
         val cf = all.filter { it.startsWith("cf", ignoreCase = true) || it.startsWith("__cf", ignoreCase = true) }
         return "쿠키 ${all.size}개, cf_clearance=$clearance" +
-            (if (cf.isEmpty()) "" else ", cf계열=[${cf.joinToString(", ")}]")
+            (if (cf.isEmpty()) "" else ", cf계열=[${cf.joinToString(", ")}]") +
+            fingerprint(cm, h)
+    }
+
+    /**
+     * `cf_clearance` 값의 지문 (v1.3.67) — 라운드마다 **갱신되는지**를 본다.
+     *
+     * 갈림길이 여기다. 매 라운드 값이 **바뀌면** 챌린지는 실제로 풀려 새 토큰이
+     * 발급되는데 서버가 곧바로 거부하는 것(= 환경 점수 문제)이고, 값이 **그대로면**
+     * 애초에 새 토큰이 발급되지 않는 것(= 챌린지 제출 자체가 실패)이라 원인이
+     * 완전히 다르다. 토큰 전체는 남기지 않고 앞 10자와 길이만 찍는다.
+     */
+    private fun fingerprint(cm: CookieManager, host: String): String {
+        val raw = runCatching { cm.getCookie("https://$host/") }.getOrNull().orEmpty()
+        val value = raw.split(';')
+            .map { it.trim() }
+            .firstOrNull { it.startsWith("$CLEARANCE=", ignoreCase = true) }
+            ?.substringAfter('=')
+            .orEmpty()
+        if (value.isBlank()) return ""
+        return ", 토큰=${value.take(10)}…(len=${value.length})"
     }
 
     /** `getCookie`는 "a=1; b=2" 형태. 중복 스코프는 같은 이름이 여러 번 나온다. */

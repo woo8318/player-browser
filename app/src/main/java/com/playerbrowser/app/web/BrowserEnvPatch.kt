@@ -4,6 +4,7 @@ import android.webkit.WebView
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import com.playerbrowser.app.network.DebugLog
+import com.playerbrowser.app.network.EnvSpoofSwitch
 
 /**
  * Android WebView의 JS 환경을 **Chrome for Android와 같게 보이도록 정규화**한다 (v1.3.60).
@@ -63,6 +64,13 @@ object BrowserEnvPatch {
     private const val TAG = "UserAgent"
 
     fun install(view: WebView) {
+        // v1.3.67 — 껐다 켜며 비교할 수 있게 한다. 지우는 방향으로만 계속 더했는데
+        // 진단이 `없음=[-]`를 찍고도 챌린지 루프가 그대로라면, 더한 것 자체가
+        // 신호일 가능성을 한 번은 확인해야 한다.
+        if (!EnvSpoofSwitch.enabled) {
+            DebugLog.w(TAG, "JS 환경 위장 꺼짐(설정) — document-start 주입 생략")
+            return
+        }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.DOCUMENT_START_SCRIPT)) {
             DebugLog.w(TAG, "document-start 주입 미지원 기기 — JS 환경 정규화 생략")
             return
@@ -99,7 +107,8 @@ object BrowserEnvPatch {
             view.evaluateJavascript(PROBE_JS) { raw ->
                 val out = raw?.trim()?.removeSurrounding("\"").orEmpty()
                     .replace("\\\"", "\"").replace("\\\\", "\\")
-                if (out.isNotBlank()) DebugLog.w(TAG, "JS 환경 진단 — $out")
+                val spoof = if (EnvSpoofSwitch.enabled) "위장 켬" else "위장 끔"
+                if (out.isNotBlank()) DebugLog.w(TAG, "JS 환경 진단($spoof) — $out")
                 else DebugLog.w(TAG, "JS 환경 진단: 결과 없음(스크립트 실패?)")
             }
         }

@@ -324,6 +324,29 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()
+            SectionTitle("JS 환경 위장")
+            Text(
+                text = "이 브라우저가 앱 안의 WebView라는 것을 자바스크립트에서 알아볼 수 없게, " +
+                    "진짜 Chrome에는 있고 WebView에는 없는 항목들을 채워 넣습니다. " +
+                    "일부 사이트의 \"사람인지 확인\"이 무한 반복될 때, 이 위장이 오히려 " +
+                    "원인일 수 있으므로 꺼서 비교해 보세요. 바꾼 뒤에는 새 탭에서 열어야 적용됩니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("JS 환경 위장 사용", modifier = Modifier.padding(end = 12.dp))
+                Spacer(modifier = Modifier.fillMaxWidth(0.6f))
+                Switch(
+                    checked = saved.jsEnvSpoofEnabled,
+                    onCheckedChange = { viewModel.setJsEnvSpoofEnabled(it) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
             SectionTitle("이어보기")
             Text(
                 text = "동영상을 보던 위치를 페이지별로 기억했다가, 같은 페이지를 다시 열면 " +

@@ -12,6 +12,7 @@ data class NetworkSettings(
     val resumePlaybackEnabled: Boolean = true,
     val openLinksInNewTab: Boolean = false,
     val privateDnsEnabled: Boolean = false,
+    val jsEnvSpoofEnabled: Boolean = true,
     val dohProvider: String = DohProvider.CLOUDFLARE.key,
     val dohCustomUrl: String = ""
 ) {

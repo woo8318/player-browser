@@ -9,6 +9,7 @@ import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.DohProvider
+import com.playerbrowser.app.network.EnvSpoofSwitch
 import com.playerbrowser.app.network.LinkNewTabSwitch
 import com.playerbrowser.app.network.NetworkSettingsRepository
 import com.playerbrowser.app.network.PrivateDnsSwitch
@@ -65,6 +66,7 @@ class PlayerBrowserApp : Application() {
                 ResumeSwitch.enabled = it.resumePlaybackEnabled
                 LinkNewTabSwitch.enabled = it.openLinksInNewTab
                 PrivateDnsSwitch.enabled = it.privateDnsEnabled
+                EnvSpoofSwitch.enabled = it.jsEnvSpoofEnabled
                 PrivateDnsSwitch.dohUrl = DohProvider.resolveUrl(it.dohProvider, it.dohCustomUrl)
             }
         }

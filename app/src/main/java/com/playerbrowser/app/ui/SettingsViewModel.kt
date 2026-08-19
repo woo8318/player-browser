@@ -43,6 +43,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                     resumePlaybackEnabled = current.resumePlaybackEnabled,
                     openLinksInNewTab = current.openLinksInNewTab,
                     privateDnsEnabled = current.privateDnsEnabled,
+                    jsEnvSpoofEnabled = current.jsEnvSpoofEnabled,
                     dohProvider = current.dohProvider,
                     dohCustomUrl = current.dohCustomUrl
                 )
@@ -75,6 +76,16 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             repository.update { it.copy(cookieBannerEnabled = enabled) }
             _event.value = ProxyApplyEvent.Message(
                 if (enabled) "쿠키 배너 자동 거부 켜짐" else "쿠키 배너 자동 거부 꺼짐"
+            )
+        }
+    }
+
+    fun setJsEnvSpoofEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(jsEnvSpoofEnabled = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "JS 환경 위장 켜짐 — 새 탭부터 적용"
+                else "JS 환경 위장 꺼짐 — 새 탭부터 적용"
             )
         }
     }

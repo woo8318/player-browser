@@ -617,6 +617,24 @@
     row(storeQuotaSec, "navigator.storage", "미지원", "warn");
   }
 
+  var tlsSec = section("네트워크 지문 (TLS ClientHello)", "이 요청을 실제로 받은 서버가 본 값 — 페이지 JS로는 못 지우는, 앱/OS 네트워크 스택 자체의 지문입니다. ⚠️ 설정에서 SNI 우회를 끄고 테스트하세요 — 켜져 있으면 이 값이 앱의 우회 경로(OkHttp)를 반영해, 캡차로 격리된 사이트가 실제로 쓰는 순정 WebView 네이티브 경로와 달라집니다.");
+  pending.push(
+    fetch("https://www.howsmyssl.com/a/check").then(function (r) { return r.json(); }).then(function (j) {
+      var ciphers = j.given_cipher_suites || [];
+      var groups = j.given_named_groups || [];
+      var sigAlgs = j.given_signature_algorithms || [];
+      row(tlsSec, "tls_version", j.tls_version || "(없음)");
+      row(tlsSec, "cipher_suites 개수/해시", String(ciphers.length) + "개 / " + hashString(ciphers.join(",")));
+      row(tlsSec, "cipher_suites 순서", ciphers.join(", "));
+      row(tlsSec, "named_groups 순서", groups.join(", "));
+      row(tlsSec, "signature_algorithms 순서", sigAlgs.join(", "));
+      row(tlsSec, "session_ticket_supported", String(j.session_ticket_supported));
+      row(tlsSec, "ephemeral_keys_supported", String(j.ephemeral_keys_supported));
+    }).catch(function (e) {
+      row(tlsSec, "howsmyssl.com 조회", "(에러: " + e.message + ")", "warn");
+    })
+  );
+
   Promise.allSettled(pending).then(finalize);
 
   // ---- copy button ------------------------------------------------------

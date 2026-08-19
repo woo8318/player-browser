@@ -1,6 +1,7 @@
 package com.playerbrowser.app.ui
 
 import android.app.Application
+import android.content.Context
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.playerbrowser.app.BuildConfig
@@ -443,9 +444,23 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
 
     // ----- App update -----
 
+    // 앱을 켤 때마다 도는 조용한 확인은 6시간에 한 번으로 묶는다. GitHub API 는
+    // 미인증이면 IP 당 시간당 60회고 캐리어 CGNAT 로 IP 가 공유되므로, 재시작마다
+    // 한 칸씩 쓰면 정작 사용자가 직접 누를 때 한도(403)에 걸린다. 수동 확인은
+    // 언제나 그대로 나간다.
+    private val updatePrefs by lazy {
+        getApplication<Application>().getSharedPreferences("update_check", Context.MODE_PRIVATE)
+    }
+
     fun checkForUpdates(silent: Boolean = false) {
         if (_updateState.value is UpdateState.Checking ||
             _updateState.value is UpdateState.Downloading) return
+        if (silent) {
+            val last = updatePrefs.getLong(KEY_LAST_SILENT_CHECK, 0L)
+            val now = System.currentTimeMillis()
+            if (now - last in 0 until SILENT_CHECK_INTERVAL_MS) return
+            updatePrefs.edit().putLong(KEY_LAST_SILENT_CHECK, now).apply()
+        }
         _updateState.value = UpdateState.Checking
         viewModelScope.launch {
             runCatching {
@@ -511,4 +526,9 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun dismissUpdate() { _updateState.value = UpdateState.Idle }
+
+    private companion object {
+        const val KEY_LAST_SILENT_CHECK = "last_silent_check"
+        const val SILENT_CHECK_INTERVAL_MS = 6L * 60 * 60 * 1000
+    }
 }

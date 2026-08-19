@@ -292,6 +292,30 @@ object ChallengeDetector {
     }
 
     /**
+     * 그 호스트에 대해 기억하는 것을 **전부 잊는다** (v1.3.72) — 격리, 챌린지
+     * 활성 창, 감지 횟수, 쿠키 정리 쿨다운까지.
+     *
+     * 사용자가 ⋮ 메뉴에서 "이 사이트 데이터 지우기"를 눌렀을 때만 부른다.
+     * v1.3.69에서 격리를 디스크에 영속화하면서 `preflight` 경로(=낡은 챌린지
+     * 상태를 청소하던 유일한 지점)가 다시는 돌지 않게 됐다 — 그래서 한 번
+     * 루프에 빠진 호스트는 앱을 껐다 켜도 낡은 `cf_clearance` / `cf_chl_rc_ni`
+     * 를 그대로 들고 다시 시작한다. **완전히 깨끗한 상태로 한 번 시도해 보는
+     * 길**이 필요하다.
+     */
+    fun forgetHost(host: String?) {
+        val h = host?.lowercase()?.trim().orEmpty()
+        if (h.isBlank()) return
+        quarantined.remove(h)
+        persist()
+        challengeActive.remove(h)
+        lastCookieReset.remove(h)
+        lastStuckNotice.remove(h)
+        hits.keys.removeAll { it.startsWith(h) }
+        reported.clear()
+        DebugLog.w(TAG, "사이트 상태 초기화: $h (격리/감지 횟수/챌린지 창 모두 해제)")
+    }
+
+    /**
      * 우리가 가로채기를 포기한 챌린지 요청을 로그로 남긴다. 챌린지는 요청이
      * 수십 개씩 쏟아지므로 (호스트, 종류)당 30초에 한 번만 기록.
      */

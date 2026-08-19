@@ -45,6 +45,13 @@ object ChallengeCookies {
     fun resetAll(host: String?) =
         expire(host) { it.equals(CLEARANCE, ignoreCase = true) || isInFlight(it) }
 
+    /**
+     * 그 호스트의 **모든** 쿠키를 만료 (v1.3.72) — 사용자가 직접 부르는
+     * "이 사이트 데이터 지우기" 전용. 로그인 세션까지 같이 날아가므로
+     * 자동 경로에서는 절대 쓰지 않는다.
+     */
+    fun resetSite(host: String?) = expire(host) { true }
+
     private fun expire(host: String?, match: (String) -> Boolean) {
         val h = host?.lowercase()?.trim().orEmpty()
         if (h.isBlank()) return

@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
@@ -75,6 +76,9 @@ import com.google.android.gms.cast.framework.CastButtonFactory
 import com.playerbrowser.app.cast.StreamCandidate
 import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.data.TabWebStateStore
+import com.playerbrowser.app.network.ChallengeCookies
+import com.playerbrowser.app.network.ChallengeDetector
+import com.playerbrowser.app.network.CookieFlusher
 import com.playerbrowser.app.network.UrlRecovery
 import com.playerbrowser.app.player.VideoPlayerActivity
 import com.playerbrowser.app.web.UrlUtils
@@ -373,6 +377,28 @@ fun BrowserScreen(
                                         }
                                     } else {
                                         Toast.makeText(context, "복구할 주소가 없어요", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("이 사이트 데이터 지우고 새로고침") },
+                                leadingIcon = { Icon(Icons.Filled.DeleteSweep, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
+                                    if (host.isNullOrBlank()) {
+                                        Toast.makeText(context, "지울 사이트가 없어요", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        // 쿠키(로그인 세션 포함) + 캐시 + 우리가 그 호스트에
+                                        // 대해 기억하던 챌린지 상태를 통째로 지우고 다시 연다.
+                                        // 캡차가 무한 반복될 때 "완전히 깨끗한 상태로 한 번"을
+                                        // 시도하는 유일한 길 (v1.3.72).
+                                        ChallengeCookies.resetSite(host)
+                                        ChallengeDetector.forgetHost(host)
+                                        CookieFlusher.flushNow()
+                                        runCatching { activeWebState.webView.clearCache(true) }
+                                        Toast.makeText(context, "$host 데이터 삭제 — 다시 여는 중", Toast.LENGTH_SHORT).show()
+                                        activeWebState.load(state.currentUrl)
                                     }
                                 }
                             )

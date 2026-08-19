@@ -1,5 +1,7 @@
 package com.playerbrowser.app.network
 
+import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
 import android.webkit.WebView
 import android.widget.Toast
@@ -94,11 +96,60 @@ object ChallengeDetector {
     // 그 호스트의 모든 요청에서 손을 뗀다.
     // ---------------------------------------------------------------------
 
-    /** 격리 TTL — 사실상 세션 내내. 챌린지를 쓰는 사이트는 계속 쓰기 때문. */
-    private const val QUARANTINE_MS = 6L * 60L * 60L * 1000L
+    /**
+     * 격리 TTL — 7일. 예전엔 6시간이었지만 **메모리에만** 있어서 앱을 껐다 켜거나
+     * TTL이 지나면 격리 이전의 첫 요청 한 번이 다시 우리 OkHttp로 나갔다.
+     * 그 한 번이 "UA는 Chrome 인데 TLS 지문은 OkHttp" 라는 가장 확실한 봇 신호라,
+     * 그때마다 그 (IP, UA) 쌍의 점수가 깎여 이후 아무리 네이티브로 챌린지를 풀어도
+     * 새로 발급된 `cf_clearance` 가 곧바로 거부된다(v1.3.69 로그의 증상).
+     * 챌린지를 쓰는 사이트는 계속 쓰므로 길게 잡고 **디스크에 남긴다.**
+     */
+    private const val QUARANTINE_MS = 7L * 24L * 60L * 60L * 1000L
 
     /** host -> 격리 만료 시각(ms). */
     private val quarantined = ConcurrentHashMap<String, Long>()
+
+    /** 격리 목록 영속화 — 프로세스가 죽어도 첫 요청이 우회 경로로 새지 않게. */
+    @Volatile
+    private var prefs: SharedPreferences? = null
+
+    private const val PREFS_NAME = "challenge_quarantine"
+    private const val KEY_HOSTS = "hosts"
+
+    /**
+     * 앱 시작 시 [com.playerbrowser.app.PlayerBrowserApp] 이 한 번 부른다.
+     * 저장된 격리 목록을 메모리로 올려, 첫 페이지 로드부터 격리가 적용되게 한다.
+     */
+    fun attach(context: Context) {
+        val sp = runCatching {
+            context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        }.getOrNull() ?: return
+        prefs = sp
+        val now = System.currentTimeMillis()
+        val stored = runCatching { sp.getStringSet(KEY_HOSTS, emptySet()).orEmpty() }.getOrNull().orEmpty()
+        var restored = 0
+        for (entry in stored) {
+            val host = entry.substringBefore('|', "").trim()
+            val until = entry.substringAfter('|', "").trim().toLongOrNull() ?: continue
+            if (host.isBlank() || until <= now) continue
+            quarantined[host] = until
+            restored++
+        }
+        if (restored > 0) {
+            DebugLog.d(TAG, "격리 호스트 복원: ${restored}개 — ${quarantined.keys.joinToString(", ")}")
+            persist()   // 만료분 정리
+        }
+    }
+
+    private fun persist() {
+        val sp = prefs ?: return
+        val now = System.currentTimeMillis()
+        val live = quarantined.entries
+            .filter { it.value > now }
+            .map { "${it.key}|${it.value}" }
+            .toSet()
+        runCatching { sp.edit().putStringSet(KEY_HOSTS, live).apply() }
+    }
 
     /**
      * 이 메인 프레임 응답이 Cloudflare 챌린지 페이지인가?
@@ -129,6 +180,7 @@ object ChallengeDetector {
         if (quarantined.size > 64) {
             quarantined.entries.removeAll { it.value <= now }
         }
+        persist()
         if (prev == null || prev < now) {
             DebugLog.w(TAG, "챌린지 호스트 → 네이티브 전담: $h ($why)")
             DebugLog.w(TAG, "  설정 상태: ${switchSnapshot()}")
@@ -198,6 +250,7 @@ object ChallengeDetector {
         val until = quarantined[h] ?: return false
         if (System.currentTimeMillis() >= until) {
             quarantined.remove(h)
+            persist()
             return false
         }
         return true
@@ -213,6 +266,7 @@ object ChallengeDetector {
         val h = host?.lowercase()?.trim().orEmpty()
         if (h.isBlank()) return
         if (quarantined.remove(h) != null) {
+            persist()
             DebugLog.w(TAG, "네이티브 전담 해제(접속 실패) → 우회 경로 복귀: $h")
         }
     }

@@ -61,6 +61,9 @@ object ChallengeCookies {
         for (name in names) {
             for (d in domains) {
                 val suffix = if (d.isBlank()) "" else "; Domain=$d"
+                // `Secure` 를 빼면 Secure 로 심긴 원본을 못 덮어쓸 수 있다
+                // (v1.3.68 로그: 삭제 직후에도 같은 토큰이 그대로 읽혔다).
+                runCatching { cm.setCookie(url, "$name=; Max-Age=0; Path=/$suffix; Secure") }
                 runCatching { cm.setCookie(url, "$name=; Max-Age=0; Path=/$suffix") }
             }
         }

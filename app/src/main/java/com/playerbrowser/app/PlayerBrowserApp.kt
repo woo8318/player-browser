@@ -5,6 +5,7 @@ import android.webkit.WebView
 import com.google.android.gms.cast.framework.CastContext
 import com.playerbrowser.app.data.BrowserRepository
 import com.playerbrowser.app.network.AdBlockSwitch
+import com.playerbrowser.app.network.ChallengeDetector
 import com.playerbrowser.app.network.CookieBannerSwitch
 import com.playerbrowser.app.network.CrashRecorder
 import com.playerbrowser.app.network.DebugLog
@@ -31,6 +32,9 @@ class PlayerBrowserApp : Application() {
         super.onCreate()
         // Install crash recorder first so any subsequent init failure is captured.
         CrashRecorder.install(this)
+        // 저장된 챌린지 격리 목록을 먼저 올린다 — 첫 페이지 로드부터 적용돼야
+        // 격리 이전의 요청 한 번이 우회(OkHttp) 경로로 새지 않는다.
+        ChallengeDetector.attach(this)
         // Debug builds only: expose WebView contents to chrome://inspect so we
         // can diagnose page issues (e.g. images stalling) over USB / WiFi adb.
         if (BuildConfig.DEBUG) {

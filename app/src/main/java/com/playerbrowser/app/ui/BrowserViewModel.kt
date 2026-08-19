@@ -504,7 +504,7 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
     fun launchInstall() {
         val ready = _updateState.value as? UpdateState.ReadyToInstall ?: return
         if (installer.canInstall()) {
-            installer.launchInstaller(ready.apkFile)
+            installer.install(ready.apkFile)
         } else {
             installer.launchInstallSettings()
         }

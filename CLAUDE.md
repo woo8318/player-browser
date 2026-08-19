@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 내장 Media3 플레이어(스트림 추출 후 네이티브 재생, 스트림 감지 시 화면에 재생 버튼 자동 표시, 영상 롱프레스로 그 영상 메뉴→외부 플레이어 연결) + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(썸네일 갤러리/그룹/그룹 내 새 탭/그룹순서변경/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 이동·탭 사이 재정렬/그룹 헤더 드래그 순서변경/바 스와이프 탭 전환/탭별 히스토리 영속화) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 자동/수동 복구 + 링크 항상 새 탭 열기 + 링크 롱프레스 컨텍스트 메뉴 + 캡차 흐름 보호 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.65.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 내장 Media3 플레이어(스트림 추출 후 네이티브 재생, 스트림 감지 시 화면에 재생 버튼 자동 표시, 영상 롱프레스로 그 영상 메뉴→외부 플레이어 연결) + 동영상 이어보기 + 즐겨찾기/방문기록 + 멀티탭(썸네일 갤러리/그룹/그룹 내 새 탭/그룹순서변경/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 이동·탭 사이 재정렬/그룹 헤더 드래그 순서변경/바 스와이프 탭 전환/탭별 히스토리 영속화) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 자동/수동 복구 + 링크 항상 새 탭 열기 + 링크 롱프레스 컨텍스트 메뉴 + 캡차 흐름 보호 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.66.
 
 ## 빌드 / 배포
 
@@ -69,6 +69,7 @@ app/src/main/
       theme/
     update/                             # 자체 업데이트 (GitHub Releases)
       UpdateClient.kt / UpdateInstaller.kt / UpdateModels.kt / Version.kt
+      UpdateInstallReceiver.kt          # PackageInstaller 세션 결과 수신 (확인 창 띄우기 / 실패 토스트)
     player/                             # 내장 네이티브 동영상 플레이어 (Media3/ExoPlayer)
       VideoPlayerActivity.kt            # 스니핑된 스트림을 Referer/Cookie/UA 주입해 네이티브 재생 + 제스처(더블탭 ±10초/밝기/볼륨) + 이어보기 공유
     web/
@@ -125,7 +126,7 @@ app/src/main/
 - **풀스크린 동영상 (`GestureCapturingFrame`, v1.3.42 임시 수리):** `WebChromeClient.onShowCustomView`에서 `GestureCapturingFrame`(FrameLayout)으로 감싸 제스처 캡처 + 화면 회전/풀스크린/세로 드래그 처리. `onHideCustomView`에서 brightness 복원. **이전 v1.3.39 "raw 터치 완전 소비(`return true`) + `window.__pb.*` 훅만 구동" 방식은 실제 `<video>`가 cross-origin iframe 안에 있을 때 최상위 훅이 비디오를 못 찾아 터치가 통째로 먹통**이 됐음(사용자 피드백 "풀스크린 터치 자체가 안 먹힘"). 그래서 임시 수리로 **raw 터치를 다시 사이트(WebView)로 포워드(`super.dispatchTouchEvent`)** 해 사이트 자체 컨트롤/탭/더블탭·네이티브 `<video controls>` 바가 정상 동작하게 하고, 앱은 사이트가 절대 제공 안 하는 **세로 밝기/볼륨 + 2손가락 영상전환** 두 제스처만 얹음(엔게이지 순간 자식에 `ACTION_CANCEL` 보내 사이트의 같은 드래그 추적을 끊음). `window.__pb.fsActive=true`로 인-도큐먼트 `video_gestures.js`는 풀스크린에서 여전히 bail(이중 처리 방지). 앱 풀세트 제스처(±10초 더블탭 등)는 위 **내장 Media3 플레이어**가 담당 — 이 프레임은 어디까지나 사이트 네이티브 컨트롤을 되살리는 임시책. (`fsTap`/`fsDoubleTap`/`scrub*` JS 훅은 남아 있으나 Kotlin이 더 이상 호출 안 함)
 - **동영상 이어보기 (resume):** 페이지별 마지막 재생 위치를 기록했다가 다음 방문 시 그 지점부터 재생. JS(`video_gestures.js`의 `initResume`) ↔ Kotlin(`ResumeBridge`, `window.PBResume`) 브리지 구조. JS가 비디오 이벤트(`pause`/`seeked`/`ended`)와 5초 인터벌·`visibilitychange`/`pagehide`에 `bridge.save(pos, dur, title)` 호출, `loadedmetadata`/`play` 시 `bridge.load()`로 저장 위치를 받아 `currentTime` 세팅(`v.__pbResumed` 가드로 비디오당 1회). 너무 짧은 영상/시작·끝 근처는 제외(`MIN_DURATION_SEC=90`, `MIN_RESUME_SEC=10`, `END_GUARD_SEC=20`), 끝까지 보면 `ended`에서 기록 삭제. 저장소는 `WatchProgressStore`(`data/`) — Room이 아니라 SharedPreferences JSON 맵(키=프래그먼트 제거한 정규화 URL). Room의 `fallbackToDestructiveMigration()`이 버전 bump 시 즐겨찾기/방문기록을 날리므로 테이블 추가 대신 `TabPersistence`와 같은 SharedPreferences 패턴 채택. 최대 500개 prune. `currentUrl`은 `onPageStarted`/`onPageFinished`에서 `ResumeBridge`에 주입 (JS는 자신의 페이지 URL을 모르므로 Kotlin이 컨텍스트 제공). 설정 토글 → `ResumeSwitch.enabled` volatile 플래그 (브리지 hot path), `WatchProgressStore`에 영향 없이 기록/복원만 무력화.
 - **크래시 로깅:** `PlayerBrowserApp.onCreate` 가장 먼저 `CrashRecorder.install(this)`. `Thread.setDefaultUncaughtExceptionHandler` 체이닝으로 시스템 다이얼로그는 그대로 유지. 추가로 `WebViewClient.onRenderProcessGone`이 `true` 반환해 앱 살아남기 + 에러 페이지 + `CrashRecorder.record()`.
-- **자체 업데이트:** GitHub Releases API 조회 → APK 다운로드 → `FileProvider`로 설치 인텐트.
+- **자체 업데이트:** GitHub Releases API 조회 → APK 다운로드 → **`PackageInstaller` 세션으로 앱이 직접 설치**(v1.3.66). 예전엔 `FileProvider` + `ACTION_VIEW` 로 APK 파일을 시스템 "패키지 설치 관리자" 앱에 넘겼는데, 그러면 설치를 남이 대신 해주는 모양이 되고 인텐트를 받을 수 있는 앱이 여럿이면 선택 창까지 뜨며 **성공/실패를 우리가 전혀 모른다**. 이제 `UpdateInstaller.install()` 이 세션을 만들어 APK 바이트를 직접 써넣고 `commit()` 하므로 파일이 앱 밖으로 나가지 않고 결과가 `UpdateInstallReceiver` 로 돌아온다(실패 시 이유를 토스트+`DebugLog`). **완전 무음 설치는 일반 앱에 허용되지 않는다** — 시스템 확인 창은 OS 보안 모델이라 우회 대상이 아니다. 다만 Android 12+ 에서 *자기 자신 업데이트*이고 현재 설치된 앱을 심은 installer 가 우리일 때는 `setRequireUserAction(USER_ACTION_NOT_REQUIRED)` 가 받아들여져 확인 없이 설치되므로, **이 경로로 한 번 설치되고 나면 그다음 업데이트부터 확인 창이 사라질 수 있다**(조건이 안 맞으면 시스템이 `STATUS_PENDING_USER_ACTION` 을 돌려주고 리시버가 확인 창을 띄운다 — 어느 쪽이든 안전). 세션 생성/쓰기가 실패하면 종전 인텐트 방식(`launchInstaller`)으로 폴백해 업데이트 경로 자체가 막히지 않게 한다. `REQUEST_INSTALL_PACKAGES` 미허용이면 종전대로 설정 화면으로 안내.
 
 ## 동영상 제스처 (`video_gestures.js`)
 

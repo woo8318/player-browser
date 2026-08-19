@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fingerprint Scan</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
+
+  :root {
+    --bg: #f5f7f9;
+    --surface: #ffffff;
+    --surface-2: #eef1f4;
+    --border: #d7dde3;
+    --text: #14181d;
+    --text-2: #4c5560;
+    --accent: #0f8fae;
+    --accent-strong: #0b6f88;
+    --good: #1f9d55;
+    --good-bg: #e6f6ec;
+    --warn: #a8660c;
+    --warn-bg: #fbf0dc;
+    --bad: #c23a3a;
+    --bad-bg: #fbe7e7;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0b0f13;
+      --surface: #12181e;
+      --surface-2: #1a222a;
+      --border: #26313b;
+      --text: #e7edf2;
+      --text-2: #97a4b0;
+      --accent: #3ecbe8;
+      --accent-strong: #6fe0f7;
+      --good: #3ecb7a;
+      --good-bg: #14281d;
+      --warn: #e0a94a;
+      --warn-bg: #2e2412;
+      --bad: #e2585c;
+      --bad-bg: #2e1616;
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --bg: #0b0f13;
+    --surface: #12181e;
+    --surface-2: #1a222a;
+    --border: #26313b;
+    --text: #e7edf2;
+    --text-2: #97a4b0;
+    --accent: #3ecbe8;
+    --accent-strong: #6fe0f7;
+    --good: #3ecb7a;
+    --good-bg: #14281d;
+    --warn: #e0a94a;
+    --warn-bg: #2e2412;
+    --bad: #e2585c;
+    --bad-bg: #2e1616;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  .wrap {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 20px 16px 64px;
+  }
+
+  header.top {
+    padding: 4px 0 20px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 20px;
+  }
+
+  h1 {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-weight: 700;
+    font-size: 1.5rem;
+    letter-spacing: -0.01em;
+    margin: 0 0 6px;
+    text-wrap: balance;
+  }
+
+  .sub {
+    color: var(--text-2);
+    font-size: 0.9rem;
+    line-height: 1.5;
+    margin: 0 0 14px;
+  }
+
+  .meta-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.78rem;
+    color: var(--text-2);
+  }
+
+  .meta-row b { color: var(--text); font-weight: 600; }
+
+  .summary {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin: 16px 0 0;
+  }
+
+  .pill {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.78rem;
+    font-weight: 600;
+    padding: 5px 10px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-2);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .pill.good { color: var(--good); background: var(--good-bg); border-color: transparent; }
+  .pill.warn { color: var(--warn); background: var(--warn-bg); border-color: transparent; }
+  .pill.bad  { color: var(--bad);  background: var(--bad-bg);  border-color: transparent; }
+
+  .pill .n { font-size: 0.95rem; }
+
+  section.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    margin-bottom: 14px;
+    overflow: hidden;
+  }
+
+  .card-label {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--accent-strong);
+    padding: 12px 16px 8px;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: minmax(120px, 42%) 1fr;
+    gap: 4px 12px;
+    padding: 7px 16px;
+    border-top: 1px solid var(--border);
+    align-items: baseline;
+  }
+
+  .row:first-of-type { border-top: none; }
+
+  .row .k {
+    font-size: 0.82rem;
+    color: var(--text-2);
+  }
+
+  .row .v {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.82rem;
+    word-break: break-word;
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .flag {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    letter-spacing: 0.02em;
+  }
+
+  .flag.good { color: var(--good); background: var(--good-bg); }
+  .flag.warn { color: var(--warn); background: var(--warn-bg); }
+  .flag.bad  { color: var(--bad);  background: var(--bad-bg); }
+
+  .hint {
+    font-size: 0.78rem;
+    color: var(--text-2);
+    padding: 0 16px 12px;
+    line-height: 1.5;
+  }
+
+  button.copy {
+    font-family: "IBM Plex Mono", monospace;
+    font-weight: 600;
+    font-size: 0.85rem;
+    background: var(--accent);
+    color: #05171b;
+    border: none;
+    border-radius: 8px;
+    padding: 11px 16px;
+    cursor: pointer;
+    width: 100%;
+    margin-top: 4px;
+  }
+
+  button.copy:active { opacity: 0.85; }
+
+  .copy-status {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.78rem;
+    color: var(--good);
+    text-align: center;
+    margin-top: 8px;
+    min-height: 1.2em;
+  }
+
+  .raw-label {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.72rem;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-2);
+    margin: 26px 0 8px;
+  }
+
+  textarea#raw {
+    width: 100%;
+    height: 220px;
+    resize: vertical;
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    padding: 12px;
+  }
+
+  .raw-hint {
+    font-size: 0.76rem;
+    color: var(--text-2);
+    margin-top: 8px;
+    line-height: 1.5;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    section.card { animation: rise 0.25s ease-out backwards; }
+    section.card:nth-of-type(1) { animation-delay: 0.02s; }
+    section.card:nth-of-type(2) { animation-delay: 0.05s; }
+    section.card:nth-of-type(3) { animation-delay: 0.08s; }
+    section.card:nth-of-type(4) { animation-delay: 0.11s; }
+    section.card:nth-of-type(5) { animation-delay: 0.14s; }
+    section.card:nth-of-type(6) { animation-delay: 0.17s; }
+    @keyframes rise { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+  <header class="top">
+    <h1>Fingerprint Scan</h1>
+    <p class="sub">이 브라우저가 자바스크립트로 드러내는 값을 한 화면에 모읍니다. 같은 페이지를 오페라와 Player Browser 양쪽에서 열고 아래 결과를 비교하세요.</p>
+    <div class="meta-row" id="metaRow"></div>
+    <div class="summary" id="summary"></div>
+  </header>
+
+  <div id="report"></div>
+
+  <button class="copy" id="copyBtn">전체 결과 복사</button>
+  <div class="copy-status" id="copyStatus"></div>
+
+  <div class="raw-label">원본 텍스트 (복사 안 되면 길게 눌러 직접 선택)</div>
+  <textarea id="raw" readonly></textarea>
+  <p class="raw-hint">복사 버튼이 안 먹으면 위 텍스트 상자를 길게 눌러 "전체 선택 → 복사"한 뒤 대화창에 붙여넣어 주세요.</p>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  var sections = [];
+  var flagCounts = { good: 0, warn: 0, bad: 0 };
+
+  function section(label, hint) {
+    var s = { label: label, hint: hint || "", rows: [] };
+    sections.push(s);
+    return s;
+  }
+
+  function row(s, key, value, flag) {
+    s.rows.push({ key: key, value: value, flag: flag || null });
+    if (flag) flagCounts[flag] = (flagCounts[flag] || 0) + 1;
+  }
+
+  function safe(fn, fallback) {
+    try {
+      var v = fn();
+      return (v === undefined || v === null || v === "") ? (fallback === undefined ? "(없음)" : fallback) : v;
+    } catch (e) {
+      return "(에러: " + e.message + ")";
+    }
+  }
+
+  function boolFlag(present, presentIsGood) {
+    if (present) return presentIsGood ? "good" : "warn";
+    return presentIsGood ? "warn" : "good";
+  }
+
+  function hashString(str) {
+    // djb2 — 정확한 지문이 아니라 눈으로 비교할 짧은 요약값
+    var h = 5381;
+    for (var i = 0; i < str.length; i++) {
+      h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+    }
+    return (h >>> 0).toString(16).padStart(8, "0");
+  }
+
+  // ---- 1. Identity -------------------------------------------------
+
+  var idSec = section("ID · 기본 식별");
+  row(idSec, "User-Agent", safe(function () { return navigator.userAgent; }));
+  row(idSec, "appVersion", safe(function () { return navigator.appVersion; }));
+  row(idSec, "platform", safe(function () { return navigator.platform; }));
+  row(idSec, "vendor", safe(function () { return navigator.vendor; }));
+  row(idSec, "language / languages", safe(function () {
+    return navigator.language + " / " + (navigator.languages || []).join(",");
+  }));
+  row(idSec, "cookieEnabled", safe(function () { return String(navigator.cookieEnabled); }));
+  row(idSec, "doNotTrack", safe(function () { return String(navigator.doNotTrack); }));
+  row(idSec, "pdfViewerEnabled", safe(function () { return String(navigator.pdfViewerEnabled); }));
+  row(idSec, "plugins.length", safe(function () { return String(navigator.plugins.length); }));
+  row(idSec, "mimeTypes.length", safe(function () { return String(navigator.mimeTypes.length); }));
+
+  // ---- 2. Automation tells ------------------------------------------
+
+  var autoSec = section("자동화 표식", "실제 크롬/오페라엔 있고 WebView엔 없을 수 있는 항목들.");
+  var webdriver = !!navigator.webdriver;
+  row(autoSec, "navigator.webdriver", String(webdriver), webdriver ? "bad" : "good");
+
+  var hasChrome = typeof window.chrome === "object" && window.chrome !== null;
+  row(autoSec, "window.chrome", String(hasChrome), boolFlag(hasChrome, true));
+  if (hasChrome) {
+    row(autoSec, "window.chrome.runtime", safe(function () { return String(!!window.chrome.runtime); }));
+    row(autoSec, "window.chrome.loadTimes", safe(function () { return String(typeof window.chrome.loadTimes); }));
+    row(autoSec, "window.chrome.csi", safe(function () { return String(typeof window.chrome.csi); }));
+  }
+
+  [
+    ["Notification", "Notification" in window],
+    ["PaymentRequest", "PaymentRequest" in window],
+    ["PublicKeyCredential", "PublicKeyCredential" in window],
+    ["speechSynthesis", "speechSynthesis" in window],
+    ["navigator.share", typeof navigator.share === "function"],
+    ["navigator.bluetooth", "bluetooth" in navigator],
+    ["navigator.usb", "usb" in navigator],
+    ["navigator.presentation", "presentation" in navigator],
+    ["navigator.mediaSession", "mediaSession" in navigator],
+    ["navigator.getInstalledRelatedApps", typeof navigator.getInstalledRelatedApps === "function"]
+  ].forEach(function (pair) {
+    row(autoSec, pair[0], String(pair[1]), boolFlag(pair[1], true));
+  });
+
+  row(autoSec, "Function.prototype.toString", safe(function () {
+    var s = Function.prototype.toString.toString();
+    return s.indexOf("[native code]") >= 0 ? "native" : "패치됨: " + s.slice(0, 40) + "…";
+  }));
+
+  // ---- 3. Display / hardware ----------------------------------------
+
+  var dispSec = section("화면 · 하드웨어");
+  row(dispSec, "screen (w×h)", safe(function () { return screen.width + "×" + screen.height; }));
+  row(dispSec, "outer (w×h)", safe(function () { return window.outerWidth + "×" + window.outerHeight; }));
+  row(dispSec, "inner (w×h)", safe(function () { return window.innerWidth + "×" + window.innerHeight; }));
+  row(dispSec, "devicePixelRatio", safe(function () { return String(window.devicePixelRatio); }));
+  row(dispSec, "hardwareConcurrency", safe(function () { return String(navigator.hardwareConcurrency); }));
+  row(dispSec, "deviceMemory", safe(function () { return String(navigator.deviceMemory); }));
+  row(dispSec, "maxTouchPoints", safe(function () { return String(navigator.maxTouchPoints); }));
+  row(dispSec, "ontouchstart", safe(function () { return String("ontouchstart" in window); }));
+  row(dispSec, "timeZone", safe(function () { return Intl.DateTimeFormat().resolvedOptions().timeZone; }));
+  row(dispSec, "timezoneOffset", safe(function () { return String(new Date().getTimezoneOffset()); }));
+
+  // ---- 4. Graphics fingerprint ---------------------------------------
+
+  var gfxSec = section("그래픽 지문", "정확히 같을 필요는 없지만, 값이 있는지/비었는지 자체가 신호가 됩니다.");
+  (function () {
+    try {
+      var canvas = document.createElement("canvas");
+      canvas.width = 220; canvas.height = 40;
+      var ctx = canvas.getContext("2d");
+      ctx.textBaseline = "top";
+      ctx.font = "14px 'IBM Plex Mono', monospace";
+      ctx.fillStyle = "#f60";
+      ctx.fillRect(0, 0, 60, 20);
+      ctx.fillStyle = "#069";
+      ctx.fillText("fp-scan 0123 가나다", 2, 12);
+      var data = canvas.toDataURL();
+      row(gfxSec, "canvas hash", hashString(data));
+    } catch (e) {
+      row(gfxSec, "canvas hash", "(에러: " + e.message + ")", "warn");
+    }
+
+    try {
+      var gl = document.createElement("canvas").getContext("webgl") ||
+                document.createElement("canvas").getContext("experimental-webgl");
+      if (!gl) {
+        row(gfxSec, "WebGL", "미지원", "warn");
+      } else {
+        var dbg = gl.getExtension("WEBGL_debug_renderer_info");
+        var vendor = dbg ? gl.getParameter(dbg.UNMASKED_VENDOR_WEBGL) : gl.getParameter(gl.VENDOR);
+        var renderer = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER);
+        row(gfxSec, "WebGL vendor", String(vendor));
+        row(gfxSec, "WebGL renderer", String(renderer));
+      }
+    } catch (e) {
+      row(gfxSec, "WebGL", "(에러: " + e.message + ")", "warn");
+    }
+
+    try {
+      var Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) {
+        row(gfxSec, "AudioContext", "미지원", "warn");
+      } else {
+        var ac = new Ctx();
+        row(gfxSec, "AudioContext sampleRate", String(ac.sampleRate));
+        row(gfxSec, "AudioContext state", String(ac.state));
+        ac.close && ac.close();
+      }
+    } catch (e) {
+      row(gfxSec, "AudioContext", "(에러: " + e.message + ")", "warn");
+    }
+  })();
+
+  // ---- 5. Storage / platform APIs ------------------------------------
+
+  var storeSec = section("저장소 · 플랫폼 API");
+  [
+    ["indexedDB", "indexedDB" in window],
+    ["localStorage", (function () { try { return !!window.localStorage; } catch (e) { return false; } })()],
+    ["sessionStorage", (function () { try { return !!window.sessionStorage; } catch (e) { return false; } })()],
+    ["navigator.serviceWorker", "serviceWorker" in navigator],
+    ["window.caches", "caches" in window],
+    ["BroadcastChannel", "BroadcastChannel" in window]
+  ].forEach(function (pair) {
+    row(storeSec, pair[0], String(pair[1]), boolFlag(pair[1], true));
+  });
+
+  // ---- 6. Network ------------------------------------------------------
+
+  var netSec = section("네트워크");
+  row(netSec, "onLine", safe(function () { return String(navigator.onLine); }));
+  row(netSec, "connection.effectiveType", safe(function () {
+    return navigator.connection ? navigator.connection.effectiveType : "(없음)";
+  }));
+  row(netSec, "connection.downlink/rtt", safe(function () {
+    return navigator.connection ? navigator.connection.downlink + "Mb/s / " + navigator.connection.rtt + "ms" : "(없음)";
+  }));
+  row(netSec, "connection.saveData", safe(function () {
+    return navigator.connection ? String(navigator.connection.saveData) : "(없음)";
+  }));
+
+  // ---- render synchronous sections -----------------------------------
+
+  var reportEl = document.getElementById("report");
+
+  function renderSections() {
+    reportEl.innerHTML = "";
+    sections.forEach(function (s) {
+      var card = document.createElement("section");
+      card.className = "card";
+      var label = document.createElement("div");
+      label.className = "card-label";
+      label.textContent = s.label;
+      card.appendChild(label);
+      if (s.hint) {
+        var hint = document.createElement("div");
+        hint.className = "hint";
+        hint.style.paddingTop = "0";
+        hint.textContent = s.hint;
+        card.appendChild(hint);
+      }
+      s.rows.forEach(function (r) {
+        var rowEl = document.createElement("div");
+        rowEl.className = "row";
+        var k = document.createElement("div");
+        k.className = "k";
+        k.textContent = r.key;
+        var v = document.createElement("div");
+        v.className = "v";
+        var vt = document.createElement("span");
+        vt.textContent = r.value;
+        v.appendChild(vt);
+        if (r.flag) {
+          var f = document.createElement("span");
+          f.className = "flag " + r.flag;
+          f.textContent = r.flag === "good" ? "정상" : r.flag === "warn" ? "확인 필요" : "위험 신호";
+          v.appendChild(f);
+        }
+        rowEl.appendChild(k);
+        rowEl.appendChild(v);
+        card.appendChild(rowEl);
+      });
+      reportEl.appendChild(card);
+    });
+  }
+
+  function renderMeta() {
+    var meta = document.getElementById("metaRow");
+    meta.innerHTML =
+      "<span>스캔 시각 <b>" + new Date().toLocaleString() + "</b></span>" +
+      "<span>URL <b>" + location.href.replace(/^https?:\/\//, "") + "</b></span>";
+  }
+
+  function renderSummary() {
+    var sum = document.getElementById("summary");
+    sum.innerHTML = "";
+    var order = [["good", "정상"], ["warn", "확인 필요"], ["bad", "위험 신호"]];
+    order.forEach(function (pair) {
+      var count = flagCounts[pair[0]] || 0;
+      var pill = document.createElement("span");
+      pill.className = "pill " + pair[0];
+      pill.innerHTML = "<span class=\"n\">" + count + "</span> " + pair[1];
+      sum.appendChild(pill);
+    });
+  }
+
+  function buildRawText() {
+    var lines = [];
+    lines.push("Fingerprint Scan — " + new Date().toLocaleString());
+    lines.push("URL: " + location.href);
+    lines.push("");
+    sections.forEach(function (s) {
+      lines.push("## " + s.label);
+      s.rows.forEach(function (r) {
+        var tag = r.flag ? " [" + r.flag.toUpperCase() + "]" : "";
+        lines.push("  " + r.key + ": " + r.value + tag);
+      });
+      lines.push("");
+    });
+    return lines.join("\n");
+  }
+
+  function finalize() {
+    renderSections();
+    renderMeta();
+    renderSummary();
+    document.getElementById("raw").value = buildRawText();
+  }
+
+  finalize();
+
+  // ---- async enrichment (UA-CH, permissions, storage) -----------------
+
+  var pending = [];
+
+  if (navigator.userAgentData) {
+    var uaSec = section("UA Client Hints");
+    row(uaSec, "brands", safe(function () {
+      return navigator.userAgentData.brands.map(function (b) { return b.brand + " " + b.version; }).join(", ");
+    }));
+    row(uaSec, "mobile", safe(function () { return String(navigator.userAgentData.mobile); }));
+    row(uaSec, "platform", safe(function () { return navigator.userAgentData.platform; }));
+
+    pending.push(
+      navigator.userAgentData.getHighEntropyValues([
+        "architecture", "bitness", "model", "platformVersion", "uaFullVersion", "fullVersionList"
+      ]).then(function (hv) {
+        row(uaSec, "architecture / bitness", (hv.architecture || "?") + " / " + (hv.bitness || "?"));
+        row(uaSec, "model", hv.model || "(빈 문자열)");
+        row(uaSec, "platformVersion", hv.platformVersion || "(없음)");
+        row(uaSec, "fullVersionList", (hv.fullVersionList || []).map(function (b) { return b.brand + " " + b.version; }).join(", "));
+      }).catch(function (e) {
+        row(uaSec, "getHighEntropyValues", "(에러: " + e.message + ")", "warn");
+      })
+    );
+  }
+
+  var permSec = section("권한 상태 질의", "실제 권한을 바꾸지 않고 현재 상태만 물어봅니다.");
+  if (navigator.permissions && navigator.permissions.query) {
+    ["notifications", "geolocation", "camera", "microphone"].forEach(function (name) {
+      pending.push(
+        navigator.permissions.query({ name: name }).then(function (status) {
+          row(permSec, name, status.state);
+        }).catch(function (e) {
+          row(permSec, name, "(거부/미지원: " + e.message + ")", "warn");
+        })
+      );
+    });
+  } else {
+    row(permSec, "navigator.permissions", "미지원", "warn");
+  }
+
+  var storeQuotaSec = section("스토리지 용량");
+  if (navigator.storage && navigator.storage.estimate) {
+    pending.push(
+      navigator.storage.estimate().then(function (est) {
+        var mb = function (n) { return n ? (n / (1024 * 1024)).toFixed(1) + "MB" : "0MB"; };
+        row(storeQuotaSec, "quota / usage", mb(est.quota) + " / " + mb(est.usage));
+      }).catch(function (e) {
+        row(storeQuotaSec, "storage.estimate", "(에러: " + e.message + ")", "warn");
+      })
+    );
+  } else {
+    row(storeQuotaSec, "navigator.storage", "미지원", "warn");
+  }
+
+  Promise.allSettled(pending).then(finalize);
+
+  // ---- copy button ------------------------------------------------------
+
+  document.getElementById("copyBtn").addEventListener("click", function () {
+    var status = document.getElementById("copyStatus");
+    var text = document.getElementById("raw").value;
+    var done = function (ok) {
+      status.textContent = ok ? "복사됐어요 — 대화창에 붙여넣어 주세요." : "복사 실패 — 아래 텍스트 상자를 길게 눌러 직접 선택해 주세요.";
+      status.style.color = ok ? "var(--good)" : "var(--warn)";
+    };
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () { done(true); }).catch(function () {
+        fallbackCopy(text, done);
+      });
+    } else {
+      fallbackCopy(text, done);
+    }
+  });
+
+  function fallbackCopy(text, done) {
+    try {
+      var ta = document.getElementById("raw");
+      ta.focus();
+      ta.select();
+      var ok = document.execCommand("copy");
+      done(ok);
+    } catch (e) {
+      done(false);
+    }
+  }
+})();
+</script>
+</body>
+</html>

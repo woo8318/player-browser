@@ -236,6 +236,27 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                     )
                 }
             }
+            // 진단 전용 — 동작은 바꾸지 않는다 (v1.3.64).
+            // 격리 호스트의 메인 프레임은 우리 OkHttp를 안 거치므로 응답 코드를
+            // 볼 방법이 없었다. 챌린지 루프가 도는 동안 매 라운드의 상태 코드와
+            // Cloudflare 헤더(`cf-mitigated`/`cf-ray`)를 남겨, 새로 발급된
+            // `cf_clearance`가 실제로 받아들여지는지(200) 여전히 거부되는지(403)를
+            // 한 줄로 확인할 수 있게 한다.
+            override fun onReceivedHttpError(
+                view: WebView?,
+                request: WebResourceRequest?,
+                errorResponse: WebResourceResponse?
+            ) {
+                super.onReceivedHttpError(view, request, errorResponse)
+                if (request?.isForMainFrame == true && errorResponse != null) {
+                    ChallengeDetector.noteHttpError(
+                        request.url,
+                        errorResponse.statusCode,
+                        errorResponse.responseHeaders
+                    )
+                }
+            }
+
             override fun onReceivedError(
                 view: WebView?,
                 request: WebResourceRequest?,

@@ -223,13 +223,47 @@ object ChallengeDetector {
      */
     fun noteSkipped(kind: String, url: Uri) {
         val host = url.host?.lowercase().orEmpty()
-        val key = "$kind|$host"
+        val path = url.encodedPath.orEmpty()
         val now = System.currentTimeMillis()
+
+        // 챌린지가 돌고 있는 동안에는 **경로별로** 남긴다 (v1.3.64).
+        // 예전엔 (종류, 호스트)당 30초 1회라, 정작 챌린지가 진행되는 15초 구간이
+        // 통째로 로그 공백이 됐다 — 루프의 어느 단계에서 막히는지 볼 수 없었다.
+        // 챌린지가 없을 때는 종전대로 조용히.
+        val verbose = anyChallengeActive()
+        val key = if (verbose) "$kind|$host|${path.take(160)}" else "$kind|$host"
+        val window = if (verbose) 3_000L else 30_000L
+
         val last = skipLog[key]
-        if (last != null && now - last < 30_000L) return
+        if (last != null && now - last < window) return
         prune(skipLog)
         skipLog[key] = now
-        DebugLog.d(TAG, "챌린지 요청 통과($kind, 가로채기 안 함): $host${url.encodedPath.orEmpty()}")
+        DebugLog.d(TAG, "챌린지 요청 통과($kind, 가로채기 안 함): $host$path")
+    }
+
+    /** 어느 호스트든 챌린지 창이 열려 있는가 — 진단 로그의 상세도 스위치. */
+    private fun anyChallengeActive(): Boolean {
+        val now = System.currentTimeMillis()
+        return challengeActive.values.any { it > now }
+    }
+
+    /**
+     * 메인 프레임이 HTTP 에러로 내려왔을 때 상태 코드와 Cloudflare 헤더를 남긴다.
+     *
+     * 격리된 호스트는 우리 OkHttp를 전혀 안 거치므로 응답을 볼 방법이 없었다.
+     * 루프가 도는 동안 매 라운드가 `403 (cf-mitigated=challenge)`인지, 아니면
+     * 어느 순간 통과(200)했다가 다시 떨어지는지가 원인 판별의 핵심이다.
+     */
+    fun noteHttpError(url: Uri?, status: Int, headers: Map<String, String>?) {
+        val host = url?.host?.lowercase().orEmpty()
+        if (host.isBlank()) return
+        val cf = headers.orEmpty().entries
+            .filter { it.key.startsWith("cf-", ignoreCase = true) }
+            .joinToString(", ") { "${it.key.lowercase()}=${it.value}" }
+        val detail = if (cf.isBlank()) "" else " [$cf]"
+        val line = "메인 프레임 HTTP $status: $host${url.encodedPath.orEmpty()}$detail"
+        if (status == 403 || status == 429 || status == 503) DebugLog.w(TAG, line)
+        else DebugLog.d(TAG, line)
     }
 
     /**

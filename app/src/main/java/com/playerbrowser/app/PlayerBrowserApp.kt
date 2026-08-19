@@ -35,6 +35,9 @@ class PlayerBrowserApp : Application() {
         // 저장된 챌린지 격리 목록을 먼저 올린다 — 첫 페이지 로드부터 적용돼야
         // 격리 이전의 요청 한 번이 우회(OkHttp) 경로로 새지 않는다.
         ChallengeDetector.attach(this)
+        // WebView 는 앱이 뜨자마자 만들어지므로 DataStore 의 비동기 미러를
+        // 기다릴 수 없다 — 동기 미러에서 먼저 확정한다.
+        EnvSpoofSwitch.attach(this)
         // Debug builds only: expose WebView contents to chrome://inspect so we
         // can diagnose page issues (e.g. images stalling) over USB / WiFi adb.
         if (BuildConfig.DEBUG) {

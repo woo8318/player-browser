@@ -39,8 +39,10 @@ class NetworkSettingsRepository(private val context: Context) {
         context.networkDataStore.data.first().toSettings()
 
     suspend fun update(transform: (NetworkSettings) -> NetworkSettings) {
+        var applied: NetworkSettings? = null
         context.networkDataStore.edit { prefs ->
             val next = transform(prefs.toSettings())
+            applied = next
             prefs[Keys.PROXY_ENABLED] = next.proxyEnabled
             prefs[Keys.PROXY_HOST] = next.proxyHost
             prefs[Keys.PROXY_PORT] = next.proxyPort
@@ -56,6 +58,9 @@ class NetworkSettingsRepository(private val context: Context) {
             prefs[Keys.DOH_PROVIDER] = next.dohProvider
             prefs[Keys.DOH_CUSTOM_URL] = next.dohCustomUrl
         }
+        // JS 환경 위장만은 WebView 생성 시점에 읽히므로 DataStore 의 비동기
+        // 미러가 늦는다 — 동기적으로 읽히는 SharedPreferences 에 함께 남긴다.
+        applied?.let { EnvSpoofSwitch.persist(context, it.jsEnvSpoofEnabled) }
     }
 
     private fun Preferences.toSettings(): NetworkSettings = NetworkSettings(

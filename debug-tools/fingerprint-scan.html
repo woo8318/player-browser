@@ -635,6 +635,26 @@
     })
   );
 
+  var cfSec = section("Cloudflare 엣지 트레이스", "1.1.1.1(클라우드플레어 자체 서버)이 이 연결을 실제로 어떤 IP·프로토콜로 봤는지 — 캡차가 걸리는 사이트와 같은 제공자입니다. 특히 ip= 가 핵심: 다른 브라우저와 IP가 다르면 네트워크 경로 자체가 다른 것이고, 같으면 프로토콜(http=)/TLS 쪽을 봐야 합니다.");
+  pending.push(
+    fetch("https://1.1.1.1/cdn-cgi/trace").then(function (r) { return r.text(); }).then(function (txt) {
+      var kv = {};
+      txt.split("\n").forEach(function (line) {
+        var i = line.indexOf("=");
+        if (i > 0) kv[line.slice(0, i)] = line.slice(i + 1);
+      });
+      row(cfSec, "ip (클라우드플레어가 본 내 IP)", kv.ip || "(없음)");
+      row(cfSec, "colo (접속한 엣지 위치)", kv.colo || "(없음)");
+      row(cfSec, "http (협상된 프로토콜)", kv.http || "(없음)");
+      row(cfSec, "tls", kv.tls || "(없음)");
+      row(cfSec, "sni", kv.sni || "(없음)");
+      row(cfSec, "kex (키 교환)", kv.kex || "(없음)");
+      row(cfSec, "warp / gateway", (kv.warp || "?") + " / " + (kv.gateway || "?"));
+    }).catch(function (e) {
+      row(cfSec, "1.1.1.1/cdn-cgi/trace 조회", "(에러: " + e.message + ")", "warn");
+    })
+  );
+
   Promise.allSettled(pending).then(finalize);
 
   // ---- copy button ------------------------------------------------------

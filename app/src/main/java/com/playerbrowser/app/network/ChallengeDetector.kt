@@ -261,7 +261,7 @@ object ChallengeDetector {
             .filter { it.key.startsWith("cf-", ignoreCase = true) }
             .joinToString(", ") { "${it.key.lowercase()}=${it.value}" }
         val detail = if (cf.isBlank()) "" else " [$cf]"
-        val line = "메인 프레임 HTTP $status: $host${url.encodedPath.orEmpty()}$detail"
+        val line = "메인 프레임 HTTP $status: $host${url?.encodedPath.orEmpty()}$detail"
         if (status == 403 || status == 429 || status == 503) DebugLog.w(TAG, line)
         else DebugLog.d(TAG, line)
     }

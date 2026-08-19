@@ -58,6 +58,17 @@ import com.playerbrowser.app.network.EnvSpoofSwitch
  * 고전 지표), 그리고 `Notification`을 채우면서 생긴 모순 —
  * `navigator.permissions.query({name:'notifications'})`가 거부되던 것 — 을
  * 'prompt'로 맞춰 준다.
+ *
+ * **v1.3.73 — 실기기 오페라 대조로 찾은 실제 버그.** 캡차 루프의 원인을 추측이
+ * 아니라 직접 비교로 찾기 위해 오페라와 이 앱 양쪽에서 같은 진단 페이지를 열어
+ * `navigator.permissions.query({name:'notifications'})` 결과를 대조했다. 오페라(정상
+ * 통과)는 `prompt`, 이 앱은 `denied`. v1.3.63의 가정("WebView는 이 질의를
+ * 거부(reject)한다")이 이 WebView 버전(150)에서는 틀렸다 — 거부되지 않고 정상
+ * resolve되며 state가 바로 `denied`로 나온다. `catch`만 잡던 기존 패치가 이
+ * 케이스를 아예 못 보고 있었으므로 resolve된 값도 함께 확인해 `denied`면
+ * `prompt`로 맞춘다. (`window.outerWidth/Height`도 오페라 대비 눈에 띄게
+ * 달랐지만 — 앱 내장 WebView는 구조적으로 "브라우저 UI"가 없어 outer≈inner —
+ * 이건 숫자를 억지로 지어내는 것이라 손대지 않는다.)
  */
 object BrowserEnvPatch {
 
@@ -82,7 +93,7 @@ object BrowserEnvPatch {
                 "JS 환경 정규화 주입: window.chrome + Notification + PaymentRequest / " +
                     "PublicKeyCredential / mediaSession / share / bluetooth / usb / " +
                     "presentation / getInstalledRelatedApps / speechSynthesis " +
-                    "+ toString 마스킹 / outerWidth / permissions 일관성"
+                    "+ toString 마스킹 / outerWidth / permissions 일관성(resolve+reject)"
             )
         }.onFailure {
             DebugLog.w(TAG, "JS 환경 정규화 실패(무시): ${it.javaClass.simpleName}")
@@ -487,8 +498,10 @@ object BrowserEnvPatch {
   // v1.3.60이 `Notification`을 채우면서 생긴 **모순**을 없앤다.
   // 진짜 Chrome은 `Notification.permission === 'default'` 면
   // `navigator.permissions.query({name:'notifications'})` 가 'prompt'를 준다.
-  // WebView는 알림 자체를 모르니 이 질의가 거부(reject)되는데, 그 조합
-  // (Notification은 있는데 권한 질의는 실패)은 정직한 부재보다 나쁜 신호다.
+  // WebView는 알림 자체를 모르니 이 질의가 거부(reject)될 거라 예상했는데,
+  // 실기기 진단(fingerprint-scan 비교, v1.3.73)에서 이 WebView 버전(150)은
+  // **거부하지 않고 정상 resolve하면서 state:'denied'를 준다** — 그래서
+  // catch만 잡던 기존 패치가 한 번도 발동하지 않았다. resolve된 값도 함께 본다.
   try {
     var perms = navigator.permissions;
     if (perms && typeof perms.query === 'function') {
@@ -504,7 +517,12 @@ object BrowserEnvPatch {
       };
       var patched = nativeLike(function query(desc) {
         var name = desc && desc.name;
-        return origQuery(desc)['catch'](function (err) {
+        return origQuery(desc).then(function (status) {
+          if (name === 'notifications' && status && status.state === 'denied') {
+            return synthetic(name, 'prompt');
+          }
+          return status;
+        })['catch'](function (err) {
           if (name === 'notifications') { return synthetic(name, 'prompt'); }
           if (name === 'payment-handler') { return synthetic(name, 'denied'); }
           throw err;

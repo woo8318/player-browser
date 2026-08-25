@@ -240,7 +240,13 @@ fun BrowserScreen(
     // Same resolution as playCandidate, but hands the stream to DownloadCenter
     // instead of the player. Downloading is the real fix for "it keeps stalling":
     // once the file is on disk, playback never touches the network again.
-    val downloadCandidate: (StreamCandidate?) -> Unit = { candidate ->
+    //
+    // watchNow starts the player as soon as the download is queued rather than
+    // making the user wait for 100%: the player reads through the same cache the
+    // download writes, so received segments come off disk and the rest streams.
+    // It launches from the callback because that is the point at which the
+    // request exists - launching earlier would cost an HLS stream its stream keys.
+    val downloadCandidate: (StreamCandidate?, Boolean) -> Unit = { candidate, watchNow ->
         if (candidate == null) {
             Toast.makeText(
                 context,
@@ -259,6 +265,9 @@ fun BrowserScreen(
                 userAgent = ua
             ) { _, message ->
                 Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                // Watch it either way. A download that could not be queued (or is
+                // already queued) is no reason to refuse to play the stream.
+                if (watchNow) playCandidate(candidate)
             }
         }
     }
@@ -292,7 +301,8 @@ fun BrowserScreen(
                 context = context,
                 candidate = candidate,
                 onPlay = { playCandidate(candidate) },
-                onDownload = { downloadCandidate(candidate) }
+                onDownload = { downloadCandidate(candidate, false) },
+                onDownloadAndPlay = { downloadCandidate(candidate, true) }
             )
         }
     }
@@ -457,7 +467,7 @@ fun BrowserScreen(
                                 onClick = {
                                     menuOpen = false
                                     val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
-                                    downloadCandidate(VideoStreamSniffer.current(host))
+                                    downloadCandidate(VideoStreamSniffer.current(host), false)
                                 }
                             )
                             DropdownMenuItem(
@@ -696,16 +706,23 @@ private fun showVideoContextMenu(
     context: Context,
     candidate: StreamCandidate,
     onPlay: () -> Unit,
-    onDownload: () -> Unit
+    onDownload: () -> Unit,
+    onDownloadAndPlay: () -> Unit
 ) {
-    val items = arrayOf("외부 플레이어로 재생", "다운로드 (끊김 없이 보기)", "영상 주소 복사")
+    val items = arrayOf(
+        "외부 플레이어로 재생",
+        "다운로드 (다 받고 보기)",
+        "받으면서 바로 보기",
+        "영상 주소 복사"
+    )
     androidx.appcompat.app.AlertDialog.Builder(context)
         .setTitle("영상")
         .setItems(items) { _, which ->
             when (which) {
                 0 -> onPlay()
                 1 -> onDownload()
-                2 -> {
+                2 -> onDownloadAndPlay()
+                3 -> {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
                         as? android.content.ClipboardManager
                     clipboard?.setPrimaryClip(

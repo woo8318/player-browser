@@ -150,8 +150,17 @@ class VideoPlayerActivity : ComponentActivity() {
         // downloaded falls straight through to the network factory below.
         val networkFactory = DefaultDataSource.Factory(this, httpFactory)
         val dataSourceFactory = DownloadCenter.playbackDataSourceFactory(this, networkFactory)
-        if (DownloadCenter.isDownloaded(this, url)) {
-            DebugLog.d(TAG, "다운로드된 영상 재생 (오프라인)")
+
+        // A download that is still running is perfectly playable: the cache serves
+        // whatever has landed and the rest streams as usual, so there is no reason
+        // to make the user wait for 100%.
+        val downloadItem = DownloadCenter.mediaItemFor(this, url)
+        if (downloadItem != null) {
+            if (DownloadCenter.isDownloaded(this, url)) {
+                DebugLog.d(TAG, "다운로드된 영상 재생 (오프라인)")
+            } else {
+                DebugLog.d(TAG, "받는 중인 영상 재생 — 받은 구간은 디스크, 나머지는 네트워크")
+            }
         }
 
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
@@ -179,7 +188,10 @@ class VideoPlayerActivity : ComponentActivity() {
             .setLoadControl(loadControl)
             .build()
 
-        val item = MediaItem.Builder()
+        // Replay the download's own request when there is one: it carries the
+        // stream keys, so HLS plays the rendition that was downloaded instead of
+        // letting adaptive selection pick a bitrate whose segments aren't cached.
+        val item = downloadItem ?: MediaItem.Builder()
             .setUri(url)
             .apply {
                 mimeTypeFor(mime, url)?.let { setMimeType(it) }

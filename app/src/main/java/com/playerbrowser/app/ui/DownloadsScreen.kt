@@ -15,8 +15,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -96,7 +98,7 @@ fun DownloadsScreen(onBack: () -> Unit) {
                 contentAlignment = Alignment.Center
             ) {
                 Text(
-                    "다운로드한 영상이 없습니다.\n영상을 길게 눌러 \"다운로드\"를 고르세요.",
+                    "다운로드한 영상이 없습니다.\n영상을 길게 눌러 \"다운로드\"를 고르세요.\n받는 중에도 바로 볼 수 있어요.",
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
@@ -108,15 +110,19 @@ fun DownloadsScreen(onBack: () -> Unit) {
                 DownloadRow(
                     entry = entry,
                     onPlay = {
+                        // Whatever isn't on disk yet still streams, and these CDNs
+                        // check Referer / UA - so replay the headers this download
+                        // was queued with rather than firing a bare request.
                         val cookie = runCatching {
                             CookieManager.getInstance().getCookie(entry.url)
                         }.getOrNull()
+                        val headers = DownloadCenter.rememberedHeaders(context, entry.url)
                         VideoPlayerActivity.start(
                             context,
                             entry.url,
-                            entry.pageUrl.ifBlank { null },
+                            entry.pageUrl.ifBlank { headers["Referer"] },
                             cookie,
-                            null,
+                            headers["User-Agent"],
                             DownloadCenter.mimeTypeFor(null, entry.url),
                             entry.title
                         )
@@ -147,7 +153,7 @@ private fun DownloadRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = entry.status == DownloadStatus.COMPLETED) { onPlay() }
+            .clickable(enabled = entry.playable) { onPlay() }
             .padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -166,7 +172,7 @@ private fun DownloadRow(
                 } else {
                     MaterialTheme.colorScheme.onSurfaceVariant
                 },
-                maxLines = 1,
+                maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
             if (entry.status == DownloadStatus.DOWNLOADING || entry.status == DownloadStatus.PAUSED) {
@@ -177,6 +183,9 @@ private fun DownloadRow(
             }
         }
         Row(horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
+            // Two independent things: whether you are watching it, and whether it
+            // is still downloading. So they get their own buttons - a filled play
+            // circle always means "watch now", the other button drives the download.
             when (entry.status) {
                 DownloadStatus.COMPLETED -> IconButton(onClick = onPlay) {
                     Icon(Icons.Filled.PlayArrow, contentDescription = "재생")
@@ -184,11 +193,21 @@ private fun DownloadRow(
                 DownloadStatus.FAILED -> IconButton(onClick = onRetry) {
                     Icon(Icons.Filled.Refresh, contentDescription = "다시 시도")
                 }
-                DownloadStatus.PAUSED -> IconButton(onClick = onTogglePause) {
-                    Icon(Icons.Filled.PlayArrow, contentDescription = "이어받기")
+                DownloadStatus.PAUSED -> {
+                    IconButton(onClick = onPlay) {
+                        Icon(Icons.Filled.PlayCircle, contentDescription = "지금 보기")
+                    }
+                    IconButton(onClick = onTogglePause) {
+                        Icon(Icons.Filled.Download, contentDescription = "이어받기")
+                    }
                 }
-                DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED -> IconButton(onClick = onTogglePause) {
-                    Icon(Icons.Filled.Pause, contentDescription = "일시정지")
+                DownloadStatus.DOWNLOADING, DownloadStatus.QUEUED -> {
+                    IconButton(onClick = onPlay) {
+                        Icon(Icons.Filled.PlayCircle, contentDescription = "지금 보기")
+                    }
+                    IconButton(onClick = onTogglePause) {
+                        Icon(Icons.Filled.Pause, contentDescription = "일시정지")
+                    }
                 }
                 DownloadStatus.REMOVING -> Unit
             }
@@ -199,19 +218,25 @@ private fun DownloadRow(
     }
 }
 
+/** Anything with bytes on disk - or bytes coming - can be played right now. */
+private val DownloadEntry.playable: Boolean
+    get() = status != DownloadStatus.REMOVING && status != DownloadStatus.FAILED
+
 private fun statusLine(entry: DownloadEntry): String = when (entry.status) {
     DownloadStatus.COMPLETED -> "완료 · ${formatBytes(entry.bytesDownloaded)} · 오프라인 재생"
     DownloadStatus.DOWNLOADING -> {
         val pct = entry.percent.toInt()
-        if (entry.contentLength > 0) {
+        val size = if (entry.contentLength > 0) {
             "$pct% · ${formatBytes(entry.bytesDownloaded)} / ${formatBytes(entry.contentLength)}"
         } else {
             // HLS reports no total until every segment length is known.
             "받는 중 · ${formatBytes(entry.bytesDownloaded)}"
         }
+        "$size · 받으면서 볼 수 있어요"
     }
-    DownloadStatus.PAUSED -> "일시정지 · ${formatBytes(entry.bytesDownloaded)}"
-    DownloadStatus.QUEUED -> "대기 중"
+    DownloadStatus.PAUSED ->
+        "일시정지 · ${formatBytes(entry.bytesDownloaded)} · 바로 볼 수 있어요"
+    DownloadStatus.QUEUED -> "대기 중 · 지금도 볼 수 있어요"
     DownloadStatus.FAILED -> "실패 · 다시 시도할 수 있어요"
     DownloadStatus.REMOVING -> "삭제 중"
 }

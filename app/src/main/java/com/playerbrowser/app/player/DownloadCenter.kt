@@ -56,6 +56,7 @@ object DownloadCenter {
     private const val KEY_HEADERS = "headers"
     private const val CACHE_DIR = "video-downloads"
     private const val MAX_PARALLEL = 2
+    private const val MAX_PENDING = 16
 
     /** [DownloadRequest.data] payload, so the list can show something human. */
     private const val META_TITLE = "title"
@@ -73,6 +74,13 @@ object DownloadCenter {
     // runs a destructive migration that would wipe bookmarks and history.
     private val headerCache = HashMap<String, Map<String, String>>()
     private var headersLoaded = false
+
+    // Requests handed to the service but not yet visible in its index. Adding a
+    // download is an intent round-trip, so "download and watch now" would launch
+    // the player a beat before the index knows the request exists - and an HLS
+    // stream started without the download's stream keys picks its own rendition,
+    // which is exactly the cache miss this whole path exists to avoid.
+    private val pendingRequests = HashMap<String, DownloadRequest>()
 
     // ---- singletons -------------------------------------------------------
 
@@ -303,6 +311,7 @@ object DownloadCenter {
                 context, VideoDownloadService::class.java, request, /* foreground = */ true
             )
         }.onSuccess {
+            rememberPending(request)
             DebugLog.d(TAG, "다운로드 시작: ${request.uri}")
             onResult(true, "다운로드를 시작했어요")
         }.onFailure {
@@ -329,6 +338,56 @@ object DownloadCenter {
     fun isDownloaded(context: Context, url: String): Boolean = runCatching {
         manager(context).downloadIndex.getDownload(url)?.state == Download.STATE_COMPLETED
     }.getOrDefault(false)
+
+    /**
+     * The [MediaItem] to play [url] with, when a download exists for it.
+     *
+     * This matters most while a download is still running. The request carries the
+     * stream keys [DownloadHelper] chose, so an HLS stream plays back the exact
+     * rendition being downloaded; without them adaptive selection wanders onto a
+     * different bitrate whose segments were never cached, and every byte already
+     * on disk is ignored while the same video is pulled twice over the network.
+     * Null when nothing was ever queued for this URL — the caller then builds its
+     * own item as before.
+     */
+    fun mediaItemFor(context: Context, url: String): MediaItem? {
+        val indexed = runCatching {
+            manager(context).downloadIndex.getDownload(url)?.request
+        }.getOrNull()
+        if (indexed != null) {
+            takePending(url)
+            return runCatching { indexed.toMediaItem() }.getOrNull()
+        }
+        return runCatching { peekPending(url)?.toMediaItem() }.getOrNull()
+    }
+
+    @Synchronized
+    private fun rememberPending(request: DownloadRequest) {
+        // Bounded so a long session cannot accumulate requests the index never
+        // caught up with; entries are superseded the moment the index has them.
+        if (pendingRequests.size >= MAX_PENDING) pendingRequests.clear()
+        pendingRequests[request.id] = request
+    }
+
+    @Synchronized
+    private fun peekPending(url: String): DownloadRequest? = pendingRequests[url]
+
+    @Synchronized
+    private fun takePending(url: String) {
+        pendingRequests.remove(url)
+    }
+
+    /**
+     * Referer / User-Agent remembered when this URL was queued. The downloads list
+     * plays entries long after the originating tab is gone, and these CDNs still
+     * check both for whatever part isn't on disk yet. Cookie is deliberately not
+     * included — the player reads that live, so a refreshed session still works.
+     */
+    @Synchronized
+    fun rememberedHeaders(context: Context, url: String): Map<String, String> {
+        loadHeaders(context)
+        return headerCache[hostOf(url)] ?: headerCache.values.lastOrNull() ?: emptyMap()
+    }
 
     fun remove(context: Context, id: String) {
         runCatching {

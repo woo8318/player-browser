@@ -10,6 +10,7 @@ import androidx.compose.material3.darkColorScheme
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.layout.fillMaxSize
 import com.playerbrowser.app.cast.CastSessionBridge
+import com.playerbrowser.app.player.DownloadCenter
 import com.playerbrowser.app.ui.BrowserViewModel
 import com.playerbrowser.app.ui.RootNavigation
 
@@ -35,6 +36,15 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Downloads keep their bytes across a process death but nothing restarts
+        // them - there is no scheduler by design. This is the cheapest point at
+        // which the app is certainly in the foreground, which is what Android
+        // requires before a foreground service may be started.
+        DownloadCenter.resumeInterrupted(this)
     }
 
     override fun onResume() {

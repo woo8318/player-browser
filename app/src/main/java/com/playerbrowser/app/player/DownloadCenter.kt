@@ -409,6 +409,50 @@ object DownloadCenter {
         }.onFailure { DebugLog.e(TAG, "일시정지 전환 실패: ${it.message}") }
     }
 
+    /**
+     * Restart whatever a process death left half-downloaded.
+     *
+     * The bytes and the queue survive on their own - partial data stays in the
+     * cache and the queue in Media3's index, so nothing is ever fetched from zero
+     * again. What does not survive is the *running*: [VideoDownloadService]
+     * returns a null scheduler on purpose, so without this the queue simply sits
+     * there until the user happens to open the downloads list.
+     *
+     * Paused downloads are left alone - a user pause is a per-download stop
+     * reason, which resuming the service does not clear.
+     */
+    fun resumeInterrupted(context: Context) {
+        val ctx = context.applicationContext
+        // Off the main thread: the first call opens the download database and
+        // the cache index, and this runs every time the app comes back up.
+        Thread {
+            val unfinished = runCatching {
+                var n = 0
+                manager(ctx).downloadIndex.getDownloads(
+                    Download.STATE_QUEUED,
+                    Download.STATE_DOWNLOADING,
+                    Download.STATE_RESTARTING
+                ).use { cursor -> while (cursor.moveToNext()) n++ }
+                n
+            }.getOrDefault(0)
+            if (unfinished > 0) {
+                // Best-effort: Android 12+ refuses a foreground service started
+                // from the background, and the app can be gone again by the time
+                // this thread runs. A refused restart just means the downloads
+                // list restarts it, exactly as it did before.
+                runCatching {
+                    DownloadService.sendResumeDownloads(
+                        ctx, VideoDownloadService::class.java, /* foreground = */ true
+                    )
+                }.onSuccess {
+                    DebugLog.d(TAG, "중단된 다운로드 ${unfinished}개 이어받기")
+                }.onFailure {
+                    DebugLog.e(TAG, "다운로드 이어받기 실패: ${it.message}")
+                }
+            }
+        }.start()
+    }
+
     /** Retry a failed download by re-sending its original request. */
     fun retry(context: Context, id: String) {
         val request = runCatching {

@@ -25,6 +25,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MimeTypes
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
@@ -62,6 +63,10 @@ class VideoPlayerActivity : ComponentActivity() {
     private var resumeKey: String? = null
     private var videoTitle: String = ""
     private var appliedOrientation = false
+
+    // Set once the download's own MediaItem has failed and playback has been
+    // rebuilt from the plain URL, so a second failure reports instead of looping.
+    private var triedPlainUrl = false
 
     private val audioManager: AudioManager? by lazy {
         getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -133,7 +138,8 @@ class VideoPlayerActivity : ComponentActivity() {
         referer: String?,
         cookie: String?,
         ua: String?,
-        mime: String?
+        mime: String?,
+        useDownload: Boolean = true
     ) {
         val headers = HashMap<String, String>()
         referer?.let { headers["Referer"] = it }
@@ -154,13 +160,16 @@ class VideoPlayerActivity : ComponentActivity() {
         // A download that is still running is perfectly playable: the cache serves
         // whatever has landed and the rest streams as usual, so there is no reason
         // to make the user wait for 100%.
-        val downloadItem = DownloadCenter.mediaItemFor(this, url)
+        val downloadItem = if (useDownload) DownloadCenter.mediaItemFor(this, url) else null
         if (downloadItem != null) {
-            if (DownloadCenter.isDownloaded(this, url)) {
-                DebugLog.d(TAG, "다운로드된 영상 재생 (오프라인)")
-            } else {
-                DebugLog.d(TAG, "받는 중인 영상 재생 — 받은 구간은 디스크, 나머지는 네트워크")
-            }
+            // The numbers matter more than the label here - see DownloadCenter.describe.
+            DebugLog.d(TAG, "다운로드본 재생 — ${DownloadCenter.describe(this, url)}")
+        } else {
+            DebugLog.d(
+                TAG,
+                "네트워크 재생 (mime=${mimeTypeFor(mime, url) ?: "-"}) — " +
+                    DownloadCenter.describe(this, url)
+            )
         }
 
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
@@ -205,9 +214,62 @@ class VideoPlayerActivity : ComponentActivity() {
             }
 
             override fun onPlaybackStateChanged(state: Int) {
+                // Logged because a player that opens but never starts is otherwise
+                // completely silent: "still buffering" and "failed" look identical
+                // from the outside, and they share no cause at all.
+                val name = when (state) {
+                    Player.STATE_IDLE -> "IDLE"
+                    Player.STATE_BUFFERING -> "BUFFERING"
+                    Player.STATE_READY -> "READY"
+                    Player.STATE_ENDED -> "ENDED"
+                    else -> state.toString()
+                }
+                DebugLog.d(TAG, "재생 상태: $name")
                 if (state == Player.STATE_ENDED) {
                     resumeKey?.let { WatchProgressStore.get(this@VideoPlayerActivity).delete(it) }
                 }
+            }
+
+            override fun onPlayerError(error: PlaybackException) {
+                // Without this a failure is a black screen with working controls and
+                // nothing in the log - which is exactly what "the player opens but
+                // playback never starts" looks like from the outside.
+                val chain = StringBuilder()
+                var cause: Throwable? = error.cause
+                var depth = 0
+                while (cause != null && depth < 3) {
+                    chain.append(" / ${cause.javaClass.simpleName}: ${cause.message}")
+                    cause = cause.cause
+                    depth++
+                }
+                DebugLog.e(TAG, "재생 실패 [${error.errorCodeName}] ${error.message}$chain")
+                DebugLog.e(
+                    TAG,
+                    "재생 대상: " + DownloadCenter.describe(this@VideoPlayerActivity, url)
+                )
+
+                // A download carries the stream keys DownloadHelper picked. If that
+                // item is what playback chokes on, the plain URL still streams - so
+                // fall back once rather than leaving the user at a dead screen. It
+                // also splits the diagnosis in two: if this retry plays, the fault is
+                // in the downloaded item, not in the stream, the headers or the CDN.
+                if (downloadItem != null && !triedPlainUrl) {
+                    triedPlainUrl = true
+                    DebugLog.d(TAG, "다운로드본 실패 → 원본 URL로 다시 시도")
+                    showFeedback("다운로드본 재생 실패 — 스트리밍으로 다시 시도합니다")
+                    // Long enough to actually read, unlike the 600ms gesture hint.
+                    mainHandler.postDelayed(hideFeedback, 3_000)
+                    mainHandler.post {
+                        playerView.player = null
+                        player?.release()
+                        player = null
+                        buildPlayer(url, referer, cookie, ua, mime, useDownload = false)
+                    }
+                    return
+                }
+                showFeedback(
+                    "재생 실패 (${error.errorCodeName})\n설정 → 디버그 로그를 확인해 주세요"
+                )
             }
         })
 
@@ -217,7 +279,10 @@ class VideoPlayerActivity : ComponentActivity() {
         val key = resumeKey
         if (ResumeSwitch.enabled && key != null) {
             val savedSec = WatchProgressStore.get(this).position(key)
-            if (savedSec > 0) exo.seekTo((savedSec * 1000).toLong())
+            if (savedSec > 0) {
+                DebugLog.d(TAG, "이어보기 ${savedSec}초부터 시작")
+                exo.seekTo((savedSec * 1000).toLong())
+            }
         }
 
         exo.playWhenReady = true

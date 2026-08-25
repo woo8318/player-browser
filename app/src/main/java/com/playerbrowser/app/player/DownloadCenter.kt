@@ -340,6 +340,32 @@ object DownloadCenter {
     }.getOrDefault(false)
 
     /**
+     * One-line description of the download behind [url], for the debug log.
+     *
+     * The byte counts are the whole point. A download that reports 완료 while
+     * holding a few KB never fetched its segments - an HLS download whose stream
+     * keys came out empty looks exactly like that - and that separates a
+     * download-side failure from a playback-side one without having to guess.
+     */
+    fun describe(context: Context, url: String): String {
+        val d = runCatching {
+            manager(context).downloadIndex.getDownload(url)
+        }.getOrNull() ?: return "다운로드 없음"
+        val state = when (d.state) {
+            Download.STATE_COMPLETED -> "완료"
+            Download.STATE_DOWNLOADING -> "받는 중"
+            Download.STATE_QUEUED -> "대기"
+            Download.STATE_STOPPED -> "멈춤"
+            Download.STATE_FAILED -> "실패(이유 ${d.failureReason})"
+            Download.STATE_REMOVING -> "삭제 중"
+            Download.STATE_RESTARTING -> "재시작"
+            else -> "상태 ${d.state}"
+        }
+        return "$state, 받음 ${d.bytesDownloaded}B / 전체 ${d.contentLength}B, " +
+            "스트림키 ${d.request.streamKeys.size}개, mime=${d.request.mimeType ?: "-"}"
+    }
+
+    /**
      * The [MediaItem] to play [url] with, when a download exists for it.
      *
      * This matters most while a download is still running. The request carries the

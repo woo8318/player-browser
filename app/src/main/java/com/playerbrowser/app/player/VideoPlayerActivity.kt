@@ -29,6 +29,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
@@ -63,10 +64,6 @@ class VideoPlayerActivity : ComponentActivity() {
     private var resumeKey: String? = null
     private var videoTitle: String = ""
     private var appliedOrientation = false
-
-    // Set once the download's own MediaItem has failed and playback has been
-    // rebuilt from the plain URL, so a second failure reports instead of looping.
-    private var triedPlainUrl = false
 
     private val audioManager: AudioManager? by lazy {
         getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -139,8 +136,21 @@ class VideoPlayerActivity : ComponentActivity() {
         cookie: String?,
         ua: String?,
         mime: String?,
-        useDownload: Boolean = true
+        attempt: Int = 0
     ) {
+        // Attempt 0 is the real one. 1 and 2 are the rungs taken after a failure
+        // (see onPlayerError), each dropping exactly one thing so that whichever
+        // one plays names the culprit by itself.
+        val useDownload = attempt == 0
+        val useResume = attempt < 2
+        if (attempt > 0) {
+            DebugLog.d(
+                TAG,
+                "재생 시도 #$attempt — " +
+                    (if (useResume) "스트리밍(캐시 우회)" else "스트리밍(캐시 우회, 처음부터)")
+            )
+        }
+
         val headers = HashMap<String, String>()
         referer?.let { headers["Referer"] = it }
         cookie?.takeIf { it.isNotBlank() }?.let { headers["Cookie"] = it }
@@ -154,8 +164,15 @@ class VideoPlayerActivity : ComponentActivity() {
         // ahead of time, every byte comes off disk and the network never enters
         // the picture — which is the whole point of downloading it. Anything not
         // downloaded falls straight through to the network factory below.
+        //
+        // A retry must skip the cache entirely, not just drop the download's
+        // MediaItem. CacheKeyFactory.DEFAULT keys by URI, so leaving the
+        // CacheDataSource in the chain would serve the very same cached bytes
+        // again and the retry would prove nothing at all.
         val networkFactory = DefaultDataSource.Factory(this, httpFactory)
-        val dataSourceFactory = DownloadCenter.playbackDataSourceFactory(this, networkFactory)
+        val dataSourceFactory: DataSource.Factory =
+            if (useDownload) DownloadCenter.playbackDataSourceFactory(this, networkFactory)
+            else networkFactory
 
         // A download that is still running is perfectly playable: the cache serves
         // whatever has landed and the rest streams as usual, so there is no reason
@@ -167,7 +184,7 @@ class VideoPlayerActivity : ComponentActivity() {
         } else {
             DebugLog.d(
                 TAG,
-                "네트워크 재생 (mime=${mimeTypeFor(mime, url) ?: "-"}) — " +
+                "캐시 우회 스트리밍 (mime=${mimeTypeFor(mime, url) ?: "-"}) — " +
                     DownloadCenter.describe(this, url)
             )
         }
@@ -242,28 +259,37 @@ class VideoPlayerActivity : ComponentActivity() {
                     cause = cause.cause
                     depth++
                 }
-                DebugLog.e(TAG, "재생 실패 [${error.errorCodeName}] ${error.message}$chain")
+                DebugLog.e(
+                    TAG,
+                    "재생 실패 #$attempt [${error.errorCodeName}] ${error.message}$chain"
+                )
                 DebugLog.e(
                     TAG,
                     "재생 대상: " + DownloadCenter.describe(this@VideoPlayerActivity, url)
                 )
 
-                // A download carries the stream keys DownloadHelper picked. If that
-                // item is what playback chokes on, the plain URL still streams - so
-                // fall back once rather than leaving the user at a dead screen. It
-                // also splits the diagnosis in two: if this retry plays, the fault is
-                // in the downloaded item, not in the stream, the headers or the CDN.
-                if (downloadItem != null && !triedPlainUrl) {
-                    triedPlainUrl = true
-                    DebugLog.d(TAG, "다운로드본 실패 → 원본 URL로 다시 시도")
-                    showFeedback("다운로드본 재생 실패 — 스트리밍으로 다시 시도합니다")
+                // Bisect instead of giving up. Each rung changes exactly one thing,
+                // so whichever one plays names the culprit on its own:
+                //   0 → 1  drops the downloaded bytes AND the cache      (bad cache?)
+                //   1 → 2  drops the resume position                     (bad offset?)
+                // The user gets their video out of it either way, which is the
+                // only reason to run the ladder live rather than in a log.
+                if (attempt < LAST_ATTEMPT) {
+                    val next = attempt + 1
+                    val note = if (next == 1) {
+                        "다운로드본 재생 실패 — 스트리밍으로 다시 시도합니다"
+                    } else {
+                        "이어보기 위치에서 실패 — 처음부터 다시 시도합니다"
+                    }
+                    DebugLog.d(TAG, "$note (시도 #$next)")
+                    showFeedback(note)
                     // Long enough to actually read, unlike the 600ms gesture hint.
                     mainHandler.postDelayed(hideFeedback, 3_000)
                     mainHandler.post {
                         playerView.player = null
                         player?.release()
                         player = null
-                        buildPlayer(url, referer, cookie, ua, mime, useDownload = false)
+                        buildPlayer(url, referer, cookie, ua, mime, next)
                     }
                     return
                 }
@@ -277,7 +303,7 @@ class VideoPlayerActivity : ComponentActivity() {
         // page (shared key = page URL), so switching to the native player keeps
         // your spot. Honors the global resume toggle.
         val key = resumeKey
-        if (ResumeSwitch.enabled && key != null) {
+        if (useResume && ResumeSwitch.enabled && key != null) {
             val savedSec = WatchProgressStore.get(this).position(key)
             if (savedSec > 0) {
                 DebugLog.d(TAG, "이어보기 ${savedSec}초부터 시작")
@@ -480,6 +506,9 @@ class VideoPlayerActivity : ComponentActivity() {
     companion object {
         private const val TAG = "VideoPlayer"
         private const val SEEK_MS = 10_000L
+
+        // Rungs of the retry ladder in onPlayerError; see the comment there.
+        private const val LAST_ATTEMPT = 2
 
         // Buffer targets, tuned well past the Media3 defaults (50s/50s/2.5s/5s)
         // to ride out mobile dropouts. minBufferMs must be >= the rebuffer

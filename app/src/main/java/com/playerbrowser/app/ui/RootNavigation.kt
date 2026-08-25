@@ -21,6 +21,7 @@ object Routes {
     const val HISTORY = "history"
     const val SETTINGS = "settings"
     const val DEBUG_LOG = "debug_log"
+    const val DOWNLOADS = "downloads"
 }
 
 @Composable
@@ -74,7 +75,8 @@ fun RootNavigation(viewModel: BrowserViewModel) {
                 tabWebStates = tabWebStates,
                 onOpenBookmarks = { navController.navigate(Routes.BOOKMARKS) },
                 onOpenHistory = { navController.navigate(Routes.HISTORY) },
-                onOpenSettings = { navController.navigate(Routes.SETTINGS) }
+                onOpenSettings = { navController.navigate(Routes.SETTINGS) },
+                onOpenDownloads = { navController.navigate(Routes.DOWNLOADS) }
             )
         }
         composable(Routes.BOOKMARKS) {
@@ -107,6 +109,9 @@ fun RootNavigation(viewModel: BrowserViewModel) {
         }
         composable(Routes.DEBUG_LOG) {
             DebugLogScreen(onBack = { navController.popBackStack() })
+        }
+        composable(Routes.DOWNLOADS) {
+            DownloadsScreen(onBack = { navController.popBackStack() })
         }
     }
 }

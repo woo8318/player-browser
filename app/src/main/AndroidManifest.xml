@@ -6,6 +6,13 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
+    <!-- Offline video downloads run in a foreground service so they survive
+         leaving the browser screen; POST_NOTIFICATIONS (Android 13+) only
+         governs whether its progress notification is visible. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <application
         android:name=".PlayerBrowserApp"
         android:allowBackup="true"
@@ -46,6 +53,16 @@
             android:configChanges="orientation|screenSize|keyboardHidden|smallestScreenSize|screenLayout"
             android:supportsPictureInPicture="false"
             android:theme="@style/Theme.PlayerBrowser.Player" />
+
+        <service
+            android:name=".player.VideoDownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync">
+            <intent-filter>
+                <action android:name="androidx.media3.exoplayer.downloadService.action.RESTART" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </service>
 
         <receiver
             android:name=".update.UpdateInstallReceiver"

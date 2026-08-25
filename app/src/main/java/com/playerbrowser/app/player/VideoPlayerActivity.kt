@@ -30,6 +30,7 @@ import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
@@ -143,14 +144,39 @@ class VideoPlayerActivity : ComponentActivity() {
             .setDefaultRequestProperties(headers)
         if (!ua.isNullOrBlank()) httpFactory.setUserAgent(ua)
 
-        val dataSourceFactory = DefaultDataSource.Factory(this, httpFactory)
+        // Read through the download cache first: if this stream was downloaded
+        // ahead of time, every byte comes off disk and the network never enters
+        // the picture — which is the whole point of downloading it. Anything not
+        // downloaded falls straight through to the network factory below.
+        val networkFactory = DefaultDataSource.Factory(this, httpFactory)
+        val dataSourceFactory = DownloadCenter.playbackDataSourceFactory(this, networkFactory)
+        if (DownloadCenter.isDownloaded(this, url)) {
+            DebugLog.d(TAG, "다운로드된 영상 재생 (오프라인)")
+        }
+
         val mediaSourceFactory = DefaultMediaSourceFactory(this)
             .setDataSourceFactory(dataSourceFactory)
+
+        // Buffer far more aggressively than the Media3 default (50s cap, capped
+        // again by a byte threshold). These streams stall on weak mobile links,
+        // and holding a couple of minutes ahead rides out the dropouts. Time is
+        // prioritized over the size threshold so a big time buffer isn't cut
+        // short by the default target-buffer-bytes limit.
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(
+                BUFFER_MIN_MS,
+                BUFFER_MAX_MS,
+                BUFFER_FOR_PLAYBACK_MS,
+                BUFFER_AFTER_REBUFFER_MS
+            )
+            .setPrioritizeTimeOverSizeThresholds(true)
+            .build()
 
         val exo = ExoPlayer.Builder(this)
             .setSeekBackIncrementMs(SEEK_MS)
             .setSeekForwardIncrementMs(SEEK_MS)
             .setMediaSourceFactory(mediaSourceFactory)
+            .setLoadControl(loadControl)
             .build()
 
         val item = MediaItem.Builder()
@@ -377,6 +403,14 @@ class VideoPlayerActivity : ComponentActivity() {
     companion object {
         private const val TAG = "VideoPlayer"
         private const val SEEK_MS = 10_000L
+
+        // Buffer targets, tuned well past the Media3 defaults (50s/50s/2.5s/5s)
+        // to ride out mobile dropouts. minBufferMs must be >= the rebuffer
+        // threshold and maxBufferMs >= minBufferMs, or the builder throws.
+        private const val BUFFER_MIN_MS = 30_000
+        private const val BUFFER_MAX_MS = 120_000
+        private const val BUFFER_FOR_PLAYBACK_MS = 2_500
+        private const val BUFFER_AFTER_REBUFFER_MS = 5_000
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
 

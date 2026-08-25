@@ -1,11 +1,17 @@
 package com.playerbrowser.app.ui
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.pm.PackageManager
+import android.os.Build
 import android.content.Intent
 import android.net.Uri
 import android.webkit.CookieManager
 import androidx.activity.compose.BackHandler
 import androidx.appcompat.view.ContextThemeWrapper
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -34,7 +40,9 @@ import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
+import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.PlayCircle
@@ -80,6 +88,7 @@ import com.playerbrowser.app.network.ChallengeCookies
 import com.playerbrowser.app.network.ChallengeDetector
 import com.playerbrowser.app.network.CookieFlusher
 import com.playerbrowser.app.network.UrlRecovery
+import com.playerbrowser.app.player.DownloadCenter
 import com.playerbrowser.app.player.VideoPlayerActivity
 import com.playerbrowser.app.web.UrlUtils
 
@@ -91,7 +100,8 @@ fun BrowserScreen(
     tabWebStates: TabWebStateStore,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
-    onOpenSettings: () -> Unit
+    onOpenSettings: () -> Unit,
+    onOpenDownloads: () -> Unit
 ) {
     val context = LocalContext.current
     val tabs by viewModel.tabs.collectAsState()
@@ -227,6 +237,32 @@ fun BrowserScreen(
         }
     }
 
+    // Same resolution as playCandidate, but hands the stream to DownloadCenter
+    // instead of the player. Downloading is the real fix for "it keeps stalling":
+    // once the file is on disk, playback never touches the network again.
+    val downloadCandidate: (StreamCandidate?) -> Unit = { candidate ->
+        if (candidate == null) {
+            Toast.makeText(
+                context,
+                "다운로드할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생해 보세요)",
+                Toast.LENGTH_SHORT
+            ).show()
+        } else {
+            requestNotificationPermission(context)
+            val ua = runCatching { activeWebState.webView.settings.userAgentString }.getOrNull()
+            DownloadCenter.enqueue(
+                context = context,
+                url = candidate.url,
+                mime = candidate.mime,
+                title = state.currentTitle,
+                pageUrl = state.currentUrl,
+                userAgent = ua
+            ) { _, message ->
+                Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
     // ⋮ menu + on-screen FAB: single best pick (HLS preferred) for the page.
     val launchPlayer: () -> Unit = {
         val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
@@ -252,7 +288,12 @@ fun BrowserScreen(
                 Toast.LENGTH_SHORT
             ).show()
         } else {
-            showVideoContextMenu(context, candidate) { playCandidate(candidate) }
+            showVideoContextMenu(
+                context = context,
+                candidate = candidate,
+                onPlay = { playCandidate(candidate) },
+                onDownload = { downloadCandidate(candidate) }
+            )
         }
     }
 
@@ -409,6 +450,20 @@ fun BrowserScreen(
                                     menuOpen = false
                                     launchPlayer()
                                 }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("영상 다운로드") },
+                                leadingIcon = { Icon(Icons.Filled.FileDownload, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
+                                    downloadCandidate(VideoStreamSniffer.current(host))
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("다운로드 목록") },
+                                leadingIcon = { Icon(Icons.Filled.FolderOpen, contentDescription = null) },
+                                onClick = { menuOpen = false; onOpenDownloads() }
                             )
                             DropdownMenuItem(
                                 text = { Text("설정") },
@@ -611,6 +666,28 @@ private fun CastButton() {
 }
 
 /**
+ * Ask for POST_NOTIFICATIONS the first time a download starts (Android 13+).
+ * Best-effort and fire-and-forget: the download runs either way, the permission
+ * only decides whether its progress notification is visible. Asking here rather
+ * than at launch keeps the prompt tied to the feature that needs it.
+ */
+private fun requestNotificationPermission(context: Context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+    val granted = ContextCompat.checkSelfPermission(
+        context, android.Manifest.permission.POST_NOTIFICATIONS
+    ) == PackageManager.PERMISSION_GRANTED
+    if (granted) return
+    val activity = generateSequence(context) { (it as? ContextWrapper)?.baseContext }
+        .filterIsInstance<Activity>()
+        .firstOrNull() ?: return
+    runCatching {
+        ActivityCompat.requestPermissions(
+            activity, arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 0
+        )
+    }
+}
+
+/**
  * Long-press-on-video menu. Shown once a stream has been resolved, so the user
  * confirms the external player instead of it launching on a bare long-press.
  * "영상 주소 복사" is a useful escape hatch when the resolved stream won't play.
@@ -618,15 +695,17 @@ private fun CastButton() {
 private fun showVideoContextMenu(
     context: Context,
     candidate: StreamCandidate,
-    onPlay: () -> Unit
+    onPlay: () -> Unit,
+    onDownload: () -> Unit
 ) {
-    val items = arrayOf("외부 플레이어로 재생", "영상 주소 복사")
+    val items = arrayOf("외부 플레이어로 재생", "다운로드 (끊김 없이 보기)", "영상 주소 복사")
     androidx.appcompat.app.AlertDialog.Builder(context)
         .setTitle("영상")
         .setItems(items) { _, which ->
             when (which) {
                 0 -> onPlay()
-                1 -> {
+                1 -> onDownload()
+                2 -> {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
                         as? android.content.ClipboardManager
                     clipboard?.setPrimaryClip(

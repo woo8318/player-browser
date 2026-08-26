@@ -178,10 +178,15 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                     VideoStreamSniffer.observe(request, view?.tag as? String)
                     return null
                 }
-                // Ad blocker first — cheapest check, returns an empty 204
-                // before we waste cycles on sniffer / SNI / iframe injection.
-                AdBlocker.intercept(request)?.let { return it }
+                // The sniffer runs before the ad blocker even though it is the
+                // more expensive of the two: it only *observes*, and a request
+                // the blocker swallows is a request it would never see. That
+                // blind spot is invisible until a page's stream happens to sit
+                // behind a blocked pattern and "no stream" is all the user gets.
                 VideoStreamSniffer.observe(request, view?.tag as? String)
+                // Ad blocker next — cheapest check, returns an empty 204
+                // before we waste cycles on SNI / iframe injection.
+                AdBlocker.intercept(request)?.let { return it }
                 val bypassed = SniBypassClient.intercept(request)
                 return IframeScriptInjector.process(request, bypassed)
             }

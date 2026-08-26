@@ -209,16 +209,23 @@ fun BrowserScreen(
         thumbnails.capture(activeTabId, activeWebState.webView)
     }
 
+    // "No stream" used to be the end of the conversation: the toast says our
+    // matcher missed, never what it missed, so every site that failed became a
+    // guessing game about URL shapes. Dump the page's unrecognised requests to
+    // the debug log first, so the next version can match what is actually there.
+    val reportNoStream: (String) -> Unit = { message ->
+        VideoStreamSniffer.dumpMisses(
+            runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
+        )
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+
     // Launch the built-in Media3 player with a specific stream, injecting the
     // active page's Referer/Cookie/UA so protected CDNs receive the same context
     // as the WebView. Toasts when there's nothing to play.
     val playCandidate: (StreamCandidate?) -> Unit = { candidate ->
         if (candidate == null) {
-            Toast.makeText(
-                context,
-                "재생할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생해 보세요)",
-                Toast.LENGTH_SHORT
-            ).show()
+            reportNoStream("재생할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생 후 다시 시도 · 설정→디버그 로그 확인)")
         } else {
             val pageUrl = state.currentUrl
             val ua = runCatching { activeWebState.webView.settings.userAgentString }.getOrNull()
@@ -248,11 +255,7 @@ fun BrowserScreen(
     // request exists - launching earlier would cost an HLS stream its stream keys.
     val downloadCandidate: (StreamCandidate?, Boolean) -> Unit = { candidate, watchNow ->
         if (candidate == null) {
-            Toast.makeText(
-                context,
-                "다운로드할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생해 보세요)",
-                Toast.LENGTH_SHORT
-            ).show()
+            reportNoStream("다운로드할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생 후 다시 시도 · 설정→디버그 로그 확인)")
         } else {
             requestNotificationPermission(context)
             val ua = runCatching { activeWebState.webView.settings.userAgentString }.getOrNull()
@@ -291,11 +294,7 @@ fun BrowserScreen(
         val candidate = VideoStreamSniffer.matching(host, src)
             ?: VideoStreamSniffer.current(host)
         if (candidate == null) {
-            Toast.makeText(
-                context,
-                "재생할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생해 보세요)",
-                Toast.LENGTH_SHORT
-            ).show()
+            reportNoStream("재생할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생 후 다시 시도 · 설정→디버그 로그 확인)")
         } else {
             showVideoContextMenu(
                 context = context,

@@ -42,6 +42,22 @@ object VideoStreamSniffer {
     private val _revision = MutableStateFlow(0)
     val revision: StateFlow<Int> = _revision.asStateFlow()
 
+    // Subresource URLs we looked at and did not recognise as a stream, kept
+    // only for the host being browsed right now. A "no stream" toast is a dead
+    // end on its own - it says the matcher missed, not what it missed - and
+    // guessing at URL shapes is exactly how we ended up here. So record the
+    // misses and let the log say what the site actually serves.
+    private const val MAX_MISSES = 40
+    @Volatile private var missHost: String? = null
+    private val misses = CopyOnWriteArrayList<String>()
+
+    // Page furniture that could never be a video. Skipping it keeps the dump
+    // short enough to read; anything ambiguous is kept on purpose.
+    private val IGNORED_EXTS = listOf(
+        ".css", ".js", ".mjs", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+        ".avif", ".svg", ".ico", ".woff", ".woff2", ".ttf", ".otf", ".map"
+    )
+
     private val VIDEO_EXTS = listOf(
         ".m3u8" to "application/vnd.apple.mpegurl",
         ".mp4" to "video/mp4",
@@ -53,7 +69,11 @@ object VideoStreamSniffer {
         val method = request.method?.uppercase() ?: "GET"
         if (method != "GET") return
         val url = request.url?.toString() ?: return
-        val mime = detectMime(url) ?: return
+        val mime = detectMime(url)
+        if (mime == null) {
+            noteMiss(mainFrameHost, url)
+            return
+        }
         val list = candidates.getOrPut(mainFrameHost) { CopyOnWriteArrayList() }
         // Keep every distinct stream (by URL) so a multi-video page can offer a
         // per-stream fallback; bound the list so a long session doesn't grow it
@@ -84,6 +104,40 @@ object VideoStreamSniffer {
             i >= 0 && lower.getOrNull(i + ext.length)?.isLetterOrDigit() != true
         }?.let { return it.second }
         return null
+    }
+
+    private fun noteMiss(host: String, url: String) {
+        val lower = url.lowercase()
+        if (!lower.startsWith("http")) return
+        val path = lower.substringBefore('?').substringBefore('#')
+        if (IGNORED_EXTS.any { path.endsWith(it) }) return
+        // Navigating to another site starts a fresh list rather than growing a
+        // map of every host ever visited - only the page in front of the user
+        // can be the one they just failed to download.
+        if (missHost != host) {
+            missHost = host
+            misses.clear()
+        }
+        if (misses.contains(url)) return
+        misses.add(url)
+        while (misses.size > MAX_MISSES) misses.removeAt(0)
+    }
+
+    /**
+     * Write what the page actually fetched to the debug log, for when the user
+     * asked to play or download and we had nothing to give them. This is the
+     * same measure-first move that finally ended the guessing in the captcha
+     * work: the next version can match what is in this list instead of
+     * inventing URL patterns and hoping.
+     */
+    fun dumpMisses(host: String?) {
+        val h = host?.takeIf { it.isNotBlank() } ?: return
+        val unknown = if (missHost == h) misses.toList() else emptyList()
+        DebugLog.w(
+            TAG,
+            "스트림 못 찾음: $h — 인식된 후보 ${all(h).size}개, 못 알아본 요청 ${unknown.size}개"
+        )
+        unknown.forEach { DebugLog.d(TAG, "  미인식 요청: $it") }
     }
 
     /** Single best pick for Cast / one-tap launch: newest HLS, else newest overall. */

@@ -4,6 +4,7 @@ import android.webkit.WebResourceRequest
 import com.playerbrowser.app.network.DebugLog
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -57,6 +58,21 @@ object VideoStreamSniffer {
     @Volatile private var missHost: String? = null
     private val misses = CopyOnWriteArrayList<String>()
 
+    // What the server said a missed URL actually was. shouldInterceptRequest
+    // hands us the request only, so a playlist served from `/v/e/<id>/c.html`
+    // is invisible to URL matching - but the response carries the answer, and
+    // our OkHttp path already has it in hand.
+    private const val MAX_TYPES = 200
+    private val responseTypes = ConcurrentHashMap<String, String>()
+
+    // Every observed subresource, counted by host and extension - including the
+    // ones the miss filter drops. The filter keeps the dump readable, but sites
+    // that disguise HLS segments as .jpg/.png land squarely inside it, and then
+    // "no media requests in the log" is indistinguishable from "playback never
+    // started". A tally costs nothing and tells those two apart.
+    private const val MAX_TALLY = 200
+    private val tally = ConcurrentHashMap<String, AtomicInteger>()
+
     // Page furniture that could never be a video. Skipping it keeps the dump
     // short enough to read; anything ambiguous is kept on purpose.
     private val IGNORED_EXTS = listOf(
@@ -75,9 +91,11 @@ object VideoStreamSniffer {
         val method = request.method?.uppercase() ?: "GET"
         if (method != "GET") return
         val url = request.url?.toString() ?: return
+        rememberHost(mainFrameHost)
+        noteTally(url)
         val mime = detectMime(url)
         if (mime == null) {
-            noteMiss(mainFrameHost, url)
+            noteMiss(url)
             return
         }
         val list = candidates.getOrPut(mainFrameHost) { CopyOnWriteArrayList() }
@@ -112,18 +130,86 @@ object VideoStreamSniffer {
         return null
     }
 
-    private fun noteMiss(host: String, url: String) {
+    /**
+     * Second look at a request once the response headers exist. A URL with no
+     * extension - or one deliberately dressed up as .html/.jpg - can never be
+     * recognised by string matching, but the server's own Content-Type says
+     * what it is. Only reachable for requests our OkHttp path fetched, i.e.
+     * when SNI bypass or Private DNS is on; the native loader keeps its
+     * responses to itself.
+     */
+    fun observeResponseMime(url: String, contentType: String?) {
+        val host = missHost ?: return
+        // Already recognised from the URL - nothing to add.
+        if (detectMime(url) != null) return
+        val type = contentType?.substringBefore(';')?.trim()?.lowercase()
+            ?.takeIf { it.isNotBlank() } ?: return
+        if (responseTypes.size > MAX_TYPES) responseTypes.clear()
+        // First sighting of this URL only: responses repeat, findings shouldn't.
+        if (responseTypes.put(url, type) != null) return
+        if (type.contains("dash+xml")) {
+            // Honest about the gap rather than offering a stream we can't open:
+            // media3-exoplayer-dash isn't a dependency, so DASH plays nowhere.
+            DebugLog.w(TAG, "DASH 매니페스트 감지 — 현재 재생/다운로드 미지원: $url")
+            return
+        }
+        val mime = mediaMimeOf(type) ?: return
+        val list = candidates.getOrPut(host) { CopyOnWriteArrayList() }
+        if (list.none { it.url == url }) {
+            list.add(StreamCandidate(url, mime, System.currentTimeMillis()))
+            while (list.size > MAX_PER_HOST) list.removeAt(0)
+            _revision.update { it + 1 }
+            DebugLog.d(TAG, "captured by content-type $mime ($type) for $host -> $url")
+        }
+    }
+
+    /**
+     * Media types worth offering as a candidate. Segment types are deliberately
+     * excluded: a playing video fetches hundreds of them, and each one added
+     * here would push the playlist straight out of the bounded list.
+     */
+    private fun mediaMimeOf(type: String): String? = when {
+        type.contains("mpegurl") -> "application/vnd.apple.mpegurl"
+        type.contains("mp2t") || type.contains("iso.segment") -> null
+        type == "video/mp4" || type == "video/quicktime" -> "video/mp4"
+        type == "video/webm" -> "video/webm"
+        else -> null
+    }
+
+    private fun rememberHost(host: String) {
+        // Navigating to another site starts fresh rather than growing a map of
+        // every host ever visited - only the page in front of the user can be
+        // the one they just failed to download.
+        if (missHost == host) return
+        missHost = host
+        misses.clear()
+        responseTypes.clear()
+        tally.clear()
+    }
+
+    private fun noteTally(url: String) {
+        val lower = url.lowercase()
+        if (!lower.startsWith("http")) return
+        val afterScheme = lower.substringAfter("//", "")
+        val reqHost = afterScheme.substringBefore('/').substringBefore(':')
+        if (reqHost.isEmpty()) return
+        val path = afterScheme.substringAfter('/', "").substringBefore('?').substringBefore('#')
+        val dot = path.lastIndexOf('.')
+        val ext =
+            if (dot > path.lastIndexOf('/') && path.length - dot <= 6) path.substring(dot)
+            else "(확장자 없음)"
+        val key = "$reqHost  $ext"
+        // Stop growing rather than evicting: a full table still counts every
+        // host it already knows, which is what the summary is for.
+        if (!tally.containsKey(key) && tally.size >= MAX_TALLY) return
+        tally.computeIfAbsent(key) { AtomicInteger(0) }.incrementAndGet()
+    }
+
+    private fun noteMiss(url: String) {
         val lower = url.lowercase()
         if (!lower.startsWith("http")) return
         val path = lower.substringBefore('?').substringBefore('#')
         if (IGNORED_EXTS.any { path.endsWith(it) }) return
-        // Navigating to another site starts a fresh list rather than growing a
-        // map of every host ever visited - only the page in front of the user
-        // can be the one they just failed to download.
-        if (missHost != host) {
-            missHost = host
-            misses.clear()
-        }
         if (misses.contains(url)) return
         // Drop from the middle, never the head: keep the page's opening moves
         // and the most recent activity, and let the repetitive middle go.
@@ -149,7 +235,18 @@ object VideoStreamSniffer {
             if (i == KEEP_FIRST && unknown.size >= MAX_MISSES - 1) {
                 DebugLog.d(TAG, "  … (중간 생략 — 앞부분과 최근만 남김)")
             }
-            DebugLog.d(TAG, "  미인식 요청: $u")
+            val type = responseTypes[u]?.let { " [$it]" }.orEmpty()
+            DebugLog.d(TAG, "  미인식 요청: $u$type")
+        }
+        // The tally counts everything, filtered or not. A host with hundreds of
+        // .jpg requests during playback is a segment CDN wearing a costume; an
+        // empty tail is proof the video never started.
+        val counts = if (missHost == h) tally.entries.toList() else emptyList()
+        if (counts.isNotEmpty()) {
+            DebugLog.d(TAG, "  — 받아간 요청 집계 (호스트 · 확장자) —")
+            counts.sortedByDescending { it.value.get() }.take(25).forEach {
+                DebugLog.d(TAG, "  ${it.key} × ${it.value.get()}건")
+            }
         }
     }
 

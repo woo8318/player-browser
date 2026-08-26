@@ -3,6 +3,7 @@ package com.playerbrowser.app.network
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import com.playerbrowser.app.cast.VideoStreamSniffer
 import okhttp3.ConnectionPool
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
@@ -199,6 +200,10 @@ object SniBypassClient {
             }
 
             val contentType = resp.header("Content-Type")
+            // The response is the only place the server says what a URL really
+            // is, and this is the one path where we hold one. A playlist served
+            // from `/v/e/<id>/c.html` can never be recognised from its URL.
+            VideoStreamSniffer.observeResponseMime(urlString, contentType)
             val mime = contentType?.substringBefore(';')?.trim()?.ifBlank { null }
                 ?: "application/octet-stream"
             // Only pass an encoding when the server actually declared one. If we

@@ -47,7 +47,13 @@ object VideoStreamSniffer {
     // end on its own - it says the matcher missed, not what it missed - and
     // guessing at URL shapes is exactly how we ended up here. So record the
     // misses and let the log say what the site actually serves.
-    private const val MAX_MISSES = 40
+    private const val MAX_MISSES = 60
+
+    // How many of the earliest misses are never evicted. The request that
+    // matters - the playlist - is fetched once, first, and everything after it
+    // is a flood of segments. Evicting from the head would push the one URL we
+    // are hunting for out of the list precisely when playback finally produces it.
+    private const val KEEP_FIRST = 24
     @Volatile private var missHost: String? = null
     private val misses = CopyOnWriteArrayList<String>()
 
@@ -119,8 +125,10 @@ object VideoStreamSniffer {
             misses.clear()
         }
         if (misses.contains(url)) return
+        // Drop from the middle, never the head: keep the page's opening moves
+        // and the most recent activity, and let the repetitive middle go.
+        while (misses.size >= MAX_MISSES) misses.removeAt(KEEP_FIRST)
         misses.add(url)
-        while (misses.size > MAX_MISSES) misses.removeAt(0)
     }
 
     /**
@@ -137,7 +145,12 @@ object VideoStreamSniffer {
             TAG,
             "스트림 못 찾음: $h — 인식된 후보 ${all(h).size}개, 못 알아본 요청 ${unknown.size}개"
         )
-        unknown.forEach { DebugLog.d(TAG, "  미인식 요청: $it") }
+        unknown.forEachIndexed { i, u ->
+            if (i == KEEP_FIRST && unknown.size >= MAX_MISSES - 1) {
+                DebugLog.d(TAG, "  … (중간 생략 — 앞부분과 최근만 남김)")
+            }
+            DebugLog.d(TAG, "  미인식 요청: $u")
+        }
     }
 
     /** Single best pick for Cast / one-tap launch: newest HLS, else newest overall. */

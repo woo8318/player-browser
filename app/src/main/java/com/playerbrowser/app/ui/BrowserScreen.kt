@@ -38,6 +38,7 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.ArrowForward
 import androidx.compose.material.icons.filled.Bookmark
 import androidx.compose.material.icons.filled.BookmarkBorder
+import androidx.compose.material.icons.filled.Cast
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FileDownload
@@ -81,6 +82,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import android.widget.Toast
 import androidx.mediarouter.app.MediaRouteButton
 import com.google.android.gms.cast.framework.CastButtonFactory
+import com.playerbrowser.app.cast.CastResult
+import com.playerbrowser.app.cast.CastSessionBridge
 import com.playerbrowser.app.cast.StreamCandidate
 import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.data.TabWebStateStore
@@ -275,6 +278,26 @@ fun BrowserScreen(
         }
     }
 
+    // Hand the stream to a connected Chromecast. Unlike the player and the
+    // downloader, we send an *address*, not the bytes: the receiver fetches it
+    // over its own connection with none of our cookies, Referer or UA. That is
+    // the structural gap against Opera, which mirrors the rendered tab instead
+    // and therefore never needs a URL at all.
+    val castCandidate: (StreamCandidate?) -> Unit = { candidate ->
+        if (candidate == null) {
+            reportNoStream("캐스트할 영상 스트림을 못 찾았어요 (영상을 잠깐 재생 후 다시 시도 · 설정→디버그 로그 확인)")
+        } else {
+            val message = when (
+                CastSessionBridge.castNow(context, candidate, state.currentTitle)
+            ) {
+                CastResult.LOADED -> "Chromecast로 보냈어요"
+                CastResult.NO_SESSION -> "먼저 상단 Cast 버튼으로 기기를 연결해 주세요"
+                CastResult.FAILED -> "Chromecast 전송에 실패했어요 (설정→디버그 로그 확인)"
+            }
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        }
+    }
+
     // ⋮ menu + on-screen FAB: single best pick (HLS preferred) for the page.
     val launchPlayer: () -> Unit = {
         val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
@@ -301,7 +324,8 @@ fun BrowserScreen(
                 candidate = candidate,
                 onPlay = { playCandidate(candidate) },
                 onDownload = { downloadCandidate(candidate, false) },
-                onDownloadAndPlay = { downloadCandidate(candidate, true) }
+                onDownloadAndPlay = { downloadCandidate(candidate, true) },
+                onCast = { castCandidate(candidate) }
             )
         }
     }
@@ -458,6 +482,16 @@ fun BrowserScreen(
                                 onClick = {
                                     menuOpen = false
                                     launchPlayer()
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Chromecast로 재생") },
+                                leadingIcon = { Icon(Icons.Filled.Cast, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    val host =
+                                        runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
+                                    castCandidate(VideoStreamSniffer.current(host))
                                 }
                             )
                             DropdownMenuItem(
@@ -706,12 +740,14 @@ private fun showVideoContextMenu(
     candidate: StreamCandidate,
     onPlay: () -> Unit,
     onDownload: () -> Unit,
-    onDownloadAndPlay: () -> Unit
+    onDownloadAndPlay: () -> Unit,
+    onCast: () -> Unit
 ) {
     val items = arrayOf(
         "외부 플레이어로 재생",
         "다운로드 (다 받고 보기)",
         "받으면서 바로 보기",
+        "Chromecast로 재생",
         "영상 주소 복사"
     )
     androidx.appcompat.app.AlertDialog.Builder(context)
@@ -721,7 +757,8 @@ private fun showVideoContextMenu(
                 0 -> onPlay()
                 1 -> onDownload()
                 2 -> onDownloadAndPlay()
-                3 -> {
+                3 -> onCast()
+                4 -> {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
                         as? android.content.ClipboardManager
                     clipboard?.setPrimaryClip(

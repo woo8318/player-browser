@@ -11,6 +11,9 @@ import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.SessionManagerListener
 import com.playerbrowser.app.network.DebugLog
 
+/** Outcome of an explicit "send this stream to the receiver now" request. */
+enum class CastResult { LOADED, NO_SESSION, FAILED }
+
 /**
  * Bridges the Cast framework's session lifecycle to the sniffed stream URL
  * for the page currently visible in the WebView. When the user picks a
@@ -65,9 +68,12 @@ class CastSessionBridge(
         val host = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
         val candidate = VideoStreamSniffer.current(host)
         if (candidate == null) {
+            // Connecting is almost always the *first* thing the user does, before
+            // the page has played anything - so the sniffer is usually empty right
+            // here. Say what to do next instead of just reporting the emptiness.
             Toast.makeText(
                 context,
-                "재생 중인 캐스트 가능한 영상이 없습니다",
+                "아직 캐스트할 영상을 못 찾았어요 — 영상을 잠깐 재생한 뒤 ⋮ 메뉴 → Chromecast로 재생",
                 Toast.LENGTH_LONG
             ).show()
             DebugLog.d(tag, "no candidate for host=$host")
@@ -76,24 +82,65 @@ class CastSessionBridge(
         loadOnRemote(session, candidate, title.orEmpty())
     }
 
-    private fun loadOnRemote(
-        session: CastSession,
-        candidate: StreamCandidate,
-        title: String
-    ) {
-        val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
-            if (title.isNotBlank()) putString(MediaMetadata.KEY_TITLE, title)
+    companion object {
+        private const val TAG = "Cast"
+
+        /**
+         * Push a stream to an already-connected receiver.
+         *
+         * Without this there is no verb at all: the session listener only fires
+         * when a session *starts*, so the one castable instant was the moment of
+         * connecting - before any video had played, when the sniffer holds
+         * nothing. Play the video afterwards and nothing ever re-triggers a load,
+         * which is exactly how cast came to look permanently broken.
+         */
+        fun castNow(
+            context: Context,
+            candidate: StreamCandidate,
+            title: String
+        ): CastResult {
+            val session = runCatching {
+                CastContext.getSharedInstance(context).sessionManager.currentCastSession
+            }.getOrNull()
+            if (session == null || !session.isConnected) {
+                DebugLog.d(TAG, "cast requested but no connected session")
+                return CastResult.NO_SESSION
+            }
+            return if (loadOnRemote(session, candidate, title)) {
+                CastResult.LOADED
+            } else {
+                CastResult.FAILED
+            }
         }
-        val media = MediaInfo.Builder(candidate.url)
-            .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
-            .setContentType(candidate.mime)
-            .setMetadata(metadata)
-            .build()
-        val request = MediaLoadRequestData.Builder()
-            .setMediaInfo(media)
-            .setAutoplay(true)
-            .build()
-        session.remoteMediaClient?.load(request)
-        DebugLog.d(tag, "loaded ${candidate.mime} on remote: ${candidate.url}")
+
+        private fun loadOnRemote(
+            session: CastSession,
+            candidate: StreamCandidate,
+            title: String
+        ): Boolean {
+            val client = session.remoteMediaClient ?: run {
+                DebugLog.w(TAG, "session has no remoteMediaClient")
+                return false
+            }
+            val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
+                if (title.isNotBlank()) putString(MediaMetadata.KEY_TITLE, title)
+            }
+            val media = MediaInfo.Builder(candidate.url)
+                .setStreamType(MediaInfo.STREAM_TYPE_BUFFERED)
+                .setContentType(candidate.mime)
+                .setMetadata(metadata)
+                .build()
+            val request = MediaLoadRequestData.Builder()
+                .setMediaInfo(media)
+                .setAutoplay(true)
+                .build()
+            client.load(request)
+            // The receiver fetches this URL itself, from its own IP, with none of
+            // our cookies, Referer or User-Agent. A token- or hotlink-protected
+            // CDN will answer it with 403 even though the address is correct -
+            // worth knowing when the TV shows an error but the phone plays fine.
+            DebugLog.d(TAG, "loaded ${candidate.mime} on remote: ${candidate.url}")
+            return true
+        }
     }
 }

@@ -275,16 +275,49 @@ object ChallengeDetector {
         prune(challengeActive)
     }
 
+    /**
+     * 격리 판정 — 정확히 같은 호스트뿐 아니라 **같은 등록 도메인 계열**까지 (v1.3.88).
+     *
+     * 예전엔 `quarantined[h]` 한 줄이라 `tvwiki308.com` 이 격리돼도
+     * `cdn.tvwiki308.com`/`player.tvwiki308.com` 같은 서브도메인은 격리 밖이었다.
+     * Cloudflare 의 `cf_clearance` 는 **도메인 스코프 쿠키**라 그 서브도메인 요청에도
+     * 실리는데, 그 요청이 우리 OkHttp(TLS 지문 = OkHttp)로 나가면 "이 토큰은
+     * Chromium 지문에 발급된 것" 이라 즉시 거부된다 — 사이트는 열리는데 영상만
+     * 계속 "재연결중" 인 모양이 정확히 이것이다. 같은 zone 은 통째로 네이티브에 맡긴다.
+     */
     fun isQuarantinedHost(host: String?): Boolean {
         val h = host?.lowercase()?.trim().orEmpty()
         if (h.isBlank()) return false
-        val until = quarantined[h] ?: return false
-        if (System.currentTimeMillis() >= until) {
+        val now = System.currentTimeMillis()
+        val exact = quarantined[h]
+        if (exact != null) {
+            if (now < exact) return true
             quarantined.remove(h)
             persist()
-            return false
         }
-        return true
+        val site = siteOf(h) ?: return false
+        for ((q, until) in quarantined) {
+            if (until <= now) continue
+            if (q != h && siteOf(q) == site) return true
+        }
+        return false
+    }
+
+    /**
+     * 등록 도메인 근사(eTLD+1) — `a.b.example.com` → `example.com`,
+     * `x.example.co.kr` → `example.co.kr`. IP 리터럴·단일 라벨은 null.
+     * 공개 접미사 목록 없이 "2글자 TLD 앞의 3글자 이하 라벨은 접미사" 로 근사한다
+     * (`co.kr`/`ne.jp`/`com.au`). 어긋나는 쪽은 계열을 *좁게* 잡는 방향이라 안전하다.
+     */
+    internal fun siteOf(host: String): String? {
+        if (host.contains(':')) return null
+        val labels = host.split('.').filter { it.isNotEmpty() }
+        if (labels.size < 2) return null
+        if (labels.all { l -> l.all { c -> c.isDigit() } }) return null
+        val tld = labels[labels.size - 1]
+        val sld = labels[labels.size - 2]
+        val take = if (labels.size >= 3 && tld.length == 2 && sld.length <= 3) 3 else 2
+        return labels.takeLast(take).joinToString(".")
     }
 
     /**
@@ -296,9 +329,13 @@ object ChallengeDetector {
     fun clearQuarantine(host: String?) {
         val h = host?.lowercase()?.trim().orEmpty()
         if (h.isBlank()) return
-        if (quarantined.remove(h) != null) {
+        // 계열 전체를 푼다 — `www.` 유무로 키가 어긋나면 해제가 헛돈다 (v1.3.88).
+        val site = siteOf(h)
+        val removed = quarantined.keys.filter { it == h || (site != null && siteOf(it) == site) }
+        if (removed.isNotEmpty()) {
+            removed.forEach { quarantined.remove(it) }
             persist()
-            DebugLog.w(TAG, "네이티브 전담 해제(접속 실패) → 우회 경로 복귀: $h")
+            DebugLog.w(TAG, "네이티브 전담 해제(접속 실패) → 우회 경로 복귀: ${removed.joinToString(", ")}")
         }
     }
 
@@ -373,6 +410,29 @@ object ChallengeDetector {
         val line = "메인 프레임 HTTP $status: $host${url?.encodedPath.orEmpty()}$detail"
         if (status == 403 || status == 429 || status == 503) DebugLog.w(TAG, line)
         else DebugLog.d(TAG, line)
+    }
+
+    /**
+     * 격리 페이지 위 **서브리소스**의 HTTP 에러 (v1.3.88, 진단 전용).
+     * 격리 페이지의 요청은 전부 네이티브로 나가 우리 OkHttp 가 응답을 볼 수 없다 —
+     * 플레이어가 "재연결중" 만 돌 때 재생목록/조각이 403 인지 404 인지 여기서만 보인다.
+     * (호스트, 경로) 당 10초 1회.
+     */
+    fun noteSubresourceHttpError(pageHost: String?, url: Uri?, status: Int, headers: Map<String, String>?) {
+        val host = url?.host?.lowercase().orEmpty()
+        if (host.isBlank() || status < 400) return
+        val path = url?.encodedPath.orEmpty()
+        val key = "http|$host|${path.take(160)}"
+        val now = System.currentTimeMillis()
+        val last = skipLog[key]
+        if (last != null && now - last < 10_000L) return
+        prune(skipLog)
+        skipLog[key] = now
+        val cf = headers.orEmpty().entries
+            .filter { it.key.startsWith("cf-", ignoreCase = true) }
+            .joinToString(", ") { "${it.key.lowercase()}=${it.value}" }
+        val detail = if (cf.isBlank()) "" else " [$cf]"
+        DebugLog.w(TAG, "격리 페이지($pageHost) 서브리소스 HTTP $status: $host$path$detail")
     }
 
     /**

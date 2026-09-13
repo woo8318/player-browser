@@ -180,8 +180,20 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 // 광고차단이 돌려주는 빈 204도 챌린지 스크립트에겐 로드 실패다.
                 // (스니퍼는 요청을 관찰만 하므로 그대로 둔다 — 격리됐다고 그
                 //  사이트의 동영상 감지까지 죽으면 정작 쓸 수가 없다.)
+                val pageHost = view?.tag as? String
                 if (ChallengeDetector.isQuarantinedHost(request.url?.host)) {
-                    VideoStreamSniffer.observe(request, view?.tag as? String)
+                    VideoStreamSniffer.observe(request, pageHost)
+                    return null
+                }
+                // 격리 **페이지**의 서브리소스(다른 호스트의 플레이어 iframe·CDN 포함)도
+                // SNI 우회·iframe 재요청에서 손을 뗀다 (v1.3.88). 메인 프레임은 제외 —
+                // 격리 사이트에서 다른 사이트로 넘어가는 첫 요청은 아직 이전 페이지의
+                // 태그를 달고 오므로, 그건 요청 호스트 기준(위)으로만 판정한다.
+                // 광고차단은 그대로 둔다(광고 호스트 목록은 실제 광고망뿐이다).
+                if (!request.isForMainFrame && ChallengeDetector.isQuarantinedHost(pageHost)) {
+                    VideoStreamSniffer.observe(request, pageHost)
+                    AdBlocker.intercept(request)?.let { return it }
+                    ChallengeDetector.noteSkipped("page-격리", request.url)
                     return null
                 }
                 // The sniffer runs before the ad blocker even though it is the
@@ -282,11 +294,20 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 errorResponse: WebResourceResponse?
             ) {
                 super.onReceivedHttpError(view, request, errorResponse)
-                if (request?.isForMainFrame == true && errorResponse != null) {
+                if (request == null || errorResponse == null) return
+                if (request.isForMainFrame) {
                     ChallengeDetector.noteHttpError(
                         request.url,
                         errorResponse.statusCode,
                         errorResponse.responseHeaders
+                    )
+                    return
+                }
+                // 격리 페이지의 서브리소스만 — 보통 사이트의 404 잡음까지 남기지 않는다.
+                val pageHost = view?.tag as? String
+                if (ChallengeDetector.isQuarantinedHost(pageHost)) {
+                    ChallengeDetector.noteSubresourceHttpError(
+                        pageHost, request.url, errorResponse.statusCode, errorResponse.responseHeaders
                     )
                 }
             }

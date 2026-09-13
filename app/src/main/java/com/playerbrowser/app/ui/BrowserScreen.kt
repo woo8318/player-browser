@@ -70,6 +70,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
@@ -210,6 +211,7 @@ fun BrowserScreen(
         // yet the page it opened is now in history — refresh the visited marks.
         val webView = activeWebState.webView
         VisitedLinkMarker.apply(webView, webView.url)
+        webView.focusPageUnlessTyping()
     }
     // Cold start: the restored tab can finish loading before the history index
     // exists, so its page got nothing — mark it once the index lands.
@@ -386,7 +388,11 @@ fun BrowserScreen(
                     OutlinedTextField(
                         value = urlInput,
                         onValueChange = { urlInput = it },
-                        modifier = Modifier.weight(1f).padding(horizontal = 4.dp),
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = 4.dp)
+                            // 주소창 입력 중엔 페이지가 포커스를 뺏지 않게 (focusPageUnlessTyping, v1.3.84)
+                            .onFocusChanged { AddressBarFocus.typing = it.isFocused },
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Go),
                         keyboardActions = KeyboardActions(onGo = {
@@ -394,6 +400,9 @@ fun BrowserScreen(
                             urlInput = normalized
                             activeWebState.load(normalized)
                             focusManager.clearFocus()
+                            // 주소창 → 페이지로 View 포커스를 넘긴다 (document.hasFocus, v1.3.84).
+                            AddressBarFocus.typing = false
+                            activeWebState.webView.focusPageUnlessTyping()
                         })
                     )
                     IconButton(onClick = { viewModel.toggleBookmark() }) {

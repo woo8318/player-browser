@@ -127,6 +127,10 @@ object AdBlocker {
         return null
     }
 
+    /** Host-list check for callers outside the request path (popup targets). */
+    fun isBlockedHost(host: String?): Boolean =
+        host != null && matchesHost(host.lowercase())
+
     private fun matchesHost(host: String): Boolean =
         BLOCKED_HOSTS.any { host == it || host.endsWith(".$it") }
 

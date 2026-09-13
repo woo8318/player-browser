@@ -19,6 +19,8 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import kotlin.math.abs
 import android.webkit.CookieManager
+import android.webkit.GeolocationPermissions
+import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -103,7 +105,10 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
             cacheMode = WebSettings.LOAD_DEFAULT
             setSupportMultipleWindows(true)
-            javaScriptCanOpenWindowsAutomatically = true
+            // Chrome/Opera 의 팝업 차단과 같은 규칙 — 사용자 제스처 없는 window.open 은
+            // Blink 가 그 자리에서 막는다(null 반환). 예전 true 는 광고 팝언더까지
+            // 전부 onCreateWindow 로 올려보내 새 탭으로 열었다 (v1.3.84).
+            javaScriptCanOpenWindowsAutomatically = false
             // 브라우저 위장 — 토글 하나가 **전부** 를 끈다 (v1.3.71).
             // 예전엔 이 토글이 JS 환경 주입만 껐고 UA/Sec-CH-UA 는 그대로
             // 적용돼서, "끄고 테스트" 가 순정 WebView 테스트가 아니었다.
@@ -198,6 +203,9 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 // the right page even when subresources come from CDNs.
                 val host = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
                 view?.tag = host
+                // 주소창에서 이동하면 View 포커스가 어디에도 없어 문서가 unfocused 로
+                // 시작한다 — document.hasFocus()=false (v1.3.84).
+                view?.focusPageUnlessTyping()
                 // `window.PBResume` / `window.PBPlayer` 같은 네이티브 브리지는
                 // 페이지가 window를 훑으면 그대로 보인다 — 안티봇이 자동화
                 // 브라우저로 판정하는 대표적 신호다. 챌린지 호스트에선 떼어낸다
@@ -425,6 +433,25 @@ private fun showLinkContextMenu(context: Context, url: String?, callbacks: WebVi
         .show()
 }
 
+/**
+ * Chromium 은 View 포커스가 없으면 문서를 unfocused 로 둔다 — `document.hasFocus()` 가
+ * false 이고 `focus` 이벤트가 안 오며 autofocus 입력에 키보드가 안 뜬다. 지금까지는
+ * 사용자가 페이지를 한 번 탭해야 비로소 풀렸다. 주소창(텍스트 편집기)에 입력 중이면
+ * 뺏지 않는다 (v1.3.84).
+ */
+internal fun WebView.focusPageUnlessTyping() {
+    // detached View 의 rootView 는 자기 자신이라 findFocus 가 주소창을 못 본다 —
+    // 붙기 전엔 requestFocus 도 무효이므로 그냥 나간다 (AndroidView update 가 붙인 뒤 다시 부른다).
+    if (!isAttachedToWindow) return
+    if (hasFocus()) return
+    // Compose 텍스트필드는 onCheckIsTextEditor 를 안 올릴 수 있어 주소창 포커스는
+    // AddressBarFocus 플래그로 확정한다.
+    if (AddressBarFocus.typing) return
+    val focused = rootView?.findFocus()
+    if (focused != null && focused !== this && focused.onCheckIsTextEditor()) return
+    requestFocus()
+}
+
 private class FullscreenAwareChromeClient(
     private val webView: WebView,
     private val callbacks: WebViewCallbacks
@@ -453,9 +480,18 @@ private class FullscreenAwareChromeClient(
                 if (delivered) return
                 if (url.isNullOrEmpty() || url == "about:blank") return
                 delivered = true
-                callbacks.onOpenInNewTab(url)
+                // 광고 팝언더 — 오페라의 광고 차단이 조용히 삼키는 것. 목록에 있는
+                // 광고 네트워크로 가는 팝업은 탭을 만들지 않는다 (v1.3.84).
+                val host = runCatching { Uri.parse(url).host }.getOrNull()
+                if (AdBlockSwitch.enabled && AdBlocker.isBlockedHost(host)) {
+                    DebugLog.d("Popup", "광고 팝업 차단 host=$host gesture=$isUserGesture")
+                } else {
+                    DebugLog.d("Popup", "팝업 → 새 탭 host=$host gesture=$isUserGesture")
+                    callbacks.onOpenInNewTab(url)
+                }
                 v?.stopLoading()
-                v?.destroy()
+                // 콜백 안에서 destroy 하면 Chromium 이 아직 이 뷰를 참조 중일 수 있다.
+                v?.post { v.destroy() }
             }
             webViewClient = object : WebViewClient() {
                 override fun shouldOverrideUrlLoading(
@@ -474,6 +510,38 @@ private class FullscreenAwareChromeClient(
         transport.webView = popup
         resultMsg.sendToTarget()
         return true
+    }
+
+    // Chrome/Opera 는 EME(Widevine DRM) 요청을 묻지 않고 허용한다. WebView 는 이 콜백이
+    // 없으면 **전부 거부** — navigator.requestMediaKeySystemAccess('com.widevine.alpha') 가
+    // NotSupportedError 로 떨어져 DRM 영상이 우리 브라우저에서만 검은 화면이었다.
+    // 카메라/마이크는 매니페스트에 권한 자체가 없어 허용해도 캡처가 실패하므로 거부가
+    // 정직하고, MIDI sysex 도 쓸 데가 없다 (v1.3.84).
+    override fun onPermissionRequest(request: PermissionRequest?) {
+        if (request == null) return
+        val resources = request.resources.orEmpty()
+        val granted = resources.filter { it == PermissionRequest.RESOURCE_PROTECTED_MEDIA_ID }
+        DebugLog.d(
+            "Permission",
+            "${request.origin} 요청 [${resources.joinToString()}] → " +
+                if (granted.isEmpty()) "거부" else "DRM 허용"
+        )
+        runCatching {
+            if (granted.isEmpty()) request.deny() else request.grant(granted.toTypedArray())
+        }.onFailure { e ->
+            DebugLog.d("Permission", "grant 실패 → deny: ${e.javaClass.simpleName}")
+            runCatching { request.deny() }
+        }
+    }
+
+    // 기본 구현은 아무것도 안 해서 getCurrentPosition 콜백이 영영 오지 않는다 — 위치
+    // 권한이 없는 앱이니 Chrome 에서 "차단" 을 누른 것처럼 즉시 거부해 사이트가 다음
+    // 단계로 넘어가게 한다 (v1.3.84).
+    override fun onGeolocationPermissionsShowPrompt(
+        origin: String?,
+        callback: GeolocationPermissions.Callback?
+    ) {
+        callback?.invoke(origin.orEmpty(), false, false)
     }
 
     override fun onShowCustomView(view: View?, callback: CustomViewCallback?) {
@@ -844,6 +912,9 @@ fun BrowserWebViewHost(
                 (wv.parent as? ViewGroup)?.removeView(wv)
                 container.removeAllViews()
                 container.addView(wv)
+                // 붙는 순간이 포커스를 줄 수 있는 첫 시점 — LaunchedEffect(activeTabId) 는
+                // 아직 detached 라 requestFocus 가 무효다 (v1.3.84).
+                wv.focusPageUnlessTyping()
             }
         }
     )

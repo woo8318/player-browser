@@ -655,6 +655,64 @@
     })
   );
 
+  // ---- 영상 · 포커스 (v1.3.84) ------------------------------------------
+  // 오페라에선 재생되는데 우리만 안 되는 영상의 갈림길: DRM(EME/Widevine) 허용 여부,
+  // MSE 코덱, 그리고 문서 포커스(헤드리스 판별의 고전 지표). 셋 다 추측이 아니라
+  // 이 페이지에서 양쪽 브라우저를 나란히 재면 답이 나온다.
+  var mediaSec = section("영상 · 포커스 (DRM/EME · 코덱 · 문서 포커스)", "오페라와 값이 다르면 그게 '영상은 되는데 우리만 안 되는' 원인 후보입니다. Widevine 이 '없음' 이면 DRM 영상(OTT·일부 스트리밍)은 검은 화면이 됩니다. document.hasFocus 가 false 면 자동화 브라우저로 보일 수 있고 autofocus·키보드도 안 뜹니다.");
+  var hasFocus = safe(function () { return document.hasFocus(); }, false);
+  row(mediaSec, "document.hasFocus()", String(hasFocus), hasFocus === true ? "good" : "warn");
+  row(mediaSec, "document.visibilityState", safe(function () { return document.visibilityState; }),
+    safe(function () { return document.visibilityState; }) === "visible" ? "good" : "warn");
+  row(mediaSec, "nextHopProtocol (이 페이지)", safe(function () {
+    var nav = performance.getEntriesByType("navigation")[0];
+    return nav && nav.nextHopProtocol;
+  }));
+  row(mediaSec, "MediaSource", safe(function () { return typeof MediaSource !== "undefined" ? "있음" : "없음"; }),
+    boolFlag(typeof MediaSource !== "undefined", true));
+  var codecs = [
+    ["H.264 avc1", 'video/mp4; codecs="avc1.42E01E"'],
+    ["H.265 hev1", 'video/mp4; codecs="hev1.1.6.L93.B0"'],
+    ["AV1", 'video/mp4; codecs="av01.0.05M.08"'],
+    ["VP9", 'video/webm; codecs="vp9"'],
+    ["AAC mp4a", 'audio/mp4; codecs="mp4a.40.2"']
+  ];
+  codecs.forEach(function (c) {
+    row(mediaSec, "MSE " + c[0], safe(function () {
+      return typeof MediaSource !== "undefined" && MediaSource.isTypeSupported(c[1]) ? "지원" : "미지원";
+    }));
+  });
+  row(mediaSec, "<video>.canPlayType(HLS)", safe(function () {
+    return document.createElement("video").canPlayType("application/vnd.apple.mpegurl") || "(빈값=미지원)";
+  }));
+  row(mediaSec, "requestMediaKeySystemAccess", safe(function () {
+    return navigator.requestMediaKeySystemAccess ? "있음" : "없음";
+  }), boolFlag(!!navigator.requestMediaKeySystemAccess, true));
+
+  function probeKeySystem(label, keySystem, robustness, good) {
+    if (!navigator.requestMediaKeySystemAccess) return;
+    var cfg = [{
+      initDataTypes: ["cenc"],
+      videoCapabilities: [{ contentType: 'video/mp4; codecs="avc1.42E01E"', robustness: robustness }],
+      audioCapabilities: [{ contentType: 'audio/mp4; codecs="mp4a.40.2"', robustness: robustness }]
+    }];
+    pending.push(
+      navigator.requestMediaKeySystemAccess(keySystem, cfg).then(function (a) {
+        var cfgOut = a.getConfiguration();
+        var vc = cfgOut.videoCapabilities && cfgOut.videoCapabilities[0];
+        row(mediaSec, label, "허용 (" + ((vc && vc.robustness) || "robustness 미지정") + ")", good ? "good" : null);
+      }).catch(function (e) {
+        row(mediaSec, label, "없음 — " + e.name + ": " + e.message, good ? "bad" : null);
+      })
+    );
+  }
+  // Widevine L3(소프트웨어)은 Chrome/Opera 가 모든 안드로이드에서 허용한다 — 여기서
+  // 막히면 onPermissionRequest 가 RESOURCE_PROTECTED_MEDIA_ID 를 거부하는 것.
+  probeKeySystem("EME Widevine L3 (SW_SECURE_CRYPTO)", "com.widevine.alpha", "SW_SECURE_CRYPTO", true);
+  probeKeySystem("EME Widevine L1 (HW_SECURE_ALL)", "com.widevine.alpha", "HW_SECURE_ALL", false);
+  probeKeySystem("EME PlayReady", "com.microsoft.playready", "", false);
+  probeKeySystem("EME ClearKey", "org.w3.clearkey", "", false);
+
   Promise.allSettled(pending).then(finalize);
 
   // ---- copy button ------------------------------------------------------

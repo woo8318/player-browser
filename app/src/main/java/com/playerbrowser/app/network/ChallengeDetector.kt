@@ -242,6 +242,17 @@ object ChallengeDetector {
     // **챌린지 화면이 실제로 떠 있는 동안만** 접어둔다.
     // ---------------------------------------------------------------------
 
+    // PROBE_JS 의 제목 정규식과 같은 규칙 — JS 를 돌릴 수 없는 곳(순정 WebView
+    // 진단 창)에서 `WebView.getTitle()` 만으로 챌린지/통과를 판정한다 (v1.3.85).
+    private val CHALLENGE_TITLE = Regex(
+        "just a moment|checking your browser|attention required|verify you are human|" +
+            "사람인지|잠시.{0,3}기다|확인 중",
+        RegexOption.IGNORE_CASE
+    )
+
+    fun isChallengeTitle(title: String?): Boolean =
+        !title.isNullOrBlank() && CHALLENGE_TITLE.containsMatchIn(title)
+
     private const val ACTIVE_MS = 60_000L
     private val challengeActive = ConcurrentHashMap<String, Long>()
 

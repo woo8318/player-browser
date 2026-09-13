@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
+import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
@@ -442,6 +443,20 @@ fun BrowserScreen(
                                                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                             context.startActivity(intent)
                                         }
+                                    }
+                                }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("순정 WebView로 열기 (진단)") },
+                                leadingIcon = { Icon(Icons.Filled.Science, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    val url = state.currentUrl
+                                    if (url.startsWith("http", ignoreCase = true)) {
+                                        // 앱의 WebViewClient/주입/브리지/원격 디버깅이 전부 없는
+                                        // WebView 로 같은 주소를 연다 — 캡차 루프가 우리 코드
+                                        // 때문인지 WebView 엔진 때문인지 가르는 측정 (v1.3.85).
+                                        runCatching { BareWebViewActivity.start(context, url) }
                                     }
                                 }
                             )

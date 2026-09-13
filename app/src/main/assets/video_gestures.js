@@ -722,7 +722,10 @@
         lp = null;
         // The native side now shows a menu (or a "no stream" toast), so don't
         // pre-announce "opening…" here — the long-press just requests the menu.
-        if (cur) { requestExternal(videoSrc(cur.video)); }
+        if (cur) {
+          try { if (window.__pbInline) window.__pbInline.markPressed(cur.video); } catch (e) {}
+          requestExternal(videoSrc(cur.video));
+        }
       }, LONG_PRESS_MS);
     }, { passive: true, capture: true });
 
@@ -740,6 +743,9 @@
     window.addEventListener('message', function (ev) {
       var d = ev && ev.data;
       if (!d || typeof d.__pbOpenVideo === 'undefined') return;
+      // The pressed video lives in a child frame: our own candidate
+      // (if any) is stale now, so the 'pressed' command broadcasts.
+      try { if (window.__pbInline) window.__pbInline.clearPressed(); } catch (e) {}
       requestExternal(d.__pbOpenVideo);
     });
   })();
@@ -818,5 +824,368 @@
       var existing = allVideosRaw();
       for (var k = 0; k < existing.length; k++) attach(existing[k]);
     } catch (e) {}
+  })();
+
+  // ---- 우리 플레이어로 자동 교체 (in-place native player, v1.3.89) ----
+  //
+  // Observes <video> playback and reports "started playing" + the video's box
+  // to the Android PBInline bridge so the app can lay its own Media3 player
+  // exactly over the site's player. JS never decides — Kotlin checks the
+  // setting and whether a stream was sniffed, then answers with `take` (we
+  // pause+mute the site video and stream its box every frame) or, later,
+  // `release` (we hand it back seeked to where the native player stopped).
+  //
+  // Coordinates: only the TOP frame talks to the bridge, in device px relative
+  // to the WebView (layout css px → visualViewport → devicePixelRatio). Videos
+  // in same-origin iframes are walked directly (frameElement chain); a
+  // cross-origin iframe player relays `{__pbInline}` up to its parent, which
+  // adds the iframe's offset, caches the child payload and re-emits on its own
+  // rAF loop (so the parent scrolling also moves the overlay). Commands go
+  // down as `{__pbInlineCmd}` broadcasts; ids are unique per frame.
+  (function initInlinePlayer() {
+    var isTop = true;
+    try { isTop = (window.parent === window); } catch (e) { isTop = true; }
+    // No bridge in the top frame (setting off / challenge page): nothing to
+    // report to, so don't hook play events or run the rAF loop at all.
+    if (isTop && !window.PBInline) return;
+    var idPrefix = 'pb' + Math.random().toString(36).slice(2, 8) + '-';
+    var idCounter = 0;
+    var REPORT_MIN_MS = 1500;
+    var local = {};    // id -> { v, prevMuted, last:{l,t,w,h} }
+    var relayed = Object.create(null);  // id -> { frame, p:{l,t,w,h}, last }
+    var lastPressed = null;  // { v: video, t: Date.now() } from the long-press menu
+    var PRESSED_TTL_MS = 15000;
+    var ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+    var rafId = 0;
+
+    function idOf(v) {
+      if (!v.__pbInlineId) v.__pbInlineId = idPrefix + (++idCounter);
+      return v.__pbInlineId;
+    }
+
+    function videoSrc(v) {
+      try {
+        if (v.currentSrc) return v.currentSrc;
+        if (v.src) return v.src;
+        var s = v.querySelector && v.querySelector('source[src]');
+        if (s && s.src) return s.src;
+      } catch (e) {}
+      return '';
+    }
+
+    // Box of `el` in THIS window's layout css px, folding in every same-origin
+    // ancestor iframe between el's document and this window.
+    function rectHere(el) {
+      var r = el.getBoundingClientRect();
+      var l = r.left, t = r.top, w = r.width, h = r.height;
+      try {
+        var win = el.ownerDocument && el.ownerDocument.defaultView;
+        var guard = 0;
+        while (win && win !== window && guard++ < 16) {
+          var fe = win.frameElement;
+          if (!fe) break;
+          var fr = fe.getBoundingClientRect();
+          l += fr.left + (fe.clientLeft || 0);
+          t += fr.top + (fe.clientTop || 0);
+          win = win.parent;
+        }
+      } catch (e) {}
+      return { l: l, t: t, w: w, h: h };
+    }
+
+    // Top frame only: layout css px → device px relative to the WebView.
+    function toDevice(p) {
+      var vv = window.visualViewport;
+      var scale = (vv && vv.scale) || 1;
+      var ox = (vv && vv.offsetLeft) || 0;
+      var oy = (vv && vv.offsetTop) || 0;
+      var dpr = window.devicePixelRatio || 1;
+      return {
+        l: Math.round((p.l - ox) * scale * dpr),
+        t: Math.round((p.t - oy) * scale * dpr),
+        w: Math.round(p.w * scale * dpr),
+        h: Math.round(p.h * scale * dpr)
+      };
+    }
+
+    function roundRect(p) {
+      return { l: Math.round(p.l), t: Math.round(p.t), w: Math.round(p.w), h: Math.round(p.h) };
+    }
+
+    function sameRect(a, b) {
+      return !!a && !!b && a.l === b.l && a.t === b.t && a.w === b.w && a.h === b.h;
+    }
+
+    // Deliver a report: to the bridge (top frame) or up to the parent frame.
+    function emit(msg) {
+      if (isTop) {
+        var b = window.PBInline;
+        if (!b) return;
+        try {
+          if (msg.type === 'play') {
+            var d = toDevice(msg);
+            b.onPlay(msg.id, msg.src || '', +msg.pos || 0, d.l, d.t, d.w, d.h, !!msg.manual);
+          } else if (msg.type === 'rect') {
+            var d2 = toDevice(msg);
+            b.onRect(msg.id, d2.l, d2.t, d2.w, d2.h);
+          } else if (msg.type === 'gone') {
+            b.onGone(msg.id);
+          }
+        } catch (e) {}
+        return;
+      }
+      try { window.parent.postMessage({ __pbInline: msg }, '*'); } catch (e) {}
+    }
+
+    function report(v, manual) {
+      var now = Date.now();
+      if (!manual && v.__pbInlineLastReport && now - v.__pbInlineLastReport < REPORT_MIN_MS) return;
+      var r = rectHere(v);
+      // A momentarily tiny box (mid-layout) must not burn the throttle slot.
+      if (r.w < 40 || r.h < 40) return;
+      v.__pbInlineLastReport = now;
+      var id = idOf(v);
+      var pos = 0;
+      try { pos = v.currentTime || 0; } catch (e) {}
+      emit({ type: 'play', id: id, src: videoSrc(v), pos: pos, l: r.l, t: r.t, w: r.w, h: r.h, manual: !!manual });
+    }
+
+    function ensureLoop() {
+      if (rafId) return;
+      rafId = requestAnimationFrame(tick);
+    }
+
+    function tick() {
+      rafId = 0;
+      var any = false;
+      var id;
+      for (id in local) {
+        var s = local[id];
+        if (!s) continue;
+        any = true;
+        var v = s.v;
+        if (!v.isConnected) {
+          emit({ type: 'gone', id: id });
+          delete local[id];
+          continue;
+        }
+        var r = rectHere(v);
+        // Pinch-zoom / visual viewport moves change device px without changing
+        // layout px — the top frame compares after conversion.
+        var key = isTop ? toDevice(r) : roundRect(r);
+        if (!sameRect(key, s.last)) {
+          s.last = key;
+          emit({ type: 'rect', id: id, l: r.l, t: r.t, w: r.w, h: r.h });
+        }
+      }
+      for (id in relayed) {
+        var rs = relayed[id];
+        if (!rs) continue;
+        any = true;
+        if (!rs.frame.isConnected) {
+          emit({ type: 'gone', id: id });
+          delete relayed[id];
+          continue;
+        }
+        var combined = combine(rs.frame, rs.p);
+        var key2 = isTop ? toDevice(combined) : roundRect(combined);
+        if (!sameRect(key2, rs.last)) {
+          rs.last = key2;
+          emit({ type: 'rect', id: id, l: combined.l, t: combined.t, w: combined.w, h: combined.h });
+        }
+      }
+      if (any) rafId = requestAnimationFrame(tick);
+    }
+
+    // Child payload (child layout px) + the owning iframe's box here.
+    function combine(frame, p) {
+      var fr = rectHere(frame);
+      var l = fr.l + (frame.clientLeft || 0) + p.l;
+      var t = fr.t + (frame.clientTop || 0) + p.t;
+      // Intersect with the iframe's box: a video scrolled partly out of its
+      // frame is clipped by the frame, so the overlay must be too.
+      var r = Math.min(l + p.w, fr.l + fr.w);
+      var b = Math.min(t + p.h, fr.t + fr.h);
+      l = Math.max(l, fr.l);
+      t = Math.max(t, fr.t);
+      return { l: l, t: t, w: Math.max(0, r - l), h: Math.max(0, b - t) };
+    }
+
+    function findLocal(id) {
+      if (local[id]) return local[id].v;
+      var vids = allVideosRaw();
+      for (var i = 0; i < vids.length; i++) if (vids[i].__pbInlineId === id) return vids[i];
+      return null;
+    }
+
+    function take(v) {
+      var id = idOf(v);
+      if (!local[id]) local[id] = { v: v, prevMuted: !!v.muted, last: null };
+      v.__pbInlineTaken = true;
+      try { v.muted = true; } catch (e) {}
+      try { v.pause(); } catch (e) {}
+      ensureLoop();
+    }
+
+    function release(v, pos) {
+      var id = idOf(v);
+      var s = local[id];
+      delete local[id];
+      v.__pbInlineTaken = false;
+      try { v.muted = s ? s.prevMuted : false; } catch (e) {}
+      if (typeof pos === 'number' && isFinite(pos) && pos >= 0) {
+        try {
+          var d = v.duration;
+          if (!isFinite(d) || pos < d) v.currentTime = pos;
+        } catch (e) {}
+      }
+      // Stay paused: the user closed our player, they did not ask the site's to resume.
+    }
+
+    function broadcastCmd(c) {
+      try {
+        var docs = reachableDocuments();
+        for (var di = 0; di < docs.length; di++) {
+          var frames;
+          try { frames = docs[di].querySelectorAll('iframe, frame'); } catch (e) { continue; }
+          for (var i = 0; i < frames.length; i++) {
+            try { frames[i].contentWindow.postMessage({ __pbInlineCmd: c }, '*'); } catch (e) {}
+          }
+        }
+      } catch (e) {}
+    }
+
+    function cmd(c) {
+      if (!c || !c.kind) return;
+      if (c.kind === 'pressed') {
+        var lp = lastPressed;
+        lastPressed = null;
+        if (lp && lp.v && lp.v.isConnected && Date.now() - lp.t < PRESSED_TTL_MS) {
+          report(lp.v, true);
+          return;
+        }
+        broadcastCmd(c);
+        return;
+      }
+      var v = c.id ? findLocal(c.id) : null;
+      if (v) {
+        if (c.kind === 'take') take(v);
+        else if (c.kind === 'release') release(v, c.pos);
+        return;
+      }
+      if (c.kind === 'release' && relayed[c.id]) delete relayed[c.id];
+      broadcastCmd(c);
+    }
+
+    // The <iframe> that owns a child window (may sit inside a same-origin
+    // nested iframe of ours).
+    function frameOf(source) {
+      var docs = reachableDocuments();
+      for (var di = 0; di < docs.length; di++) {
+        var frames;
+        try { frames = docs[di].querySelectorAll('iframe, frame'); } catch (e) { continue; }
+        for (var i = 0; i < frames.length; i++) {
+          try { if (frames[i].contentWindow === source) return frames[i]; } catch (e) {}
+        }
+      }
+      return null;
+    }
+
+    window.addEventListener('message', function (ev) {
+      var d = ev && ev.data;
+      if (!d) return;
+      if (d.__pbInlineCmd) {
+        // Commands come from the app (evaluateJavascript in the top frame)
+        // and are relayed parent → child only; anything else is spoofed.
+        if (isTop) return;
+        var fromParent = false;
+        try { fromParent = (ev.source === window.parent); } catch (e) {}
+        if (!fromParent) return;
+        cmd(d.__pbInlineCmd);
+        return;
+      }
+      var m = d.__pbInline;
+      // Ids come from another (possibly hostile) frame: same charset the
+      // Kotlin bridge enforces, so "__proto__" & co. never reach the map.
+      if (!m || typeof m.id !== 'string' || !ID_RE.test(m.id)) return;
+      if (m.type === 'gone') {
+        // Only the frame that reported the video may retract it.
+        var owner = relayed[m.id];
+        if (owner) {
+          var ownerWin = null;
+          try { ownerWin = owner.frame.contentWindow; } catch (e) {}
+          if (ownerWin !== ev.source) return;
+        } else if (!frameOf(ev.source)) {
+          return;
+        }
+        delete relayed[m.id];
+        emit({ type: 'gone', id: m.id });
+        return;
+      }
+      var frame = (relayed[m.id] && relayed[m.id].frame) || frameOf(ev.source);
+      if (!frame || !frame.isConnected) return;
+      var p = { l: +m.l || 0, t: +m.t || 0, w: +m.w || 0, h: +m.h || 0 };
+      var combined = combine(frame, p);
+      if (m.type === 'play') {
+        emit({ type: 'play', id: m.id, src: m.src || '', pos: +m.pos || 0, manual: !!m.manual,
+               l: combined.l, t: combined.t, w: combined.w, h: combined.h });
+        return;
+      }
+      if (m.type === 'rect') {
+        var rs = relayed[m.id];
+        if (!rs) { rs = relayed[m.id] = { frame: frame, p: p, last: null }; }
+        else { rs.p = p; }
+        // Emit right away with the fresh child box; the loop keeps it aligned
+        // afterwards when only this frame moves.
+        rs.last = isTop ? toDevice(combined) : roundRect(combined);
+        emit({ type: 'rect', id: m.id, l: combined.l, t: combined.t, w: combined.w, h: combined.h });
+        ensureLoop();
+      }
+    });
+
+    // Play detection. Media events don't bubble but capture at the document
+    // still sees them; same-origin iframe documents get hooked too.
+    function onPlaying(e) {
+      var v = e && e.target;
+      if (!v || !v.tagName || v.tagName.toUpperCase() !== 'VIDEO') return;
+      if (v.__pbInlineTaken) {
+        // The site (autoplay retry / its own controls) tried to resume the
+        // video we replaced — keep it silent and paused.
+        try { v.muted = true; v.pause(); } catch (err) {}
+        return;
+      }
+      report(v, false);
+    }
+
+    function hookDoc(d) {
+      if (!d || d.__pbInlineHooked) return;
+      d.__pbInlineHooked = true;
+      try {
+        d.addEventListener('playing', onPlaying, true);
+        d.addEventListener('play', onPlaying, true);
+      } catch (e) {}
+    }
+
+    function hookAll() {
+      var docs = reachableDocuments();
+      for (var i = 0; i < docs.length; i++) hookDoc(docs[i]);
+    }
+    hookAll();
+    setInterval(hookAll, 2000);
+
+    // Videos already rolling when the script lands (autoplay before onPageFinished).
+    try {
+      var existing = allVideosRaw();
+      for (var k = 0; k < existing.length; k++) {
+        var ev0 = existing[k];
+        if (!ev0.paused && !ev0.ended && ev0.readyState >= 2) report(ev0, false);
+      }
+    } catch (e) {}
+
+    window.__pbInline = {
+      cmd: cmd,
+      markPressed: function (v) { lastPressed = v ? { v: v, t: Date.now() } : null; },
+      clearPressed: function () { lastPressed = null; }
+    };
   })();
 })();

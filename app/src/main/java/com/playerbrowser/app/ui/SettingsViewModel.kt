@@ -45,6 +45,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                     privateDnsEnabled = current.privateDnsEnabled,
                     jsEnvSpoofEnabled = current.jsEnvSpoofEnabled,
                     visitedLinkMarkEnabled = current.visitedLinkMarkEnabled,
+                    inlinePlayerAuto = current.inlinePlayerAuto,
                     dohProvider = current.dohProvider,
                     dohCustomUrl = current.dohCustomUrl
                 )
@@ -114,6 +115,16 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             repository.update { it.copy(visitedLinkMarkEnabled = enabled) }
             _event.value = ProxyApplyEvent.Message(
                 if (enabled) "방문한 링크 표시 켜짐 (다음 페이지부터 적용)" else "방문한 링크 표시 꺼짐 (다음 페이지부터 적용)"
+            )
+        }
+    }
+
+    fun setInlinePlayerAuto(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(inlinePlayerAuto = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "우리 플레이어로 자동 교체 켜짐 — 영상이 재생되고 스트림이 잡히면 그 자리에 표시"
+                else "사이트 플레이어 사용 (기본)"
             )
         }
     }

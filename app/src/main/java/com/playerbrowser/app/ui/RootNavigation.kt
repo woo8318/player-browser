@@ -35,6 +35,9 @@ fun RootNavigation(viewModel: BrowserViewModel) {
     // Lives next to webStates so captured gallery thumbnails survive navigation
     // to Bookmarks / History / Settings and back.
     val thumbnails = remember { TabThumbnailStore() }
+    // In-place player state — must outlive BrowserScreen (WebView callbacks
+    // created there survive navigation and keep writing into it).
+    val inlinePlayer = remember { InlinePlayerController() }
     // Persists each tab's back/forward history so a restart keeps in-tab
     // navigation (Android back steps through visited pages instead of closing
     // a freshly-reloaded tab).
@@ -73,6 +76,7 @@ fun RootNavigation(viewModel: BrowserViewModel) {
                 webStates = webStates,
                 thumbnails = thumbnails,
                 tabWebStates = tabWebStates,
+                inlinePlayer = inlinePlayer,
                 onOpenBookmarks = { navController.navigate(Routes.BOOKMARKS) },
                 onOpenHistory = { navController.navigate(Routes.HISTORY) },
                 onOpenSettings = { navController.navigate(Routes.SETTINGS) },

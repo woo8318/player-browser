@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.PackageManager
 import android.os.Build
+import android.os.SystemClock
 import android.content.Intent
 import android.net.Uri
 import android.webkit.CookieManager
@@ -22,6 +23,7 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -63,7 +65,9 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -89,21 +93,28 @@ import com.playerbrowser.app.cast.CastSessionBridge
 import com.playerbrowser.app.cast.StreamCandidate
 import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.data.TabWebStateStore
+import androidx.media3.common.util.UnstableApi
 import com.playerbrowser.app.network.ChallengeCookies
+import com.playerbrowser.app.network.DebugLog
+import com.playerbrowser.app.network.InlinePlayerSwitch
 import com.playerbrowser.app.network.ChallengeDetector
 import com.playerbrowser.app.network.CookieFlusher
 import com.playerbrowser.app.network.UrlRecovery
 import com.playerbrowser.app.player.DownloadCenter
 import com.playerbrowser.app.player.VideoPlayerActivity
+import com.playerbrowser.app.web.InlinePlayerCommands
+import com.playerbrowser.app.web.InlineRect
 import com.playerbrowser.app.web.UrlUtils
 import com.playerbrowser.app.web.VisitedLinkMarker
 
+@OptIn(UnstableApi::class)
 @Composable
 fun BrowserScreen(
     viewModel: BrowserViewModel,
     webStates: SnapshotStateMap<String, BrowserWebViewState>,
     thumbnails: TabThumbnailStore,
     tabWebStates: TabWebStateStore,
+    inlinePlayer: InlinePlayerController,
     onOpenBookmarks: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -119,11 +130,12 @@ fun BrowserScreen(
     val updateState by viewModel.updateState.collectAsState()
     val groups by viewModel.groups.collectAsState()
 
-    // Set by a long-press on a <video> (via the PBPlayer JS bridge) to the
-    // element's DOM source URL; a LaunchedEffect below resolves it to a stream
-    // and opens the external player. Reset to null after handling so a repeat
-    // long-press on the same video re-triggers.
-    var externalPlayRequest by remember { mutableStateOf<String?>(null) }
+    // Video long-press (PBPlayer bridge) → DOM source URL; a LaunchedEffect
+    // below resolves it to a stream and offers the menu. Lives on
+    // inlinePlayer (owned by RootNavigation) rather than a local remember:
+    // the WebView callbacks below are created once per tab and outlive this
+    // composable, so a local MutableState would be orphaned after
+    // Settings → back and later long-presses would go nowhere.
 
     // Garbage-collect WebViews for tabs that no longer exist, and prune their
     // gallery thumbnails in lock-step.
@@ -146,7 +158,12 @@ fun BrowserScreen(
             ?.takeIf { it.startsWith("http", ignoreCase = true) }
             ?: BrowserUiState.HOME_URL
         buildBrowserWebView(context, object : WebViewCallbacks {
-            override fun onStarted(url: String) = viewModel.onPageStarted(ownerId, url)
+            override fun onStarted(url: String) {
+                // New document: the taken <video> is gone with the old page, so
+                // drop the overlay without a JS release (nothing to hand back).
+                inlinePlayer.dropTab(ownerId)
+                viewModel.onPageStarted(ownerId, url)
+            }
             override fun onFinished(
                 url: String,
                 title: String,
@@ -168,8 +185,20 @@ fun BrowserScreen(
             // active tab is interactable, so resolving against the active page's
             // context below is correct. Marshalled onto the main thread already.
             override fun onPlayVideoExternally(domSrc: String) {
-                externalPlayRequest = domSrc
+                inlinePlayer.externalPlayRequest = domSrc
             }
+            // In-place player (v1.3.89): the page reports a playing <video> and
+            // its box; the effect below decides (setting / sniffed stream).
+            override fun onInlineVideoPlay(
+                id: String, domSrc: String, positionSec: Double, rect: InlineRect, manual: Boolean
+            ) {
+                if (ownerId == viewModel.activeTabId.value) {
+                    inlinePlayer.reportPlay(ownerId, id, domSrc, positionSec, rect, manual)
+                }
+            }
+            override fun onInlineVideoRect(id: String, rect: InlineRect) =
+                inlinePlayer.reportRect(ownerId, id, rect)
+            override fun onInlineVideoGone(id: String) = inlinePlayer.reportGone(ownerId, id)
         }).also { state ->
             // Restore this tab's saved back/forward history if we have it —
             // restoreState reloads the current entry itself, so only fall back
@@ -208,6 +237,21 @@ fun BrowserScreen(
     var switchDirection by remember { mutableStateOf(0) }
     LaunchedEffect(activeTabId) {
         switchDirection = 0
+        // The overlay only ever covers the active tab; give the video back to
+        // the tab we left (position unknown → JS keeps its own currentTime).
+        // Only when the session really belongs to another tab — this effect
+        // also runs on first composition (Settings → back), and ending the
+        // session there would drop the overlay for nothing.
+        inlinePlayer.session?.let { s ->
+            if (s.tabId != activeTabId) {
+                inlinePlayer.end()
+                runCatching {
+                    webStates[s.tabId]?.webView?.evaluateJavascript(
+                        InlinePlayerCommands.release(s.videoId, -1.0), null
+                    )
+                }
+            }
+        }
         // Coming back from a child/background tab fires no onPageFinished here,
         // yet the page it opened is now in history — refresh the visited marks.
         val webView = activeWebState.webView
@@ -326,9 +370,9 @@ fun BrowserScreen(
     // media URL plays that exact video; a blob:/MSE src (no usable URL) falls
     // back to the page's sniffed network stream. When nothing is resolvable we
     // just toast — long-pressing an unplayable video shouldn't pop a useless menu.
-    LaunchedEffect(externalPlayRequest) {
-        val src = externalPlayRequest ?: return@LaunchedEffect
-        externalPlayRequest = null
+    LaunchedEffect(inlinePlayer.externalPlayRequest) {
+        val src = inlinePlayer.externalPlayRequest ?: return@LaunchedEffect
+        inlinePlayer.externalPlayRequest = null
         val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
         val candidate = VideoStreamSniffer.matching(host, src)
             ?: VideoStreamSniffer.current(host)
@@ -339,6 +383,11 @@ fun BrowserScreen(
                 context = context,
                 candidate = candidate,
                 onPlay = { playCandidate(candidate) },
+                onInline = {
+                    // Ask the page to re-report the long-pressed video as a
+                    // manual take; the inline effect below does the rest.
+                    activeWebState.webView.evaluateJavascript(InlinePlayerCommands.pressed(), null)
+                },
                 onDownload = { downloadCandidate(candidate, false) },
                 onDownloadAndPlay = { downloadCandidate(candidate, true) },
                 onCast = { castCandidate(candidate) }
@@ -370,6 +419,94 @@ fun BrowserScreen(
     // page with a fresh stream gets the affordance again.
     var playerButtonDismissed by remember { mutableStateOf(false) }
     LaunchedEffect(state.currentUrl) { playerButtonDismissed = false }
+
+    // In-place player (v1.3.89). Hand the site's <video> back: clear our
+    // overlay and, if asked, tell the page to unmute + seek to where we
+    // stopped (-1 = leave its currentTime alone). Stays paused by design.
+    val endInline: (Boolean, Double) -> Unit = { release, positionSec ->
+        inlinePlayer.end()?.let { s ->
+            if (release) {
+                runCatching {
+                    webStates[s.tabId]?.webView?.evaluateJavascript(
+                        InlinePlayerCommands.release(s.videoId, positionSec), null
+                    )
+                }
+            }
+        }
+    }
+    // The controller ends a session by itself when the video box collapses
+    // (display:none, 0-height container); it needs a way to release the site
+    // video. Re-set every composition so it never points at a stale webStates.
+    SideEffect {
+        inlinePlayer.releaseHandler = { s ->
+            runCatching {
+                webStates[s.tabId]?.webView?.evaluateJavascript(
+                    InlinePlayerCommands.release(s.videoId, -1.0), null
+                )
+            }
+        }
+    }
+    // Resolve a "video started playing" report to a sniffed stream and take
+    // the video over. Re-runs when a new stream lands (streamRevision) so an
+    // auto request reported before the .m3u8 was seen still gets picked up.
+    // Auto reports need the setting on; manual (long-press menu) ignores it
+    // and toasts when nothing is resolvable instead of waiting silently.
+    val inlineRequest = inlinePlayer.request
+    LaunchedEffect(inlineRequest, streamRevision) {
+        val req = inlineRequest ?: return@LaunchedEffect
+        if (req.tabId != activeTabId) { inlinePlayer.consumeRequest(); return@LaunchedEffect }
+        if (!req.manual && !InlinePlayerSwitch.enabled) { inlinePlayer.consumeRequest(); return@LaunchedEffect }
+        // An automatic request waits for a stream to be sniffed, but not
+        // forever: a video that started long ago must not get taken over
+        // because some unrelated media request showed up later.
+        if (!req.manual && SystemClock.uptimeMillis() - req.createdAt > INLINE_AUTO_DEADLINE_MS) {
+            inlinePlayer.consumeRequest(); return@LaunchedEffect
+        }
+        val host = runCatching { Uri.parse(state.currentUrl).host }.getOrNull()
+        val candidate = VideoStreamSniffer.matching(host, req.domSrc)
+            ?: VideoStreamSniffer.current(host)
+        if (candidate == null) {
+            if (req.manual) {
+                inlinePlayer.consumeRequest()
+                reportNoStream("우리 플레이어로 바꿀 스트림을 못 찾았어요 (영상을 잠깐 재생 후 다시 시도 · 설정→디버그 로그 확인)")
+            }
+            // Auto: keep the request pending; the next sniffed stream re-runs this.
+            return@LaunchedEffect
+        }
+        if (!req.rect.isUsable) {
+            // Too small to host a player (thumbnail / hidden). A manual pick
+            // still deserves an answer; auto stays quiet.
+            inlinePlayer.consumeRequest()
+            if (req.manual) Toast.makeText(context, "영상 영역이 너무 작아 우리 플레이어를 놓을 수 없어요", Toast.LENGTH_SHORT).show()
+            return@LaunchedEffect
+        }
+        // Replacing another taken video on the same page: give that one back first.
+        endInline(true, -1.0)
+        val ua = runCatching { activeWebState.webView.settings.userAgentString }.getOrNull()
+        val cookie = runCatching { CookieManager.getInstance().getCookie(candidate.url) }.getOrNull()
+        inlinePlayer.start(
+            InlineSession(
+                tabId = req.tabId,
+                videoId = req.videoId,
+                candidate = candidate,
+                startPositionSec = req.positionSec,
+                pageUrl = state.currentUrl,
+                referer = state.currentUrl,
+                cookie = cookie,
+                userAgent = ua,
+                title = state.currentTitle
+            ),
+            req.rect
+        )
+        activeWebState.webView.evaluateJavascript(InlinePlayerCommands.take(req.videoId), null)
+        DebugLog.d(
+            "InlinePlayer",
+            "사이트 영상 교체: ${candidate.url.take(80)} pos=${"%.1f".format(req.positionSec)}s " +
+                "rect=${req.rect.width}x${req.rect.height}@${req.rect.left},${req.rect.top} manual=${req.manual}"
+        )
+    }
+    val inlineSession = inlinePlayer.session
+    val inlineActive = inlineSession != null && inlineSession.tabId == activeTabId
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Top: URL bar + quick actions (bookmark, cast, menu).
@@ -597,11 +734,49 @@ fun BrowserScreen(
                     Box(modifier = Modifier.fillMaxSize())
                 }
             }
+            // Our player laid exactly over the site's <video> box (v1.3.89).
+            // Clipped to the WebView area (the overlay uses a TextureView so
+            // the clip actually applies) so a video scrolled half out of view
+            // doesn't paint over the toolbars. Keyed on the session so a
+            // different video gets a fresh ExoPlayer.
+            if (inlineActive && inlineSession != null) {
+                Box(modifier = Modifier.fillMaxSize().clipToBounds()) {
+                    key(inlineSession.tabId, inlineSession.videoId, inlineSession.candidate.url) {
+                        InlinePlayerOverlay(
+                            session = inlineSession,
+                            // Lambda, not a value: the rect is read inside the
+                            // overlay's layout phase so a scrolling page does
+                            // not recompose this whole screen per frame.
+                            rect = { inlinePlayer.rect ?: InlineRect(0, 0, 0, 0) },
+                            onClose = { pos -> endInline(true, pos) },
+                            onFullscreen = { pos ->
+                                VideoPlayerActivity.start(
+                                    context = context,
+                                    url = inlineSession.candidate.url,
+                                    referer = inlineSession.referer,
+                                    cookie = inlineSession.cookie,
+                                    userAgent = inlineSession.userAgent,
+                                    mime = inlineSession.candidate.mime,
+                                    title = inlineSession.title,
+                                    startPositionSec = pos
+                                )
+                                endInline(true, pos)
+                            },
+                            onError = { e ->
+                                DebugLog.w("InlinePlayer", "우리 플레이어 재생 실패 — 사이트 플레이어로 복귀: ${e.errorCodeName}", e)
+                                Toast.makeText(context, "우리 플레이어로 재생 실패 — 사이트 플레이어로 돌아갑니다", Toast.LENGTH_SHORT).show()
+                                endInline(true, -1.0)
+                            }
+                        )
+                    }
+                }
+            }
             // Floating "play in player" pill — appears the moment a stream is
             // sniffed for this page so the user can jump to the native player
             // without opening the ⋮ menu. Dismissible so it never blocks content.
+            // Hidden while our in-place player is showing (it has its own ⛶).
             androidx.compose.animation.AnimatedVisibility(
-                visible = hasPlayableStream && !playerButtonDismissed,
+                visible = hasPlayableStream && !playerButtonDismissed && !inlineActive,
                 enter = androidx.compose.animation.fadeIn() +
                     androidx.compose.animation.scaleIn(initialScale = 0.8f),
                 exit = androidx.compose.animation.fadeOut() +
@@ -776,12 +951,14 @@ private fun showVideoContextMenu(
     context: Context,
     candidate: StreamCandidate,
     onPlay: () -> Unit,
+    onInline: () -> Unit,
     onDownload: () -> Unit,
     onDownloadAndPlay: () -> Unit,
     onCast: () -> Unit
 ) {
     val items = arrayOf(
         "외부 플레이어로 재생",
+        "여기서 우리 플레이어로 재생",
         "다운로드 (다 받고 보기)",
         "받으면서 바로 보기",
         "Chromecast로 재생",
@@ -792,10 +969,11 @@ private fun showVideoContextMenu(
         .setItems(items) { _, which ->
             when (which) {
                 0 -> onPlay()
-                1 -> onDownload()
-                2 -> onDownloadAndPlay()
-                3 -> onCast()
-                4 -> {
+                1 -> onInline()
+                2 -> onDownload()
+                3 -> onDownloadAndPlay()
+                4 -> onCast()
+                5 -> {
                     val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE)
                         as? android.content.ClipboardManager
                     clipboard?.setPrimaryClip(
@@ -831,3 +1009,6 @@ private fun TabCountButton(count: Int, onClick: () -> Unit) {
         }
     }
 }
+
+// How long an automatic in-place request may wait for a stream to be sniffed.
+private const val INLINE_AUTO_DEADLINE_MS = 30_000L

@@ -62,6 +62,9 @@ class VideoPlayerActivity : ComponentActivity() {
     private lateinit var feedback: TextView
 
     private var resumeKey: String? = null
+    // Explicit start position handed over by the in-place player (v1.3.89);
+    // beats the stored "이어보기" spot because it is where the user just was.
+    private var startSec: Double = -1.0
     private var videoTitle: String = ""
     private var appliedOrientation = false
 
@@ -91,6 +94,7 @@ class VideoPlayerActivity : ComponentActivity() {
         val mime = intent.getStringExtra(EXTRA_MIME)
         videoTitle = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         resumeKey = referer?.takeIf { it.startsWith("http", ignoreCase = true) }
+        startSec = intent.getDoubleExtra(EXTRA_START_SEC, -1.0)
 
         enterImmersive()
 
@@ -303,7 +307,10 @@ class VideoPlayerActivity : ComponentActivity() {
         // page (shared key = page URL), so switching to the native player keeps
         // your spot. Honors the global resume toggle.
         val key = resumeKey
-        if (useResume && ResumeSwitch.enabled && key != null) {
+        if (useResume && startSec > 0) {
+            DebugLog.d(TAG, "인라인 플레이어에서 넘어옴 — ${startSec}초부터 시작")
+            exo.seekTo((startSec * 1000).toLong())
+        } else if (useResume && ResumeSwitch.enabled && key != null) {
             val savedSec = WatchProgressStore.get(this).position(key)
             if (savedSec > 0) {
                 DebugLog.d(TAG, "이어보기 ${savedSec}초부터 시작")
@@ -526,6 +533,7 @@ class VideoPlayerActivity : ComponentActivity() {
         private const val EXTRA_UA = "ua"
         private const val EXTRA_MIME = "mime"
         private const val EXTRA_TITLE = "title"
+        private const val EXTRA_START_SEC = "start_sec"
 
         fun start(
             context: Context,
@@ -534,10 +542,12 @@ class VideoPlayerActivity : ComponentActivity() {
             cookie: String?,
             userAgent: String?,
             mime: String?,
-            title: String?
+            title: String?,
+            startPositionSec: Double = -1.0
         ) {
             val intent = Intent(context, VideoPlayerActivity::class.java).apply {
                 putExtra(EXTRA_URL, url)
+                putExtra(EXTRA_START_SEC, startPositionSec)
                 putExtra(EXTRA_REFERER, referer)
                 putExtra(EXTRA_COOKIE, cookie)
                 putExtra(EXTRA_UA, userAgent)

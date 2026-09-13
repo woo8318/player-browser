@@ -52,6 +52,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.playerbrowser.app.web.BrowserEnvPatch
 import com.playerbrowser.app.web.IframeScriptInjector
+import com.playerbrowser.app.web.InlinePlayerBridge
+import com.playerbrowser.app.web.InlineRect
 import com.playerbrowser.app.web.PlayerBridge
 import com.playerbrowser.app.web.ResumeBridge
 import com.playerbrowser.app.web.VisitedLinkMarker
@@ -81,6 +83,11 @@ interface WebViewCallbacks {
     // A <video> was long-pressed; open it in the external player. `domSrc` is the
     // element's source URL ("" when unresolvable — caller falls back to sniffer).
     fun onPlayVideoExternally(domSrc: String) {}
+    // In-place player (v1.3.89): a <video> started playing / its box moved /
+    // it left the DOM. Rects are device px relative to the WebView.
+    fun onInlineVideoPlay(id: String, domSrc: String, positionSec: Double, rect: InlineRect, manual: Boolean) {}
+    fun onInlineVideoRect(id: String, rect: InlineRect) {}
+    fun onInlineVideoGone(id: String) {}
 }
 
 @SuppressLint("SetJavaScriptEnabled")
@@ -88,6 +95,12 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
     // "이어보기" bridge — keyed by the page URL kept in sync via the WebViewClient.
     val resumeBridge = ResumeBridge(context.applicationContext)
     val playerBridge = PlayerBridge { src -> callbacks.onPlayVideoExternally(src) }
+    val inlineBridge = InlinePlayerBridge(object : InlinePlayerBridge.Listener {
+        override fun onPlay(id: String, domSrc: String, positionSec: Double, rect: InlineRect, manual: Boolean) =
+            callbacks.onInlineVideoPlay(id, domSrc, positionSec, rect, manual)
+        override fun onRect(id: String, rect: InlineRect) = callbacks.onInlineVideoRect(id, rect)
+        override fun onGone(id: String) = callbacks.onInlineVideoGone(id)
+    })
     val webView = WebView(context).apply {
         layoutParams = ViewGroup.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -135,6 +148,8 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
         addJavascriptInterface(resumeBridge, "PBResume")
         // `window.PBPlayer` — video long-press → external player (see PlayerBridge).
         addJavascriptInterface(playerBridge, "PBPlayer")
+        // `window.PBInline` — in-place player rect/play reports (see InlinePlayerBridge).
+        addJavascriptInterface(inlineBridge, "PBInline")
         val gestureScript = WebAssetLoader.gestureScript(context)
         IframeScriptInjector.setScript(gestureScript)
         webViewClient = object : WebViewClient() {
@@ -227,9 +242,11 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                         if (ChallengeDetector.isChallengeActive(host)) {
                             view.removeJavascriptInterface("PBResume")
                             view.removeJavascriptInterface("PBPlayer")
+                            view.removeJavascriptInterface("PBInline")
                         } else {
                             view.addJavascriptInterface(resumeBridge, "PBResume")
                             view.addJavascriptInterface(playerBridge, "PBPlayer")
+                            view.addJavascriptInterface(inlineBridge, "PBInline")
                         }
                     }
                 }

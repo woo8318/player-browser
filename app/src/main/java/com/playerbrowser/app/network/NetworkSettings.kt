@@ -14,6 +14,7 @@ data class NetworkSettings(
     val privateDnsEnabled: Boolean = false,
     val jsEnvSpoofEnabled: Boolean = true,
     val visitedLinkMarkEnabled: Boolean = true,
+    val inlinePlayerAuto: Boolean = false,
     val dohProvider: String = DohProvider.CLOUDFLARE.key,
     val dohCustomUrl: String = ""
 ) {

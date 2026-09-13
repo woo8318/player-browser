@@ -371,6 +371,33 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()
+            SectionTitle("영상 재생 방식")
+            Text(
+                text = "켜면 페이지의 영상이 재생을 시작하고 스트림 주소가 잡히는 즉시, 그 영상 자리에 " +
+                    "우리 플레이어(Media3)를 덮어 표시합니다. 영상 아래 컨트롤 바(−10초 / 재생·정지 / +10초 / " +
+                    "전체화면 / ×)는 영상과 겹치지 않고, × 를 누르면 사이트 플레이어로 돌아갑니다. " +
+                    "끄면(기본) 사이트 플레이어를 그대로 쓰고, 영상을 길게 눌러 \"여기서 우리 플레이어로 재생\"을 " +
+                    "골라 영상별로 바꿀 수 있습니다. blob:/DRM 처럼 스트림 주소를 못 뽑는 영상은 사이트 플레이어 그대로입니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (saved.inlinePlayerAuto) "우리 플레이어로 자동 교체" else "사이트 플레이어 (기본)",
+                    modifier = Modifier.padding(end = 12.dp)
+                )
+                Spacer(modifier = Modifier.fillMaxWidth(0.6f))
+                Switch(
+                    checked = saved.inlinePlayerAuto,
+                    onCheckedChange = { viewModel.setInlinePlayerAuto(it) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
             SectionTitle("링크를 새 탭에서 열기")
             Text(
                 text = "페이지 안의 링크를 누를 때 현재 탭을 바꾸지 않고 항상 새 탭에서 엽니다. " +

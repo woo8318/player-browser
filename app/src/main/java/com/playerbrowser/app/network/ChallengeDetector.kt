@@ -390,9 +390,37 @@ object ChallengeDetector {
         }
     }
 
+    /**
+     * JS 를 **전혀 돌리지 않는** 판정 경로 (v1.3.87, 수정 사다리 2/4).
+     *
+     * 격리 호스트·챌린지 창이 열린 호스트·제목이 이미 챌린지로 읽히는 페이지에서는
+     * [probe] 의 `evaluateJavascript` 를 부르지 않는다 — 챌린지 페이지 위에서
+     * 우리 스크립트가 도는 것 자체가 v1.3.85 메모의 "한 번도 제거된 적 없는
+     * 변수" 중 하나다. 대신 `WebView.getTitle()` 만으로 [isChallengeTitle] 을
+     * 판정하고, [report] 에 같은 모양의 마커(`title="…"`)를 넘겨 감지 횟수·
+     * 격리 진입·루프 경고·"통과" 로그를 **그대로** 유지한다. 지연 프로브가
+     * 없으므로 한 번에 `final` 로 보고한다(제목은 `onPageFinished` 시점에
+     * 이미 확정돼 있다).
+     */
+    fun probeTitle(view: WebView?, url: String?, title: String?) {
+        if (view == null || url.isNullOrBlank()) return
+        if (!url.startsWith("http")) return
+        val token = pageToken.incrementAndGet()
+        val markers = if (isChallengeTitle(title)) {
+            "title=\"${title.orEmpty().take(40)}\" (kotlin, JS 프로브 생략)"
+        } else ""
+        report(view, url, markers, token, final = true)
+    }
+
     private fun runProbe(view: WebView, url: String, token: Int, final: Boolean) {
         // 탭이 닫혀 WebView가 destroy됐으면 throw — 지연 프로브라 정상적인 경우다.
         runCatching {
+            // 2.5초 지연 프로브가 도는 사이 챌린지 사이트로 넘어갔을 수 있다 —
+            // 지금 떠 있는 문서가 격리/챌린지면 JS 를 돌리지 않는다 (v1.3.87).
+            val nowHost = runCatching { Uri.parse(view.url ?: url).host }.getOrNull()
+            if (isQuarantinedHost(nowHost) || isChallengeActive(nowHost) ||
+                isChallengeTitle(view.title)
+            ) return
             view.evaluateJavascript(PROBE_JS) { raw -> report(view, url, decode(raw), token, final) }
         }
     }

@@ -231,9 +231,8 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 // document에 캡처 리스너를 걸고, 광고차단 CSS는 위젯을 가릴 수
                 // 있고, 쿠키배너 킬러는 버튼을 눌러댄다 — 안티봇 입장에선 전부
                 // 자동화 신호이고 챌린지엔 어차피 쓸모가 없다.
-                val onChallenge = ChallengeDetector.isChallengeActive(
-                    url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
-                )
+                val finishedHost = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
+                val onChallenge = ChallengeDetector.isChallengeActive(finishedHost)
                 if (!onChallenge) {
                     // 이 기기의 WebView에 실제로 뭐가 빠져 있는지 1회 진단 (v1.3.61).
                     view?.let { BrowserEnvPatch.probeEnvironment(it) }
@@ -249,7 +248,19 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 }
                 // "사람인지 확인" 위젯이 떠 있는지 살펴 디버그 로그에 기록
                 // (어떤 사이트가 어떤 캡차를 쓰는지 / 루프에 빠졌는지 추적용).
-                ChallengeDetector.probe(view, url)
+                // 수정 사다리 2/4 (v1.3.87): 격리 호스트·챌린지 창이 열린 호스트·
+                // 제목이 이미 챌린지인 페이지에서는 `evaluateJavascript` 프로브를
+                // 돌리지 않고 제목만으로 판정한다 — 챌린지 페이지 위에서 우리
+                // 스크립트가 실행되는 것 자체를 없앤다.
+                val title = view?.title
+                if (onChallenge ||
+                    ChallengeDetector.isQuarantinedHost(finishedHost) ||
+                    ChallengeDetector.isChallengeTitle(title)
+                ) {
+                    ChallengeDetector.probeTitle(view, url, title)
+                } else {
+                    ChallengeDetector.probe(view, url)
+                }
                 if (view != null && url != null) {
                     callbacks.onFinished(
                         url = url,

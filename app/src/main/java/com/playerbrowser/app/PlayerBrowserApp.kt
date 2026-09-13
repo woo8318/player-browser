@@ -17,10 +17,17 @@ import com.playerbrowser.app.network.PrivateDnsSwitch
 import com.playerbrowser.app.network.ProxyManager
 import com.playerbrowser.app.network.ResumeSwitch
 import com.playerbrowser.app.network.SniBypassSwitch
+import com.playerbrowser.app.network.VisitedLinkSwitch
+import com.playerbrowser.app.web.VisitedLinkMarker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 
 class PlayerBrowserApp : Application() {
@@ -74,8 +81,23 @@ class PlayerBrowserApp : Application() {
                 LinkNewTabSwitch.enabled = it.openLinksInNewTab
                 PrivateDnsSwitch.enabled = it.privateDnsEnabled
                 EnvSpoofSwitch.enabled = it.jsEnvSpoofEnabled
+                VisitedLinkSwitch.enabled = it.visitedLinkMarkEnabled
                 PrivateDnsSwitch.dohUrl = DohProvider.resolveUrl(it.dohProvider, it.dohCustomUrl)
             }
+        }
+        observeVisitedLinks()
+    }
+
+    // Room re-emits on every recorded visit, so the index is current by the
+    // time the next page finishes. With the switch off nothing is re-queried.
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun observeVisitedLinks() {
+        appScope.launch {
+            NetworkSettingsRepository.get(this@PlayerBrowserApp).settings
+                .map { it.visitedLinkMarkEnabled }
+                .distinctUntilChanged()
+                .flatMapLatest { on -> if (on) repository.visitedUrlsByRecency() else flowOf(emptyList()) }
+                .collectLatest { VisitedLinkMarker.rebuild(it) }
         }
     }
 }

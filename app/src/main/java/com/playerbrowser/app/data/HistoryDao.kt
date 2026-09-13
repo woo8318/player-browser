@@ -12,6 +12,13 @@ interface HistoryDao {
     @Query("SELECT url FROM history")
     fun observeVisitedUrls(): Flow<List<String>>
 
+    /**
+     * Newest first, so a per-site cap keeps the pages the user read lately.
+     * Re-emits on every visit — the LIMIT bounds each re-query.
+     */
+    @Query("SELECT url FROM history ORDER BY lastVisitedAt DESC LIMIT 20000")
+    fun observeUrlsByRecency(): Flow<List<String>>
+
     @Query("""
         INSERT INTO history(url, title, lastVisitedAt, visitCount)
         VALUES(:url, :title, :now, 1)

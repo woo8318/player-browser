@@ -394,6 +394,29 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()
+            SectionTitle("방문한 링크 표시 (도메인 변경 대응)")
+            Text(
+                text = "사이트 주소의 숫자가 바뀌어도(예: newtoki123 → newtoki124) 예전에 " +
+                    "열었던 글의 링크를 보라색으로 표시합니다(썸네일은 그대로). 방문 기록을 기준으로 " +
+                    "하므로 기록을 지우면 표시도 사라집니다. 주소에 숫자가 없는 사이트는 " +
+                    "브라우저 기본 방문 표시를 그대로 씁니다.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("방문한 링크 표시", modifier = Modifier.padding(end = 12.dp))
+                Spacer(modifier = Modifier.fillMaxWidth(0.6f))
+                Switch(
+                    checked = saved.visitedLinkMarkEnabled,
+                    onCheckedChange = { viewModel.setVisitedLinkMarkEnabled(it) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
             SectionTitle("디버그")
             Text(
                 text = "SNI 우회·네트워크 인터셉트 동작 로그를 인앱에서 확인합니다. " +

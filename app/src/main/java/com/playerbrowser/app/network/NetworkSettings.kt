@@ -13,6 +13,7 @@ data class NetworkSettings(
     val openLinksInNewTab: Boolean = false,
     val privateDnsEnabled: Boolean = false,
     val jsEnvSpoofEnabled: Boolean = true,
+    val visitedLinkMarkEnabled: Boolean = true,
     val dohProvider: String = DohProvider.CLOUDFLARE.key,
     val dohCustomUrl: String = ""
 ) {

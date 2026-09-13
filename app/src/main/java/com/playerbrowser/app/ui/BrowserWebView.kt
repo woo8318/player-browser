@@ -52,6 +52,7 @@ import com.playerbrowser.app.web.BrowserEnvPatch
 import com.playerbrowser.app.web.IframeScriptInjector
 import com.playerbrowser.app.web.PlayerBridge
 import com.playerbrowser.app.web.ResumeBridge
+import com.playerbrowser.app.web.VisitedLinkMarker
 import com.playerbrowser.app.web.WebAssetLoader
 
 class BrowserWebViewState(
@@ -235,6 +236,8 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                     if (CookieBannerSwitch.enabled) {
                         view?.evaluateJavascript(CookieBannerKiller.SCRIPT, null)
                     }
+                    // 도메인 숫자가 바뀌어도 읽었던 글 링크를 표시 (v1.3.83).
+                    view?.let { VisitedLinkMarker.apply(it, url) }
                 }
                 // "사람인지 확인" 위젯이 떠 있는지 살펴 디버그 로그에 기록
                 // (어떤 사이트가 어떤 캡차를 쓰는지 / 루프에 빠졌는지 추적용).

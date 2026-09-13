@@ -28,6 +28,7 @@ class NetworkSettingsRepository(private val context: Context) {
         val OPEN_LINKS_IN_NEW_TAB = booleanPreferencesKey("open_links_in_new_tab")
         val PRIVATE_DNS_ENABLED = booleanPreferencesKey("private_dns_enabled")
         val JS_ENV_SPOOF_ENABLED = booleanPreferencesKey("js_env_spoof_enabled")
+        val VISITED_LINK_MARK_ENABLED = booleanPreferencesKey("visited_link_mark_enabled")
         val DOH_PROVIDER = stringPreferencesKey("doh_provider")
         val DOH_CUSTOM_URL = stringPreferencesKey("doh_custom_url")
     }
@@ -55,6 +56,7 @@ class NetworkSettingsRepository(private val context: Context) {
             prefs[Keys.OPEN_LINKS_IN_NEW_TAB] = next.openLinksInNewTab
             prefs[Keys.PRIVATE_DNS_ENABLED] = next.privateDnsEnabled
             prefs[Keys.JS_ENV_SPOOF_ENABLED] = next.jsEnvSpoofEnabled
+            prefs[Keys.VISITED_LINK_MARK_ENABLED] = next.visitedLinkMarkEnabled
             prefs[Keys.DOH_PROVIDER] = next.dohProvider
             prefs[Keys.DOH_CUSTOM_URL] = next.dohCustomUrl
         }
@@ -76,6 +78,7 @@ class NetworkSettingsRepository(private val context: Context) {
         openLinksInNewTab = this[Keys.OPEN_LINKS_IN_NEW_TAB] ?: false,
         privateDnsEnabled = this[Keys.PRIVATE_DNS_ENABLED] ?: false,
         jsEnvSpoofEnabled = this[Keys.JS_ENV_SPOOF_ENABLED] ?: true,
+        visitedLinkMarkEnabled = this[Keys.VISITED_LINK_MARK_ENABLED] ?: true,
         dohProvider = this[Keys.DOH_PROVIDER] ?: DohProvider.CLOUDFLARE.key,
         dohCustomUrl = this[Keys.DOH_CUSTOM_URL].orEmpty()
     )

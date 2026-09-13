@@ -10,6 +10,7 @@ class BrowserRepository private constructor(
     fun bookmarks(): Flow<List<Bookmark>> = bookmarkDao.observeAll()
     fun history(): Flow<List<HistoryEntry>> = historyDao.observeAll()
     fun visitedUrls(): Flow<List<String>> = historyDao.observeVisitedUrls()
+    fun visitedUrlsByRecency(): Flow<List<String>> = historyDao.observeUrlsByRecency()
     fun isBookmarked(url: String): Flow<Boolean> = bookmarkDao.observeIsBookmarked(url)
 
     suspend fun addBookmark(url: String, title: String) =

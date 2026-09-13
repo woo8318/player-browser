@@ -94,6 +94,7 @@ import com.playerbrowser.app.network.UrlRecovery
 import com.playerbrowser.app.player.DownloadCenter
 import com.playerbrowser.app.player.VideoPlayerActivity
 import com.playerbrowser.app.web.UrlUtils
+import com.playerbrowser.app.web.VisitedLinkMarker
 
 @Composable
 fun BrowserScreen(
@@ -203,7 +204,19 @@ fun BrowserScreen(
     // Armed only by a swipe so tab close / switcher-select swap instantly
     // (animating a just-closed tab could reference a GC'd WebView).
     var switchDirection by remember { mutableStateOf(0) }
-    LaunchedEffect(activeTabId) { switchDirection = 0 }
+    LaunchedEffect(activeTabId) {
+        switchDirection = 0
+        // Coming back from a child/background tab fires no onPageFinished here,
+        // yet the page it opened is now in history — refresh the visited marks.
+        val webView = activeWebState.webView
+        VisitedLinkMarker.apply(webView, webView.url)
+    }
+    // Cold start: the restored tab can finish loading before the history index
+    // exists, so its page got nothing — mark it once the index lands.
+    val visitedReady by VisitedLinkMarker.ready.collectAsState()
+    LaunchedEffect(visitedReady) {
+        if (visitedReady) activeWebState.webView.let { VisitedLinkMarker.apply(it, it.url) }
+    }
 
     // Snapshot the tab the user is currently looking at into the gallery cache.
     // Only the active tab's WebView is attached & laid out, so this is the one

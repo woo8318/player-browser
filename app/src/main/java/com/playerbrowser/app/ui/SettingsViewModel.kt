@@ -44,6 +44,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                     openLinksInNewTab = current.openLinksInNewTab,
                     privateDnsEnabled = current.privateDnsEnabled,
                     jsEnvSpoofEnabled = current.jsEnvSpoofEnabled,
+                    visitedLinkMarkEnabled = current.visitedLinkMarkEnabled,
                     dohProvider = current.dohProvider,
                     dohCustomUrl = current.dohCustomUrl
                 )
@@ -104,6 +105,15 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             repository.update { it.copy(openLinksInNewTab = enabled) }
             _event.value = ProxyApplyEvent.Message(
                 if (enabled) "링크를 새 탭에서 열기 켜짐" else "링크를 새 탭에서 열기 꺼짐"
+            )
+        }
+    }
+
+    fun setVisitedLinkMarkEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(visitedLinkMarkEnabled = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "방문한 링크 표시 켜짐 (다음 페이지부터 적용)" else "방문한 링크 표시 꺼짐 (다음 페이지부터 적용)"
             )
         }
     }

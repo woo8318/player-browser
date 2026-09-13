@@ -10,6 +10,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 - **스와이프로 탭 전환 (Chrome/Opera 스타일)** — 상단 주소창 바 또는 하단 내비 바를 좌/우로 스와이프하면 인접 탭으로 전환 (스위처를 열 필요 없음). 좌 스와이프 → 다음 탭, 우 스와이프 → 이전 탭. 전환 시 콘텐츠가 가로로 슬라이드되는 애니메이션 + 짧은 햅틱. 단, 새 창(`window.open` / `target=_blank`)으로 열린 탭에서 우 스와이프하면 그 창을 띄운 부모 탭으로 복귀 (인접 탭 대신). 부모가 없으면 양 끝에서 멈춤(no-wrap)
 - **검색어/URL 자동 인식** — URL이 아니면 Google 검색으로 폴백
 - **즐겨찾기 / 방문 기록** — 방문한 URL은 즐겨찾기 목록에서 ✓ 표시
+- **도메인 숫자가 바뀌어도 방문한 링크 표시 (설정 토글, 기본 켜짐)** — 사이트 주소 숫자가 바뀌면(newtoki123 → newtoki124) 브라우저 기본 방문 표시(`:visited`)는 주소가 달라져 전부 사라집니다. 방문 기록을 도메인 숫자와 무관하게 비교해서 예전에 열었던 글의 링크를 보라색으로 표시합니다(썸네일은 그대로). 무한 스크롤로 나중에 추가되는 링크와 방금 누른 링크도 반영. 페이지에는 방문 기록 주소가 아니라 해시만 넘겨 사이트가 기록을 읽어갈 수 없게 했습니다. 주소에 숫자가 없는 사이트(`163.com`처럼 숫자만 있는 이름 포함)는 기본 방문 표시를 그대로 사용
 - **새 창 링크 → 부모 탭 복귀 (Opera 스타일)** — `target="_blank"` / `window.open()`이 띄운 자식 탭에서 뒤로가기 누르면 자식 탭을 닫고 원래 부모 탭으로 복귀
 - **링크를 항상 새 탭에서 열기 (설정 토글, 기본 꺼짐)** — 켜면 새 창/팝업 링크가 아니어도 페이지 안의 일반 링크 탭이 현재 탭을 바꾸지 않고 새 탭(현재 탭의 자식)에서 열림. 뒤로 가기를 하면 원래 탭으로 복귀. 주소창 입력·리다이렉트에는 영향 없음
 - **링크 롱프레스 메뉴** — 페이지의 링크를 길게 누르면 "새 탭에서 열기 / 백그라운드 탭으로 열기 / 링크 주소 복사" 메뉴가 뜸. 전역 토글을 켜고 끌 필요 없이 원하는 링크만 새 탭에서 열 수 있음. "백그라운드 탭"은 현재 페이지에 머문 채 새 탭을 뒤에 쌓음 (탭이 열릴 때 페이지 제목을 미리 가져와 탭 목록에서 뭐가 열렸는지 바로 구분 가능)
@@ -121,6 +122,7 @@ gradle wrapper --gradle-version 8.7 --distribution-type bin
 app/src/main/
   AndroidManifest.xml
   assets/video_gestures.js              # WebView에 주입되는 제스처 JS
+  assets/visited_links.js               # 도메인 숫자와 무관한 방문 링크 표시 JS
   java/com/playerbrowser/app/
     MainActivity.kt                     # 단일 액티비티 + Compose
     PlayerBrowserApp.kt                 # Application — CrashRecorder / 프록시 / SNI / AdBlock 초기화
@@ -140,6 +142,7 @@ app/src/main/
       CookieFlusher.kt                  # CookieManager.flush() 디바운서 (통과 쿠키 영속화)
       ResumeSwitch.kt                   # 이어보기 토글
       LinkNewTabSwitch.kt               # 링크 항상 새 탭 열기 토글 (shouldOverrideUrlLoading hot path)
+      VisitedLinkSwitch.kt              # 방문한 링크 표시 토글
       SniBypassClient.kt / SniBypassSwitch.kt / FragmentingSocketFactory.kt / DohClient.kt
       ProxyManager.kt / NetworkSettings*.kt
       CrashRecorder.kt                  # 충돌 영속화
@@ -159,6 +162,8 @@ app/src/main/
     web/                                # WebView 유틸
       UrlUtils.kt / WebAssetLoader.kt / IframeScriptInjector.kt
       ResumeBridge.kt                   # window.PBResume — 이어보기 JS↔Kotlin 브리지
+      VisitedLinkMarker.kt              # 방문 기록을 사이트별 페이지 키 해시로 묶어 visited_links.js 주입
+      VisitedLinkKeys.kt                # 사이트 키(도메인 숫자 → #) / 페이지 키 / 해시 — visited_links.js와 1:1 대응
 .github/workflows/android.yml           # APK 빌드 + 릴리스 + 오래된 릴리스 정리
 ```
 

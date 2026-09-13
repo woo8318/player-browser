@@ -17,7 +17,6 @@ import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
-import com.playerbrowser.app.BuildConfig
 import com.playerbrowser.app.network.ChallengeCookies
 import com.playerbrowser.app.network.ChallengeDetector
 import com.playerbrowser.app.network.DebugLog
@@ -30,8 +29,8 @@ import com.playerbrowser.app.network.UserAgentSpoof
  * v1.3.72 의 "순정 WebView 도 루프한다" 는 결론은 반쪽이었다 — 그 A/B 는
  * UA·헤더·JS 주입만 껐고, 앱의 `WebViewClient`(요청 가로채기 훅), 챌린지
  * 페이지 위에서 `evaluateJavascript` 로 도는 DOM 진단, 네이티브 브리지,
- * 그리고 배포 APK 가 debug 빌드라 항상 켜져 있는 WebView 원격 디버깅은
- * 그대로였다. 이 액티비티는 그 넷이 **전부 없는** WebView 로 같은 주소를
+ * 그리고 배포 APK 가 debug 빌드라 항상 켜져 있던 WebView 원격 디버깅(v1.3.86
+ * 에서 앱 전체에서 제거)은 그대로였다. 이 액티비티는 그 넷이 **전부 없는** WebView 로 같은 주소를
  * 열어 "앱 코드가 원인인가, WebView 엔진이 원인인가" 를 한 번에 가른다.
  *
  * 일부러 없는 것: `shouldInterceptRequest`, document-start 스크립트,
@@ -60,7 +59,7 @@ class BareWebViewActivity : AppCompatActivity() {
             finish()
             return
         }
-        // 진단 창이 떠 있는 동안만 원격 디버깅을 끈다 (onDestroy 에서 복원).
+        // v1.3.86 부터 앱 전체가 원격 디버깅을 켜지 않는다 — 여기서도 확인 사살.
         runCatching { WebView.setWebContentsDebuggingEnabled(false) }
 
         status = TextView(this).apply {
@@ -169,7 +168,6 @@ class BareWebViewActivity : AppCompatActivity() {
             runCatching { (webView.parent as? ViewGroup)?.removeView(webView) }
             runCatching { webView.destroy() }
         }
-        if (BuildConfig.DEBUG) runCatching { WebView.setWebContentsDebuggingEnabled(true) }
         super.onDestroy()
     }
 

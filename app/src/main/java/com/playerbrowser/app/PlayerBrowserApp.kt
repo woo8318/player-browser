@@ -45,11 +45,11 @@ class PlayerBrowserApp : Application() {
         // WebView 는 앱이 뜨자마자 만들어지므로 DataStore 의 비동기 미러를
         // 기다릴 수 없다 — 동기 미러에서 먼저 확정한다.
         EnvSpoofSwitch.attach(this)
-        // Debug builds only: expose WebView contents to chrome://inspect so we
-        // can diagnose page issues (e.g. images stalling) over USB / WiFi adb.
-        if (BuildConfig.DEBUG) {
-            runCatching { WebView.setWebContentsDebuggingEnabled(true) }
-        }
+        // WebView 원격 디버깅(chrome://inspect)은 켜지 않는다 (v1.3.86).
+        // CI 가 debug APK 를 그대로 릴리스하므로 `BuildConfig.DEBUG` 가드는
+        // 사용자 기기에서도 참이었고, 원격 디버깅 활성은 자동화 브라우저의
+        // 고전적 판별 지표다 — Cloudflare 챌린지 루프 용의자 1순위.
+        runCatching { WebView.setWebContentsDebuggingEnabled(false) }
         applyStoredProxy()
         observeNetworkSwitches()
         initCast()

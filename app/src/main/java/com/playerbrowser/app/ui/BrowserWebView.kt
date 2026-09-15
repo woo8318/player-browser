@@ -19,6 +19,7 @@ import android.view.WindowManager
 import android.widget.FrameLayout
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.math.roundToInt
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
@@ -704,6 +705,9 @@ private class FullscreenAwareChromeClient(
 
         if (activity != null) {
             val decor = activity.window.decorView as ViewGroup
+            // The CustomView may be reused by the next fullscreen — never let it
+            // carry this session's zoom (v1.3.96).
+            (container as? GestureCapturingFrame)?.resetZoom()
             if (container != null) decor.removeView(container)
             WindowCompat.setDecorFitsSystemWindows(activity.window, true)
             WindowInsetsControllerCompat(activity.window, decor)
@@ -786,6 +790,25 @@ private class GestureCapturingFrame(
     private var vbAdjust: VbMode? = null
     private var vbStartValue: Float = 0f
 
+    // Pinch zoom (v1.3.96). Opt-in on top of the uncropped fit: pinch to zoom,
+    // one finger pans while zoomed, double-tap or leaving fullscreen resets.
+    // The target is the CustomView at index 0 — never the HUD, which is the
+    // only child before onShowCustomView inserts it.
+    private val zoom = FullscreenZoom(ZOOM_SLOP_DP * resources.displayMetrics.density) {
+        getChildAt(0)?.takeIf { it !== hud }
+    }
+    private val doubleTapTimeoutMs = ViewConfiguration.getDoubleTapTimeout().toLong()
+    private var zoomedAtDown = false
+    private var zoomGesture = false
+    private var panning = false
+    private var panX = 0f
+    private var panY = 0f
+    private var swallowGesture = false
+    private var lastTapUpT = 0L
+    private var lastTapX = 0f
+    private var lastTapY = 0f
+    private var shownZoomPct = -1
+
     // Native feedback for every gesture this frame owns. DOM overlays are
     // invisible during native fullscreen (only the fullscreen element's subtree
     // is painted, and the CustomView sits above the WebView anyway), so the
@@ -826,6 +849,16 @@ private class GestureCapturingFrame(
         if (fromEdge && ev.actionMasked != MotionEvent.ACTION_DOWN) {
             return super.dispatchTouchEvent(ev)
         }
+        // The second tap of a reset double-tap: the site never saw its DOWN, so
+        // none of the rest goes to it either.
+        if (swallowGesture && ev.actionMasked != MotionEvent.ACTION_DOWN) {
+            if (ev.actionMasked == MotionEvent.ACTION_UP ||
+                ev.actionMasked == MotionEvent.ACTION_CANCEL
+            ) {
+                swallowGesture = false
+            }
+            return true
+        }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
                 fromEdge = startsAtSystemEdge(ev.x, ev.y)
@@ -837,10 +870,30 @@ private class GestureCapturingFrame(
                 siteCancelled = false
                 vbAdjust = null
                 seekFired = false
+                swallowGesture = false
+                zoomGesture = false
+                panning = false
+                zoomedAtDown = zoom.isZoomed
+                zoom.beginGesture()
+                // An edge gesture never reaches our UP, so it must not leave the
+                // tap before it armed for a reset double-tap.
+                if (fromEdge) lastTapUpT = 0L
+                if (!fromEdge && isResetDoubleTap(ev)) {
+                    lastTapUpT = 0L
+                    swallowGesture = true
+                    zoom.reset()
+                    shownZoomPct = -1
+                    hud.showMessage("원래 크기")
+                    return true
+                }
                 return super.dispatchTouchEvent(ev)
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
                 if (ev.pointerCount > maxPointers) maxPointers = ev.pointerCount
+                // Take the new finger into the zoom's baseline (spread and focal
+                // point), so adding it doesn't read as a sudden pinch.
+                zoom.pointersChanged()
+                if (!seekFired) zoom.onMultiTouchMove(ev, immediate = false)
                 if (maxPointers >= 2 && !siteCancelled) {
                     // Two fingers → reserve for a switchVideo swipe; stop the
                     // site tracking the first finger so it doesn't also act.
@@ -853,6 +906,12 @@ private class GestureCapturingFrame(
                 }
                 return if (siteCancelled) true else super.dispatchTouchEvent(ev)
             }
+            MotionEvent.ACTION_POINTER_UP -> {
+                // The lifted finger still shows in this event; the next MOVE
+                // re-takes the baseline from the fingers that remain.
+                zoom.pointersChanged()
+                return if (siteCancelled) true else super.dispatchTouchEvent(ev)
+            }
             MotionEvent.ACTION_MOVE -> {
                 val dx = ev.x - startX
                 val dy = ev.y - startY
@@ -862,10 +921,43 @@ private class GestureCapturingFrame(
                     moved = true
                 }
                 if (maxPointers >= 2) {
-                    // 2-finger swipe → switchVideo on UP; consume (site cancelled).
+                    // A changing finger spread is a pinch (v1.3.96); a steady
+                    // spread moving sideways stays the 2-finger switchVideo swipe,
+                    // decided on UP. Already zoomed → two fingers always mean
+                    // zoom/pan. Consumed either way (site cancelled).
+                    if (!seekFired && zoom.onMultiTouchMove(ev, immediate = zoomedAtDown)) {
+                        zoomGesture = true
+                        showZoomLevel()
+                    }
                     return true
                 }
                 if (seekFired) return true
+                // Zoomed → one finger pans the picture instead of seeking or
+                // adjusting brightness/volume. A tap still reaches the site, and
+                // so does a drag from the bottom control band (its scrubber).
+                if (zoomedAtDown) {
+                    if (startY >= height * SEEK_BAND_MAX_Y_RATIO) {
+                        return super.dispatchTouchEvent(ev)
+                    }
+                    if (!panning && moved) {
+                        panning = true
+                        // From the touch-down point, so the picture tracks the
+                        // finger rather than lagging by the slop distance.
+                        panX = startX
+                        panY = startY
+                        if (!siteCancelled) {
+                            cancelChildren(ev)
+                            siteCancelled = true
+                        }
+                    }
+                    if (panning) {
+                        zoom.panBy(ev.x - panX, ev.y - panY)
+                        panX = ev.x
+                        panY = ev.y
+                        return true
+                    }
+                    return super.dispatchTouchEvent(ev)
+                }
                 // 1-finger horizontal swipe → one discrete ±10s step per gesture
                 // (v1.3.90). Discrete rather than proportional on purpose: when
                 // the player sits in a cross-origin iframe we can't read its
@@ -933,14 +1025,23 @@ private class GestureCapturingFrame(
                 val dx = ev.x - startX
                 val dy = ev.y - startY
                 val dt = System.currentTimeMillis() - startT
+                // Only a clean single tap can start a reset double-tap.
+                lastTapUpT = if (maxPointers == 1 && !moved) ev.eventTime else 0L
+                lastTapX = ev.x
+                lastTapY = ev.y
                 if (vbAdjust != null) {
                     vbAdjust = null
                     hud.hide()
                     return true
                 }
                 if (seekFired) return true
+                if (zoomGesture) {
+                    finishZoomGesture()
+                    return true
+                }
+                if (panning) return true
                 if (maxPointers >= 2) {
-                    if (moved && dt <= maxSwipeMs &&
+                    if (!zoomedAtDown && moved && dt <= maxSwipeMs &&
                         abs(dx) >= swipeThresholdPx && abs(dx) > abs(dy)
                     ) {
                         fireSwitch(if (dx > 0) -1 else 1)
@@ -952,14 +1053,56 @@ private class GestureCapturingFrame(
                 return super.dispatchTouchEvent(ev)
             }
             MotionEvent.ACTION_CANCEL -> {
+                lastTapUpT = 0L
                 if (vbAdjust != null) {
                     vbAdjust = null
                     hud.hide()
                 }
+                if (zoomGesture) finishZoomGesture()
+                panning = false
                 return super.dispatchTouchEvent(ev)
             }
         }
         return super.dispatchTouchEvent(ev)
+    }
+
+    /** Back to the uncropped fit; called when fullscreen ends. */
+    fun resetZoom() {
+        zoom.reset()
+        shownZoomPct = -1
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        // Rotation changes the picture's size — keep the pan inside the new bounds.
+        if (changed) zoom.reclamp()
+    }
+
+    // Only while zoomed: unzoomed, both taps go to the site untouched (its own
+    // double-tap seek keeps working). Tighter than the platform double-tap slop
+    // so two quick taps on different site buttons don't count.
+    private fun isResetDoubleTap(ev: MotionEvent): Boolean {
+        val slop = touchSlopPx * 2f
+        return zoom.isZoomed && lastTapUpT != 0L &&
+            ev.eventTime - lastTapUpT <= doubleTapTimeoutMs &&
+            abs(ev.x - lastTapX) < slop && abs(ev.y - lastTapY) < slop
+    }
+
+    private fun showZoomLevel() {
+        val pct = (zoom.scale * 100f).roundToInt()
+        if (pct == shownZoomPct) return
+        shownZoomPct = pct
+        hud.showMessage("확대 $pct%")
+    }
+
+    private fun finishZoomGesture() {
+        zoomGesture = false
+        shownZoomPct = -1
+        if (zoom.settle()) {
+            hud.showMessage("원래 크기")
+        } else {
+            showZoomLevel()
+        }
     }
 
     // Fixed floors plus the device's own gesture regions where it reports them
@@ -1054,6 +1197,9 @@ private class GestureCapturingFrame(
         // Touches starting this close to an edge are left to the system.
         const val EDGE_TOP_BOTTOM_DP = 48f
         const val EDGE_SIDE_DP = 24f
+        // Finger-spread change that turns two fingers into a pinch rather than
+        // the video-switch swipe.
+        const val ZOOM_SLOP_DP = 24f
     }
 }
 

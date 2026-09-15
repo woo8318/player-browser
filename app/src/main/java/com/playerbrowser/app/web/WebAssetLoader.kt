@@ -6,6 +6,7 @@ import java.io.BufferedReader
 object WebAssetLoader {
     @Volatile private var cachedGestureJs: String? = null
     @Volatile private var cachedVisitedJs: String? = null
+    @Volatile private var cachedImageOrderJs: String? = null
 
     fun gestureScript(context: Context): String {
         cachedGestureJs?.let { return it }
@@ -19,6 +20,14 @@ object WebAssetLoader {
         cachedVisitedJs?.let { return it }
         return synchronized(this) {
             cachedVisitedJs ?: read(context, "visited_links.js").also { cachedVisitedJs = it }
+        }
+    }
+
+    /** `image_order.js` — a bare function expression, see [ImageOrderFixer]. */
+    fun imageOrderScript(context: Context): String {
+        cachedImageOrderJs?.let { return it }
+        return synchronized(this) {
+            cachedImageOrderJs ?: read(context, "image_order.js").also { cachedImageOrderJs = it }
         }
     }
 

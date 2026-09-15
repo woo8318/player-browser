@@ -96,6 +96,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 - **첫 로드 실패 개선 (v1.3.55)** — 차단 사이트가 "한 번에 안 열리고 새로고침하면 열리던" 문제를 두 갈래로 손봄. (1) DoH 조회 결과를 TTL 캐시 + 동시 조회 합류 + 리졸버 커넥션 공유 — 예전엔 커넥션을 새로 열 때마다 DNS 질의를 2번(A/AAAA) 새로 날려, 웹툰 페이지처럼 이미지가 한 CDN에 몰리면 DNS 요청 수십 개가 동시에 터져 로드가 밀렸음. (2) 메인 프레임 요청이 실패하면 즉시 한 번 재시도 — ClientHello 단편화가 DPI를 뚫는지는 확률적이라, 한 번 실패로 포기하면 WebView가 단편화 없는 경로로 떨어져 그대로 차단당했음.
 - **URL 숫자 자동 복구** — 접속 자체가 안 되는 페이지의 URL에 숫자가 있으면(예: `newtoki123.com`), 다음 번호들(`+1~+10`, `-1~-3`)을 백그라운드로 확인해 살아있는 가장 가까운 주소로 자동 이동. 도메인 끝 숫자가 주기적으로 바뀌는 사이트 대응. 도메인에 숫자가 없으면 경로/쿼리의 마지막 숫자로 폴백.
 - **URL 숫자 수동 복구** — 페이지가 정상 로드됐지만(예: 404 안내 페이지가 200으로 뜨거나 내용이 바뀐 경우) 새 주소를 직접 찾고 싶을 때, 상단 ⋮ 메뉴 → **주소 복구 (URL 찾기)**로 현재 주소 기준 숫자 후보를 즉석에서 확인해 살아있는 주소로 이동. 자동 복구가 발동하지 않는 상황을 보완.
+- **웹툰 이미지 번호순 정렬 (v1.3.99)** — 회차 이미지가 뒤죽박죽 나오는 사이트(이미지 목록이 업로드 완료 순서로 들어 있는 경우)에서 상단 ⋮ 메뉴 → **이미지 번호순 정렬**을 누르면 파일명의 숫자(타임스탬프)로 이미지를 읽는 순서대로 다시 배치한다. 한 번 켜면 그 사이트는 기억되어 다음 회차부터 자동 정렬되고, 도메인 숫자가 바뀌어도(`blacktoon422` → `423`) 계속 적용된다. 같은 메뉴의 **이미지 원래 순서로**로 되돌리고 자동 정렬을 끌 수 있다. 파일명이 10자리 이상 숫자인 이미지만 대상이고, 보안 확인(캡차) 화면에서는 동작하지 않는다.
 - **캡차("사람인지 확인") 흐름 보호** — Cloudflare Turnstile / hCaptcha / reCAPTCHA / DataDome 등 안티봇 챌린지 요청은 iframe 스크립트 주입도 SNI 우회 가로채기도 하지 않고 WebView 네이티브 로더에 그대로 맡긴다. 예전엔 챌린지 iframe을 앱이 다시 받아 CSP를 벗기고 스크립트를 끼워 넣었고, SNI 우회 시엔 챌린지 GET만 가로채고 검증 POST는 네이티브로 나가 커넥션이 갈라지는 바람에 체크를 해도 확인 화면만 무한 반복됐음. 통과 쿠키(`cf_clearance` 등)는 `CookieManager.flush()`로 디스크에 확정해 앱을 껐다 켜도 유지. 캡차가 감지되면 디버그 로그에 종류·주소·설정 상태가 남고, 같은 주소에서 3회 이상 반복되면 "루프 의심"으로 기록.
 - **HTTP/HTTPS 프록시** — 인증 포함 외부 프록시 경유 (WebView 트래픽)
 - **크래시 로깅** — `Thread.setDefaultUncaughtExceptionHandler` + `WebViewClient.onRenderProcessGone`으로 메인 프로세스/WebView 렌더러 충돌을 `filesDir/crashes/`에 영구 저장. 디버그 로그 화면에서 조회/복사.
@@ -140,6 +141,7 @@ app/src/main/
   AndroidManifest.xml
   assets/video_gestures.js              # WebView에 주입되는 제스처 JS
   assets/visited_links.js               # 도메인 숫자와 무관한 방문 링크 표시 JS
+  assets/image_order.js                 # 웹툰 이미지 파일명 번호순 정렬/되돌리기 JS
   java/com/playerbrowser/app/
     MainActivity.kt                     # 단일 액티비티 + Compose
     PlayerBrowserApp.kt                 # Application — CrashRecorder / 프록시 / SNI / AdBlock 초기화
@@ -181,6 +183,7 @@ app/src/main/
       ResumeBridge.kt                   # window.PBResume — 이어보기 JS↔Kotlin 브리지
       VisitedLinkMarker.kt              # 방문 기록을 사이트별 페이지 키 해시로 묶어 visited_links.js 주입
       VisitedLinkKeys.kt                # 사이트 키(도메인 숫자 → #) / 페이지 키 / 해시 — visited_links.js와 1:1 대응
+      ImageOrderFixer.kt                # 웹툰 이미지 번호순 정렬 — ⋮ 메뉴 정렬/되돌리기 + 사이트별 기억 + 페이지 로드 시 자동 적용
 .github/workflows/android.yml           # APK 빌드 + 릴리스 + 오래된 릴리스 정리
 ```
 

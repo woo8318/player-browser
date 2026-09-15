@@ -46,6 +46,7 @@ import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FileDownload
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.FolderOpen
+import androidx.compose.material.icons.filled.FormatListNumbered
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material.icons.filled.Science
@@ -104,6 +105,7 @@ import com.playerbrowser.app.network.CookieFlusher
 import com.playerbrowser.app.network.UrlRecovery
 import com.playerbrowser.app.player.DownloadCenter
 import com.playerbrowser.app.player.VideoPlayerActivity
+import com.playerbrowser.app.web.ImageOrderFixer
 import com.playerbrowser.app.web.InlinePlayerCommands
 import com.playerbrowser.app.web.InlineRect
 import com.playerbrowser.app.web.UrlUtils
@@ -727,6 +729,42 @@ fun BrowserScreen(
                                         }
                                     } else {
                                         Toast.makeText(context, "복구할 주소가 없어요", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            )
+                            val imageOrderOn = ImageOrderFixer.isRemembered(context, state.currentUrl)
+                            DropdownMenuItem(
+                                text = {
+                                    Text(if (imageOrderOn) "이미지 원래 순서로 (자동 정렬 끄기)" else "이미지 번호순 정렬")
+                                },
+                                leadingIcon = { Icon(Icons.Filled.FormatListNumbered, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    val url = state.currentUrl
+                                    val wv = activeWebState.webView
+                                    val host = runCatching { Uri.parse(url).host }.getOrNull()
+                                    // 콜백은 이 composition 보다 오래 살 수 있다.
+                                    val app = context.applicationContext
+                                    when {
+                                        !url.startsWith("http", ignoreCase = true) || host.isNullOrBlank() ->
+                                            Toast.makeText(context, "정렬할 페이지가 없어요", Toast.LENGTH_SHORT).show()
+                                        // 챌린지 페이지 위에서는 JS 금지 (v1.3.87) — Kotlin 신호로만 판정.
+                                        ChallengeDetector.isChallengeActive(host) ||
+                                            ChallengeDetector.isChallengeTitle(wv.title) ->
+                                            Toast.makeText(context, "보안 확인 화면에서는 정렬할 수 없어요", Toast.LENGTH_SHORT).show()
+                                        imageOrderOn -> ImageOrderFixer.restore(wv) {
+                                            ImageOrderFixer.forget(app, url)
+                                            Toast.makeText(app, "원래 순서로 되돌렸어요 — 자동 정렬 꺼짐", Toast.LENGTH_SHORT).show()
+                                        }
+                                        else -> ImageOrderFixer.sort(wv) { r ->
+                                            val msg = when {
+                                                r == null || r.found == 0 -> "번호 붙은 이미지를 찾지 못했어요"
+                                                r.moved > 0 -> "${r.found}장 중 ${r.moved}장 순서를 바로잡았어요 — 이 사이트는 다음부터 자동 정렬"
+                                                else -> "이미 번호순이에요 — 다음부터 자동 정렬"
+                                            }
+                                            if (r != null && r.found > 0) ImageOrderFixer.remember(app, url)
+                                            Toast.makeText(app, msg, Toast.LENGTH_LONG).show()
+                                        }
                                     }
                                 }
                             )

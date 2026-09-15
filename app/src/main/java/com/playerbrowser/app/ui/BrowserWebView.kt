@@ -18,6 +18,7 @@ import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import kotlin.math.abs
+import kotlin.math.max
 import android.webkit.CookieManager
 import android.webkit.GeolocationPermissions
 import android.webkit.PermissionRequest
@@ -751,7 +752,10 @@ private class GestureCapturingFrame(
     private val vbThresholdPx = 24f * resources.displayMetrics.density
     private val touchSlopPx = ViewConfiguration.get(context).scaledTouchSlop.toFloat()
     private val maxSwipeMs = 800L
+    private val edgeTopBottomPx = EDGE_TOP_BOTTOM_DP * resources.displayMetrics.density
+    private val edgeSidePx = EDGE_SIDE_DP * resources.displayMetrics.density
 
+    private var fromEdge = false
     private var startX = 0f
     private var startY = 0f
     private var startT = 0L
@@ -796,8 +800,16 @@ private class GestureCapturingFrame(
     // in-document gesture script stays out via fsActive=true. The full app
     // gesture set lives in the native Media3 player instead.
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        // A gesture that began on a system edge belongs to the system (pulling
+        // the notification shade, back, home) — the app layers nothing on it
+        // (v1.3.92). In immersive fullscreen that swipe is delivered to us too,
+        // so it used to engage brightness/volume on its way down.
+        if (fromEdge && ev.actionMasked != MotionEvent.ACTION_DOWN) {
+            return super.dispatchTouchEvent(ev)
+        }
         when (ev.actionMasked) {
             MotionEvent.ACTION_DOWN -> {
+                fromEdge = startsAtSystemEdge(ev.x, ev.y)
                 startX = ev.x
                 startY = ev.y
                 startT = System.currentTimeMillis()
@@ -931,6 +943,24 @@ private class GestureCapturingFrame(
         return super.dispatchTouchEvent(ev)
     }
 
+    // Fixed floors plus the device's own gesture regions where it reports them
+    // (API 29+; the side insets follow the user's back-gesture sensitivity).
+    private fun startsAtSystemEdge(x: Float, y: Float): Boolean {
+        var top = edgeTopBottomPx
+        var bottom = edgeTopBottomPx
+        var left = edgeSidePx
+        var right = edgeSidePx
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            rootWindowInsets?.systemGestureInsets?.let { g ->
+                top = max(top, g.top.toFloat())
+                bottom = max(bottom, g.bottom.toFloat())
+                left = max(left, g.left.toFloat())
+                right = max(right, g.right.toFloat())
+            }
+        }
+        return y < top || y > height - bottom || x < left || x > width - right
+    }
+
     private fun cancelChildren(ev: MotionEvent) {
         val cancel = MotionEvent.obtain(
             ev.downTime,
@@ -1002,6 +1032,9 @@ private class GestureCapturingFrame(
         // Swipe-seek engages only above this fraction of the height; below it
         // is left to the site's control bar / scrubber.
         const val SEEK_BAND_MAX_Y_RATIO = 0.80f
+        // Touches starting this close to an edge are left to the system.
+        const val EDGE_TOP_BOTTOM_DP = 48f
+        const val EDGE_SIDE_DP = 24f
     }
 }
 

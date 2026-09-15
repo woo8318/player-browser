@@ -70,6 +70,32 @@ class InlinePlayerController {
      */
     var releaseHandler: ((InlineSession) -> Unit)? = null
 
+    /**
+     * Called after the controller ended a session that the user started from
+     * the long-press menu, with why ("hidden" = box collapsed, "gone" = video
+     * left the DOM). A manual pick that silently vanishes looks exactly like
+     * "it did nothing", so BrowserScreen toasts the reason (v1.3.95).
+     */
+    var onAutoEnded: ((InlineSession, String) -> Unit)? = null
+
+    /**
+     * Manual play reports that reached the controller, counted before any
+     * gate. BrowserScreen compares it across the long-press "pressed" command
+     * to tell "the page answered" from "the frame never replied" (v1.3.95).
+     */
+    var manualReports = 0
+        private set
+
+    private var sessionManual = false
+
+    /**
+     * `manual=true` comes from page JS, and any page can call `PBInline.onPlay`
+     * with it — so it only counts inside the short window the long-press menu
+     * opens with [armManual]. Outside it the report is treated as automatic
+     * (setting gate applies) and cannot fire the manual toasts.
+     */
+    private var manualArmedUntil = 0L
+
     private val main = Handler(Looper.getMainLooper())
     private var pendingRect: InlineRect? = null
     private var lastRectAppliedAt = 0L
@@ -83,8 +109,10 @@ class InlinePlayerController {
         domSrc: String,
         positionSec: Double,
         rect: InlineRect,
-        manual: Boolean
+        manualReport: Boolean
     ) {
+        val manual = manualReport && takeManualArm()
+        if (manual) manualReports++
         // The setting is the gate for automatic take-over; a manual pick
         // from the long-press menu always goes through.
         if (!manual && !InlinePlayerSwitch.enabled) return
@@ -93,6 +121,9 @@ class InlinePlayerController {
         // handled by JS (kept muted+paused); nothing to resolve again.
         if (s != null && s.tabId == tabId && s.videoId == videoId && !manual) return
         val prev = request
+        // A pending manual pick is answered on the next composition; an
+        // autoplay report landing in between must not replace it.
+        if (!manual && prev?.manual == true) return
         // The page re-reports the same video on every play() (site retries,
         // autoplay loops): keep the original deadline so a stale automatic
         // request cannot renew itself forever.
@@ -147,22 +178,49 @@ class InlinePlayerController {
 
     private fun endUnusable() {
         unusableArmed = false
+        val manual = sessionManual
         val s = end() ?: return
         releaseHandler?.invoke(s)
+        if (manual) onAutoEnded?.invoke(s, "hidden")
     }
 
     /** The taken video left the DOM: drop the overlay (JS already stopped tracking). */
     fun reportGone(tabId: String, videoId: String) {
         val s = session ?: return
-        if (s.tabId == tabId && s.videoId == videoId) end()
+        if (s.tabId != tabId || s.videoId != videoId) return
+        val manual = sessionManual
+        end()
+        if (manual) onAutoEnded?.invoke(s, "gone")
+    }
+
+    /** A manual report from a tab that is not in front: counted, nothing else. */
+    fun noteManualIgnored() { manualReports++ }
+
+    /** The long-press menu is asking the page for a manual report now. */
+    fun armManual() { manualArmedUntil = SystemClock.uptimeMillis() + MANUAL_ARM_MS }
+
+    /** True (once) if a manual report is expected; consumes the window. */
+    fun takeManualArm(): Boolean {
+        val armed = SystemClock.uptimeMillis() < manualArmedUntil
+        if (armed) manualArmedUntil = 0L
+        return armed
+    }
+
+    /** The page answered with a failure: no manual report is coming. */
+    fun disarmManual() { manualArmedUntil = 0L }
+
+    /** Main-looper delay that does not depend on a (possibly detached) View. */
+    fun postDelayed(delayMs: Long, action: () -> Unit) {
+        main.postDelayed(Runnable { action() }, delayMs)
     }
 
     fun consumeRequest() { request = null }
 
-    fun start(session: InlineSession, rect: InlineRect) {
+    fun start(session: InlineSession, rect: InlineRect, manual: Boolean = false) {
         clearTimers()
         this.session = session
         this.rect = rect
+        sessionManual = manual
         lastRectAppliedAt = SystemClock.uptimeMillis()
         request = null
     }
@@ -173,6 +231,7 @@ class InlinePlayerController {
         val s = session
         session = null
         rect = null
+        sessionManual = false
         return s
     }
 
@@ -197,5 +256,6 @@ class InlinePlayerController {
         const val RECT_THRESHOLD_PX = 2
         const val RECT_COALESCE_MS = 16L
         const val UNUSABLE_GRACE_MS = 400L
+        const val MANUAL_ARM_MS = 3_000L
     }
 }

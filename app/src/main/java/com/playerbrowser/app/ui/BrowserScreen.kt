@@ -194,6 +194,18 @@ fun BrowserScreen(
             ) {
                 if (ownerId == viewModel.activeTabId.value) {
                     inlinePlayer.reportPlay(ownerId, id, domSrc, positionSec, rect, manual)
+                } else if (manual && inlinePlayer.takeManualArm()) {
+                    // A manual pick must never vanish without a word (v1.3.95).
+                    // Counted so the menu's no-reply check does not toast too.
+                    // Only while the menu's arm window is open — otherwise any
+                    // background page could toast by claiming manual=true.
+                    inlinePlayer.noteManualIgnored()
+                    DebugLog.d("InlinePlayer", "수동 교체 보고가 비활성 탭에서 옴 — 무시")
+                    Toast.makeText(
+                        context.applicationContext,
+                        "다른 탭의 영상이라 교체하지 않았어요 [tab]",
+                        Toast.LENGTH_SHORT
+                    ).show()
                 }
             }
             override fun onInlineVideoRect(id: String, rect: InlineRect) =
@@ -386,7 +398,39 @@ fun BrowserScreen(
                 onInline = {
                     // Ask the page to re-report the long-pressed video as a
                     // manual take; the inline effect below does the rest.
-                    activeWebState.webView.evaluateJavascript(InlinePlayerCommands.pressed(), null)
+                    // Every way this can fail used to be silent, and the user
+                    // cannot send logs — so each branch toasts its own reason
+                    // and the toast text is the bug report (v1.3.95).
+                    val webView = activeWebState.webView
+                    val before = inlinePlayer.manualReports
+                    inlinePlayer.armManual()
+                    webView.evaluateJavascript(InlinePlayerCommands.pressed()) { raw ->
+                        val status = raw?.trim()?.trim('"')
+                            ?.takeIf { it.isNotEmpty() && it != "null" } ?: "nomodule"
+                        DebugLog.d("InlinePlayer", "수동 교체 요청 → $status")
+                        val failure = manualPressedFailure(status)
+                        if (failure != null) {
+                            inlinePlayer.disarmManual()
+                            Toast.makeText(context, failure, Toast.LENGTH_LONG).show()
+                        } else {
+                            // 'sent' / 'broadcast': a report should reach
+                            // onInlineVideoPlay within a few frames. If none
+                            // arrived, the relay between frames broke. Not
+                            // View.postDelayed: a tab switch detaches the
+                            // WebView and its queue would stall until reattach.
+                            inlinePlayer.postDelayed(MANUAL_REPLY_TIMEOUT_MS) {
+                                if (inlinePlayer.manualReports == before) {
+                                    DebugLog.w("InlinePlayer", "수동 교체 요청($status) 뒤 보고 없음")
+                                    val message = if (status == "broadcast") {
+                                        "영상 프레임이 응답하지 않아요 — 영상을 다시 길게 눌러 주세요 [broadcast]"
+                                    } else {
+                                        "앱이 영상 보고를 받지 못했어요 [sent]"
+                                    }
+                                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+                                }
+                            }
+                        }
+                    }
                 },
                 onDownload = { downloadCandidate(candidate, false) },
                 onDownloadAndPlay = { downloadCandidate(candidate, true) },
@@ -445,6 +489,16 @@ fun BrowserScreen(
                 )
             }
         }
+        // A manual take that the controller ends on its own would otherwise
+        // look like "it did nothing" (v1.3.95).
+        inlinePlayer.onAutoEnded = { _, why ->
+            val message = when (why) {
+                "hidden" -> "사이트가 영상 영역을 숨겨서 사이트 플레이어로 되돌렸어요 [hidden]"
+                "gone" -> "영상이 페이지에서 사라져 되돌렸어요 [gone]"
+                else -> "우리 플레이어를 닫았어요 [$why]"
+            }
+            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+        }
     }
     // Resolve a "video started playing" report to a sniffed stream and take
     // the video over. Re-runs when a new stream lands (streamRevision) so an
@@ -454,7 +508,11 @@ fun BrowserScreen(
     val inlineRequest = inlinePlayer.request
     LaunchedEffect(inlineRequest, streamRevision) {
         val req = inlineRequest ?: return@LaunchedEffect
-        if (req.tabId != activeTabId) { inlinePlayer.consumeRequest(); return@LaunchedEffect }
+        if (req.tabId != activeTabId) {
+            inlinePlayer.consumeRequest()
+            if (req.manual) Toast.makeText(context, "탭이 바뀌어 교체하지 않았어요 [tab]", Toast.LENGTH_SHORT).show()
+            return@LaunchedEffect
+        }
         if (!req.manual && !InlinePlayerSwitch.enabled) { inlinePlayer.consumeRequest(); return@LaunchedEffect }
         // An automatic request waits for a stream to be sniffed, but not
         // forever: a video that started long ago must not get taken over
@@ -477,7 +535,14 @@ fun BrowserScreen(
             // Too small to host a player (thumbnail / hidden). A manual pick
             // still deserves an answer; auto stays quiet.
             inlinePlayer.consumeRequest()
-            if (req.manual) Toast.makeText(context, "영상 영역이 너무 작아 우리 플레이어를 놓을 수 없어요", Toast.LENGTH_SHORT).show()
+            if (req.manual) {
+                Toast.makeText(
+                    context,
+                    "영상 영역이 너무 작아 우리 플레이어를 놓을 수 없어요 " +
+                        "(${req.rect.width}x${req.rect.height}) [tiny]",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
             return@LaunchedEffect
         }
         // Replacing another taken video on the same page: give that one back first.
@@ -496,9 +561,11 @@ fun BrowserScreen(
                 userAgent = ua,
                 title = state.currentTitle
             ),
-            req.rect
+            req.rect,
+            req.manual
         )
         activeWebState.webView.evaluateJavascript(InlinePlayerCommands.take(req.videoId), null)
+        if (req.manual) Toast.makeText(context, "우리 플레이어로 교체했어요", Toast.LENGTH_SHORT).show()
         DebugLog.d(
             "InlinePlayer",
             "사이트 영상 교체: ${candidate.url.take(80)} pos=${"%.1f".format(req.positionSec)}s " +
@@ -1012,3 +1079,25 @@ private fun TabCountButton(count: Int, onClick: () -> Unit) {
 
 // How long an automatic in-place request may wait for a stream to be sniffed.
 private const val INLINE_AUTO_DEADLINE_MS = 30_000L
+
+// After the long-press "pressed" command says 'sent'/'broadcast', how long
+// the page gets to deliver its report before we say it never arrived.
+private const val MANUAL_REPLY_TIMEOUT_MS = 2_000L
+
+/**
+ * Toast text for a failed long-press "여기서 우리 플레이어로 재생" (v1.3.95),
+ * or null when the page says a report is on its way. The bracketed code is
+ * what the user reads back to us — they cannot send logs.
+ */
+private fun manualPressedFailure(status: String): String? = when (status) {
+    "sent", "broadcast" -> null
+    "nomodule" -> "이 페이지엔 영상 교체 모듈이 없어요 (새로고침 후 다시 시도) [nomodule]"
+    "error" -> "영상 교체 모듈에서 오류가 났어요 [error]"
+    "emitfail" -> "앱으로 영상 정보를 보내지 못했어요 [emitfail]"
+    "none" -> "길게 누른 영상을 찾지 못했어요 — 영상을 다시 길게 눌러 주세요 [none]"
+    "stale" -> "선택이 15초 지나 만료됐어요 — 영상을 다시 길게 눌러 주세요 [stale]"
+    "detached" -> "길게 누른 영상이 페이지에서 사라졌어요 [detached]"
+    "tiny" -> "영상 영역이 너무 작아요 [tiny]"
+    "throttled" -> "잠시 후 다시 시도해 주세요 [throttled]"
+    else -> "알 수 없는 응답 [$status]"
+}

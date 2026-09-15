@@ -95,8 +95,15 @@ object InlinePlayerCommands {
     /** Pause + mute the site's video and start streaming its box to [InlinePlayerBridge.onRect]. */
     fun take(id: String): String = cmd("{\"kind\":\"take\",\"id\":${quote(id)}}")
 
-    /** Re-report the video the user just long-pressed as a manual take request. */
-    fun pressed(): String = cmd("{\"kind\":\"pressed\"}")
+    /**
+     * Re-report the video the user just long-pressed as a manual take request.
+     * Unlike the other commands this one returns the JS status to the
+     * `evaluateJavascript` callback ('sent' / 'broadcast' / 'none' / 'stale' /
+     * 'detached' / 'tiny' / 'throttled' / 'emitfail', or 'nomodule' / 'error')
+     * so a failed manual pick can say why instead of doing nothing (v1.3.95).
+     */
+    fun pressed(): String =
+        "(function(){try{return window.__pbInline?window.__pbInline.cmd({\"kind\":\"pressed\"}):'nomodule';}catch(e){return 'error';}})();"
 
     /** Hand the video back to the site: stop tracking, unmute, seek to [positionSec], stay paused. */
     fun release(id: String, positionSec: Double): String {

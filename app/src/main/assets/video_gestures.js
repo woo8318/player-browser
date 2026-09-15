@@ -674,6 +674,14 @@
         // pre-announce "opening…" here — the long-press just requests the menu.
         if (cur) {
           try { if (window.__pbInline) window.__pbInline.markPressed(cur.video); } catch (e) {}
+          // Ancestors may still hold an older press of their own; PBPlayer is
+          // visible here too, so the __pbOpenVideo relay (which clears them)
+          // does not run — tell them explicitly (v1.3.95).
+          try {
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage({ __pbPressedAway: 1 }, '*');
+            }
+          } catch (e) {}
           requestExternal(videoSrc(cur.video));
         }
       }, LONG_PRESS_MS);
@@ -973,7 +981,8 @@
   (function initInlinePlayer() {
     var isTop = true;
     try { isTop = (window.parent === window); } catch (e) { isTop = true; }
-    // No bridge in the top frame (setting off / challenge page): nothing to
+    // No bridge in the top frame (challenge page — PBInline is exposed even
+    // with the setting off, for the long-press manual pick): nothing to
     // report to, so don't hook play events or run the rAF loop at all.
     if (isTop && !window.PBInline) return;
     var idPrefix = 'pb' + Math.random().toString(36).slice(2, 8) + '-';
@@ -1045,10 +1054,12 @@
     }
 
     // Deliver a report: to the bridge (top frame) or up to the parent frame.
+    // true = handed off (the parent may still drop it — that shows up as
+    // the app's "no answer" timeout instead).
     function emit(msg) {
       if (isTop) {
         var b = window.PBInline;
-        if (!b) return;
+        if (!b) return false;
         try {
           if (msg.type === 'play') {
             var d = toDevice(msg);
@@ -1059,23 +1070,28 @@
           } else if (msg.type === 'gone') {
             b.onGone(msg.id);
           }
-        } catch (e) {}
-        return;
+        } catch (e) { return false; }
+        return true;
       }
-      try { window.parent.postMessage({ __pbInline: msg }, '*'); } catch (e) {}
+      try { window.parent.postMessage({ __pbInline: msg }, '*'); } catch (e) { return false; }
+      return true;
     }
 
+    // Returns what happened so the manual path (long-press menu) can tell the
+    // app why nothing appeared (v1.3.95): 'sent' | 'tiny' | 'throttled' | 'emitfail'.
     function report(v, manual) {
       var now = Date.now();
-      if (!manual && v.__pbInlineLastReport && now - v.__pbInlineLastReport < REPORT_MIN_MS) return;
+      if (!manual && v.__pbInlineLastReport && now - v.__pbInlineLastReport < REPORT_MIN_MS) return 'throttled';
       var r = rectHere(v);
       // A momentarily tiny box (mid-layout) must not burn the throttle slot.
-      if (r.w < 40 || r.h < 40) return;
+      // A manual pick still goes up: Kotlin checks the size and says so.
+      if (!manual && (r.w < 40 || r.h < 40)) return 'tiny';
       v.__pbInlineLastReport = now;
       var id = idOf(v);
       var pos = 0;
       try { pos = v.currentTime || 0; } catch (e) {}
-      emit({ type: 'play', id: id, src: videoSrc(v), pos: pos, l: r.l, t: r.t, w: r.w, h: r.h, manual: !!manual });
+      return emit({ type: 'play', id: id, src: videoSrc(v), pos: pos, l: r.l, t: r.t, w: r.w, h: r.h, manual: !!manual })
+        ? 'sent' : 'emitfail';
     }
 
     function ensureLoop() {
@@ -1170,30 +1186,38 @@
       // Stay paused: the user closed our player, they did not ask the site's to resume.
     }
 
+    // Returns how many frames the command was posted to.
     function broadcastCmd(c) {
+      var sent = 0;
       try {
         var docs = reachableDocuments();
         for (var di = 0; di < docs.length; di++) {
           var frames;
           try { frames = docs[di].querySelectorAll('iframe, frame'); } catch (e) { continue; }
           for (var i = 0; i < frames.length; i++) {
-            try { frames[i].contentWindow.postMessage({ __pbInlineCmd: c }, '*'); } catch (e) {}
+            try { frames[i].contentWindow.postMessage({ __pbInlineCmd: c }, '*'); sent++; } catch (e) {}
           }
         }
       } catch (e) {}
+      return sent;
     }
 
+    // Returns a status string; the app reads it for 'pressed' only (v1.3.95).
     function cmd(c) {
-      if (!c || !c.kind) return;
+      if (!c || !c.kind) return 'bad';
       if (c.kind === 'pressed') {
         var lp = lastPressed;
         lastPressed = null;
-        if (lp && lp.v && lp.v.isConnected && Date.now() - lp.t < PRESSED_TTL_MS) {
-          report(lp.v, true);
-          return;
+        // A descendant's long-press clears ours (__pbPressedAway), so a press
+        // held here is the latest one: report its own failure instead of
+        // broadcasting to ad/analytics iframes and timing out as [broadcast].
+        if (lp && lp.v) {
+          if (!lp.v.isConnected) return 'detached';
+          if (Date.now() - lp.t >= PRESSED_TTL_MS) return 'stale';
+          return report(lp.v, true);
         }
-        broadcastCmd(c);
-        return;
+        // The pressed video lives in a child frame (or nowhere): ask them all.
+        return broadcastCmd(c) > 0 ? 'broadcast' : 'none';
       }
       var v = c.id ? findLocal(c.id) : null;
       if (v) {
@@ -1230,6 +1254,16 @@
         try { fromParent = (ev.source === window.parent); } catch (e) {}
         if (!fromParent) return;
         cmd(d.__pbInlineCmd);
+        return;
+      }
+      if (d.__pbPressedAway) {
+        // A frame below us long-pressed its own video: our candidate is stale.
+        // Only our own child frames may say so; pass it on up.
+        if (!frameOf(ev.source)) return;
+        lastPressed = null;
+        if (!isTop) {
+          try { window.parent.postMessage({ __pbPressedAway: 1 }, '*'); } catch (e) {}
+        }
         return;
       }
       var m = d.__pbInline;

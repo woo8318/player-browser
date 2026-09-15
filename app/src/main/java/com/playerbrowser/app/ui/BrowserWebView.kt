@@ -609,8 +609,10 @@ private class FullscreenAwareChromeClient(
 
         val decor = activity.window.decorView as ViewGroup
         val container = GestureCapturingFrame(activity, webView)
+        // Index 0: the frame already holds its gesture HUD, which must stay on top.
         container.addView(
             view,
+            0,
             FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
@@ -723,6 +725,12 @@ private class FullscreenAwareChromeClient(
  * dispatchTouchEvent here we run our gesture detection in parallel with —
  * not after — the child view tree, while still allowing the player's own
  * touch handling to proceed.
+ *
+ * Feedback for the gestures this frame owns is drawn by [FullscreenGestureHud],
+ * a child kept above the CustomView (v1.3.90). The page's DOM can't do it:
+ * during native fullscreen only the fullscreen element's subtree is painted
+ * and the CustomView covers the WebView anyway, so the JS overlays these
+ * gestures used to drive were never visible — they worked blind.
  */
 private class GestureCapturingFrame(
     context: Context,
@@ -742,10 +750,23 @@ private class GestureCapturingFrame(
     private var moved = false
     private var maxPointers = 1
     private var siteCancelled = false
+    private var seekFired = false
 
     private var vbAdjust: VbMode? = null
     private var vbStartValue: Float = 0f
-    private var lastVbFireMs: Long = 0L
+
+    // Native feedback for every gesture this frame owns. DOM overlays are
+    // invisible during native fullscreen (only the fullscreen element's subtree
+    // is painted, and the CustomView sits above the WebView anyway), so the
+    // JS-side showVbOverlay/toast never reached the screen — the gesture worked
+    // blind. Added at construction so the CustomView (inserted at index 0 by
+    // onShowCustomView) always sits underneath it.
+    private val hud = FullscreenGestureHud(context).also {
+        addView(
+            it,
+            LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        )
+    }
 
     private val audioManager: AudioManager? by lazy {
         context.getSystemService(Context.AUDIO_SERVICE) as? AudioManager
@@ -776,6 +797,7 @@ private class GestureCapturingFrame(
                 maxPointers = 1
                 siteCancelled = false
                 vbAdjust = null
+                seekFired = false
                 return super.dispatchTouchEvent(ev)
             }
             MotionEvent.ACTION_POINTER_DOWN -> {
@@ -788,7 +810,7 @@ private class GestureCapturingFrame(
                 }
                 if (vbAdjust != null) {
                     vbAdjust = null
-                    hideVbOverlay()
+                    hud.hide()
                 }
                 return if (siteCancelled) true else super.dispatchTouchEvent(ev)
             }
@@ -802,6 +824,25 @@ private class GestureCapturingFrame(
                 }
                 if (maxPointers >= 2) {
                     // 2-finger swipe → switchVideo on UP; consume (site cancelled).
+                    return true
+                }
+                if (seekFired) return true
+                // 1-finger horizontal swipe → one discrete ±10s step per gesture
+                // (v1.3.90). Discrete rather than proportional on purpose: when
+                // the player sits in a cross-origin iframe we can't read its
+                // current time, so a proportional HUD would be a guess. Not
+                // engaged from the bottom control band, where a site's own
+                // scrubber lives — that keeps working via the forwarded touches.
+                if (vbAdjust == null &&
+                    abs(dx) > swipeThresholdPx && abs(dx) > abs(dy) &&
+                    startY < height * SEEK_BAND_MAX_Y_RATIO
+                ) {
+                    seekFired = true
+                    if (!siteCancelled) {
+                        cancelChildren(ev)
+                        siteCancelled = true
+                    }
+                    fireSeek(if (dx > 0) SEEK_SEC else -SEEK_SEC)
                     return true
                 }
                 // Engage vertical brightness/volume once a clear vertical drag is
@@ -835,13 +876,13 @@ private class GestureCapturingFrame(
                                     newIdx.toInt(),
                                     0
                                 )
-                                fireVbOverlay("volume", newIdx / maxVol)
+                                hud.showLevel(FullscreenGestureHud.Level.Volume, newIdx / maxVol)
                             }
                         }
                         VbMode.Brightness -> {
                             val newRatio = (vbStartValue + deltaRatio).coerceIn(0f, 1f)
                             applyBrightness(newRatio)
-                            fireVbOverlay("brightness", newRatio)
+                            hud.showLevel(FullscreenGestureHud.Level.Brightness, newRatio)
                         }
                     }
                     return true
@@ -855,18 +896,15 @@ private class GestureCapturingFrame(
                 val dt = System.currentTimeMillis() - startT
                 if (vbAdjust != null) {
                     vbAdjust = null
-                    hideVbOverlay()
+                    hud.hide()
                     return true
                 }
+                if (seekFired) return true
                 if (maxPointers >= 2) {
                     if (moved && dt <= maxSwipeMs &&
                         abs(dx) >= swipeThresholdPx && abs(dx) > abs(dy)
                     ) {
-                        val dir = if (dx > 0) -1 else 1
-                        webView.evaluateJavascript(
-                            "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);",
-                            null
-                        )
+                        fireSwitch(if (dx > 0) -1 else 1)
                     }
                     return true
                 }
@@ -877,7 +915,7 @@ private class GestureCapturingFrame(
             MotionEvent.ACTION_CANCEL -> {
                 if (vbAdjust != null) {
                     vbAdjust = null
-                    hideVbOverlay()
+                    hud.hide()
                 }
                 return super.dispatchTouchEvent(ev)
             }
@@ -898,12 +936,36 @@ private class GestureCapturingFrame(
         cancel.recycle()
     }
 
-    private fun hideVbOverlay() {
+    // The JS hooks report what they did: 'seek' / 'switch' = acted on a video
+    // in the top document, 'relay' = broadcast to child iframes (outcome
+    // unknowable from here, so we show the intended action), anything else =
+    // no video, or hooks not injected (challenge page). The HUD says what the
+    // callback says rather than assuming.
+    private fun fireSeek(deltaSec: Int) {
+        val label = if (deltaSec > 0) "⏩ ${deltaSec}초" else "⏪ ${-deltaSec}초"
         webView.evaluateJavascript(
-            "window.__pb && window.__pb.hideVbOverlay && window.__pb.hideVbOverlay();",
-            null
-        )
+            "window.__pb && window.__pb.seek && window.__pb.seek($deltaSec);"
+        ) { result ->
+            DebugLog.d("FsGesture", "swipe seek $deltaSec → $result")
+            hud.showMessage(if (result.isHookSuccess()) label else "시킹할 영상 없음")
+        }
     }
+
+    private fun fireSwitch(dir: Int) {
+        val label = if (dir > 0) "다음 영상" else "이전 영상"
+        webView.evaluateJavascript(
+            "window.__pb && window.__pb.switchVideo && window.__pb.switchVideo($dir);"
+        ) { result ->
+            DebugLog.d("FsGesture", "2-finger switch $dir → $result")
+            hud.showMessage(if (result.isHookSuccess()) label else "다른 영상 없음")
+        }
+    }
+
+    // evaluateJavascript hands back a JSON literal: "\"seek\"" / "\"relay\""
+    // on success, "\"noop\"" / "\"switch-none\"" when there was nothing to
+    // act on, "null" when the hook chain short-circuited.
+    private fun String?.isHookSuccess(): Boolean =
+        this == "\"seek\"" || this == "\"switch\"" || this == "\"relay\""
 
     private fun currentVolumeIndex(): Int =
         audioManager?.getStreamVolume(AudioManager.STREAM_MUSIC) ?: 0
@@ -927,16 +989,11 @@ private class GestureCapturingFrame(
         window.attributes = lp
     }
 
-    private fun fireVbOverlay(kind: String, ratio: Float) {
-        val now = System.currentTimeMillis()
-        if (now - lastVbFireMs < 33) return
-        lastVbFireMs = now
-        val clamped = ratio.coerceIn(0f, 1f)
-        webView.evaluateJavascript(
-            "window.__pb && window.__pb.showVbOverlay && " +
-                "window.__pb.showVbOverlay('$kind', $clamped);",
-            null
-        )
+    private companion object {
+        const val SEEK_SEC = 10
+        // Swipe-seek engages only above this fraction of the height; below it
+        // is left to the site's control bar / scrubber.
+        const val SEEK_BAND_MAX_Y_RATIO = 0.80f
     }
 }
 

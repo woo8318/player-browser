@@ -298,7 +298,9 @@
 
   function switchVideo(direction) {
     var vids = allVideos();
-    if (vids.length === 0) return;
+    // A lone video has nothing to switch to — say so (the native fullscreen
+    // HUD reports the result) instead of pausing and replaying the same one.
+    if (vids.length < 2) return false;
     var current = -1;
     for (var i = 0; i < vids.length; i++) {
       if (!vids[i].paused) { current = i; break; }
@@ -311,6 +313,7 @@
       vids[next].play();
       showToast(direction > 0 ? '다음 영상' : '이전 영상');
     } catch (e) {}
+    return true;
   }
 
   // Android-callable hooks. Used by the native fullscreen gesture overlay
@@ -358,7 +361,9 @@
 
   // Single entry point for every discrete native-fullscreen gesture. Runs it on
   // this frame's video, or relays to child frames if the video isn't here.
-  // Returns a short status string purely for Kotlin-side DebugLog diagnostics.
+  // Returns a short status string. Kotlin logs it, and in native fullscreen the
+  // HUD decides "did it" vs "nothing to act on" from it (v1.3.90) — so keep the
+  // values honest: 'seek' / 'switch' only when a video in this frame was acted on.
   function runFsGesture(p) {
     var v = fullscreenVideo() || activeVideo();
     if (!v) { broadcastFsGesture(p); return 'relay'; }
@@ -378,7 +383,7 @@
         return 'tap';
       }
       case 'toggle': togglePlay(v); return 'toggle';
-      case 'switch': switchVideo(p.dir); return 'switch';
+      case 'switch': return switchVideo(p.dir) ? 'switch' : 'switch-none';
     }
     return 'noop';
   }
@@ -427,61 +432,6 @@
   window.__pb.scrubEnd = function () {
     nativeScrub = null;
     hideScrub();
-  };
-
-  // Vertical-drag overlay for system volume (right side) / brightness (left
-  // side). Driven by GestureCapturingFrame during native fullscreen.
-  function ensureVbOverlay() {
-    var el = document.getElementById('__pb_vb');
-    if (el) return el;
-    el = document.createElement('div');
-    el.id = '__pb_vb';
-    el.style.cssText =
-      'position:fixed;top:50%;transform:translateY(-50%);' +
-      'background:rgba(0,0,0,0.78);color:#fff;font:600 13px/1.2 sans-serif;' +
-      'padding:12px 14px;border-radius:10px;z-index:2147483647;' +
-      'pointer-events:none;text-align:center;display:none;flex-direction:column;' +
-      'align-items:center;gap:8px;transition:opacity .2s;opacity:0;';
-    el.innerHTML =
-      '<div id="__pb_vb_label" style="font-size:12px;opacity:.85;"></div>' +
-      '<div style="width:8px;height:140px;background:rgba(255,255,255,0.22);' +
-      'border-radius:4px;overflow:hidden;display:flex;align-items:flex-end;">' +
-      '<div id="__pb_vb_fill" style="width:100%;background:#fff;"></div>' +
-      '</div>' +
-      '<div id="__pb_vb_pct" style="font-size:13px;"></div>';
-    document.documentElement.appendChild(el);
-    return el;
-  }
-
-  window.__pb.showVbOverlay = function (kind, ratio) {
-    var el = ensureVbOverlay();
-    var r = Math.max(0, Math.min(1, ratio || 0));
-    if (kind === 'volume') {
-      el.style.right = '24px';
-      el.style.left = '';
-    } else {
-      el.style.left = '24px';
-      el.style.right = '';
-    }
-    var label = document.getElementById('__pb_vb_label');
-    var fill = document.getElementById('__pb_vb_fill');
-    var pct = document.getElementById('__pb_vb_pct');
-    if (label) label.textContent = kind === 'volume' ? '음량' : '밝기';
-    if (fill) fill.style.height = (r * 100) + '%';
-    if (pct) pct.textContent = Math.round(r * 100) + '%';
-    el.style.display = 'flex';
-    el.style.opacity = '1';
-    clearTimeout(el.__t);
-  };
-
-  window.__pb.hideVbOverlay = function () {
-    var el = document.getElementById('__pb_vb');
-    if (!el) return;
-    el.style.opacity = '0';
-    clearTimeout(el.__t);
-    el.__t = setTimeout(function () {
-      if (el.style.opacity === '0') el.style.display = 'none';
-    }, 220);
   };
 
   // ---- Suppress the site's own double-tap-to-fullscreen handlers ----

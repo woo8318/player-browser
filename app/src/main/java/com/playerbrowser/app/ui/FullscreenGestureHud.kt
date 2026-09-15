@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.RectF
+import android.os.Build
 import android.view.MotionEvent
 import android.view.View
 
@@ -96,7 +97,11 @@ internal class FullscreenGestureHud(context: Context) : View(context) {
         val panelW = dp(78f)
         val panelH = dp(212f)
         val margin = dp(28f)
-        val left = if (bar.level == Level.Brightness) margin else width - margin - panelW
+        val left = if (bar.level == Level.Brightness) {
+            margin + cutoutInset(Side.Left)
+        } else {
+            width - margin - cutoutInset(Side.Right) - panelW
+        }
         val top = (height - panelH) / 2f
         rect.set(left, top, left + panelW, top + panelH)
         canvas.drawRoundRect(rect, dp(16f), dp(16f), panelPaint)
@@ -128,9 +133,9 @@ internal class FullscreenGestureHud(context: Context) : View(context) {
         val fm = messagePaint.fontMetrics
         val textH = fm.descent - fm.ascent
         val cx = width / 2f
-        val cy = height * MESSAGE_Y_RATIO
         val halfW = textW / 2f + padH
         val halfH = textH / 2f + padV
+        val cy = maxOf(height * MESSAGE_Y_RATIO, cutoutInset(Side.Top) + halfH + dp(8f))
         rect.set(cx - halfW, cy - halfH, cx + halfW, cy + halfH)
         canvas.drawRoundRect(rect, halfH, halfH, panelPaint)
         canvas.drawText(message.text, cx, cy - (fm.ascent + fm.descent) / 2f, messagePaint)
@@ -163,6 +168,20 @@ internal class FullscreenGestureHud(context: Context) : View(context) {
             textSize = sizeSp * resources.displayMetrics.scaledDensity
             typeface = android.graphics.Typeface.DEFAULT_BOLD
         }
+
+    private enum class Side { Left, Top, Right }
+
+    // Fullscreen lets the window extend into the camera cutout (v1.3.93), so
+    // keep the panels out of it or the hole bites into the bar.
+    private fun cutoutInset(side: Side): Float {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return 0f
+        val cutout = rootWindowInsets?.displayCutout ?: return 0f
+        return when (side) {
+            Side.Left -> cutout.safeInsetLeft
+            Side.Top -> cutout.safeInsetTop
+            Side.Right -> cutout.safeInsetRight
+        }.toFloat()
+    }
 
     private fun dp(value: Float) = value * density
 

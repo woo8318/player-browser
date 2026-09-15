@@ -518,6 +518,7 @@ private class FullscreenAwareChromeClient(
     private var customViewContainer: ViewGroup? = null
     private var customViewCallback: CustomViewCallback? = null
     private var savedOrientation: Int = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+    private var savedCutoutMode: Int? = null
 
     override fun onCreateWindow(
         view: WebView?,
@@ -646,6 +647,19 @@ private class FullscreenAwareChromeClient(
         controller.systemBarsBehavior =
             WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 
+        // With the default cutout mode Android letterboxes a bars-hidden window
+        // away from the camera cutout — a black strip on the camera side in
+        // landscape, or along the top in portrait — so fullscreen never reached
+        // the edge. Let the window extend into cutouts on the short edges while
+        // fullscreen lasts (v1.3.93).
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val lp = activity.window.attributes
+            savedCutoutMode = lp.layoutInDisplayCutoutMode
+            lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            activity.window.attributes = lp
+        }
+
         // Default to landscape immediately so most videos rotate without waiting on JS.
         activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         applyVideoOrientation(activity, 0)
@@ -699,9 +713,14 @@ private class FullscreenAwareChromeClient(
             // gesture overrode it during fullscreen playback.
             val lp = activity.window.attributes
             lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+            val cutoutMode = savedCutoutMode
+            if (cutoutMode != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                lp.layoutInDisplayCutoutMode = cutoutMode
+            }
             activity.window.attributes = lp
         }
         savedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+        savedCutoutMode = null
     }
 
     companion object {

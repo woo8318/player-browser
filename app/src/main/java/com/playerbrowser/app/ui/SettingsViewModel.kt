@@ -46,6 +46,7 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
                     jsEnvSpoofEnabled = current.jsEnvSpoofEnabled,
                     visitedLinkMarkEnabled = current.visitedLinkMarkEnabled,
                     inlinePlayerAuto = current.inlinePlayerAuto,
+                    bodySniffEnabled = current.bodySniffEnabled,
                     dohProvider = current.dohProvider,
                     dohCustomUrl = current.dohCustomUrl
                 )
@@ -125,6 +126,16 @@ class SettingsViewModel(app: Application) : AndroidViewModel(app) {
             _event.value = ProxyApplyEvent.Message(
                 if (enabled) "우리 플레이어로 자동 교체 켜짐 — 영상이 재생되고 스트림이 잡히면 그 자리에 표시"
                 else "사이트 플레이어 사용 (기본)"
+            )
+        }
+    }
+
+    fun setBodySniffEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            repository.update { it.copy(bodySniffEnabled = enabled) }
+            _event.value = ProxyApplyEvent.Message(
+                if (enabled) "스트림 내용 감지 켜짐 — 새로 여는 페이지부터 적용"
+                else "스트림 내용 감지 꺼짐 — 주소/응답 종류로만 인식"
             )
         }
     }

@@ -398,6 +398,33 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(16.dp))
             HorizontalDivider()
+            SectionTitle("스트림 내용 감지 (실험)")
+            Text(
+                text = "주소가 .m3u8/.mp4 가 아니어도(예: /c.html, /api/stream) 페이지가 받아오는 응답의 " +
+                    "앞부분을 보고 재생목록·mp4 를 알아냅니다. 켜면 그런 사이트에서도 \"▶ 플레이어로 재생\" " +
+                    "버튼과 영상 롱프레스 메뉴가 뜰 수 있습니다. 페이지가 다 열린 뒤에 시작하므로 " +
+                    "영상을 한 번 재생(또는 다시 재생)해야 잡히고, blob:/DRM 은 여전히 못 잡습니다. " +
+                    "사이트 플레이어가 이상하면 꺼서 비교해 보세요.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    if (saved.bodySniffEnabled) "응답 내용으로도 감지 (기본)" else "주소/응답 종류로만 감지",
+                    modifier = Modifier.padding(end = 12.dp)
+                )
+                Spacer(modifier = Modifier.fillMaxWidth(0.6f))
+                Switch(
+                    checked = saved.bodySniffEnabled,
+                    onCheckedChange = { viewModel.setBodySniffEnabled(it) }
+                )
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
             SectionTitle("링크를 새 탭에서 열기")
             Text(
                 text = "페이지 안의 링크를 누를 때 현재 탭을 바꾸지 않고 항상 새 탭에서 엽니다. " +

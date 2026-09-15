@@ -15,6 +15,7 @@ data class NetworkSettings(
     val jsEnvSpoofEnabled: Boolean = true,
     val visitedLinkMarkEnabled: Boolean = true,
     val inlinePlayerAuto: Boolean = false,
+    val bodySniffEnabled: Boolean = true,
     val dohProvider: String = DohProvider.CLOUDFLARE.key,
     val dohCustomUrl: String = ""
 ) {

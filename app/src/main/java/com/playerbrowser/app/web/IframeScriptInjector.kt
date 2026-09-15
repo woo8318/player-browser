@@ -3,6 +3,7 @@ package com.playerbrowser.app.web
 import android.webkit.CookieManager
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
+import com.playerbrowser.app.network.BodySniffSwitch
 import com.playerbrowser.app.network.ChallengeDetector
 import com.playerbrowser.app.network.CookieFlusher
 import okhttp3.OkHttpClient
@@ -196,7 +197,10 @@ object IframeScriptInjector {
     }
 
     private fun injectScript(html: String): String {
-        val tag = "<script>" + script + "</script>"
+        // Frames that can't reach window.PBPlayer can't ask whether content
+        // sniffing is on, so the answer rides along with the script (v1.3.91).
+        val flags = if (BodySniffSwitch.enabled) "" else "window.__pbBodySniffOff=true;"
+        val tag = "<script>" + flags + script + "</script>"
         val idx = html.lastIndexOf("</body>", ignoreCase = true)
         return if (idx >= 0) html.substring(0, idx) + tag + html.substring(idx) else html + tag
     }

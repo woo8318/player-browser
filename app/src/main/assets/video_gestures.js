@@ -1138,4 +1138,287 @@
       clearPressed: function () { lastPressed = null; }
     };
   })();
+  // ---- Body sniff (v1.3.91): recognise media by response *content* ----
+  // The Kotlin sniffer sees only URLs (and Content-Type on our OkHttp path).
+  // A playlist served from `/v/e/<id>/c.html` or `/api/stream?id=` looks like
+  // nothing from the outside, but its first bytes say what it is: `#EXTM3U`,
+  // `ftyp`, EBML. So wrap fetch/XHR, peek at the head of each GET response,
+  // and hand recognised URLs to PBPlayer.onStreamBody. Frames without the
+  // bridge relay to their parent via postMessage like the other bridges.
+  // Gate: every frame that can see PBPlayer asks bodySniffEnabled() (setting,
+  // challenge page, quarantined site - all decided in Kotlin); a frame that
+  // can't see it gets window.__pbBodySniffOff from IframeScriptInjector when
+  // the setting is off. This script itself only runs from the !onChallenge
+  // block, and IframeScriptInjector skips challenge/quarantined documents.
+  (function initBodySniff() {
+    if (window.__pbSniff || window.__pbBodySniffOff) return;
+    var isTop = true;
+    try { isTop = (window.parent === window); } catch (e) { isTop = true; }
+    var br = null;
+    try { br = window.PBPlayer || null; } catch (e) { br = null; }
+    if (br && typeof br.bodySniffEnabled === 'function') {
+      try { if (!br.bodySniffEnabled()) return; } catch (e) { return; }
+    } else if (isTop) {
+      return;   // top frame without the bridge: challenge page or no app
+    }
+    if (typeof WeakMap !== 'function' || typeof Proxy !== 'function') return;
+    window.__pbSniff = true;
+
+    var HLS = 'application/vnd.apple.mpegurl';
+    var MP4 = 'video/mp4';
+    var WEBM = 'video/webm';
+    var HEAD = 512;            // bytes of body we look at
+    var MAX_REPORTED = 16;     // per document (Kotlin caps per page too)
+    var MAX_URL = 4096;
+    var MIN_FILE = 256 * 1024; // smaller mp4/webm = init segment, preview, sound
+    var seen = Object.create(null);
+    var seenCount = 0;
+
+    function absUrl(u) {
+      try {
+        var a = new URL(String(u), location.href);
+        if (a.protocol !== 'http:' && a.protocol !== 'https:') return null;
+        return a.href.length > MAX_URL ? null : a.href;
+      } catch (e) { return null; }
+    }
+
+    // Paths the Kotlin side already recognises (.m3u8/.mp4/.webm), segments,
+    // subtitles and static assets: no point cloning their bodies.
+    var SKIP_EXT = /\.(m3u8|mp4|webm|ts|m4s|m4a|m4v|aac|mp3|vtt|jpe?g|png|gif|webp|avif|svg|ico|css|m?js|json|woff2?|ttf|otf)$/i;
+    function skipUrl(url) {
+      return SKIP_EXT.test(String(url).split(/[?#]/)[0]);
+    }
+
+    function deliver(url, mime) {
+      if (!url || seen[url] || seenCount >= MAX_REPORTED) return;
+      seen[url] = true;
+      seenCount++;
+      try {
+        if (br && typeof br.onStreamBody === 'function') {
+          br.onStreamBody(url, mime);
+          return;
+        }
+      } catch (e) {}
+      try {
+        if (!isTop) window.parent.postMessage({ __pbStreamBody: { url: url, mime: mime } }, '*');
+      } catch (e) {}
+    }
+
+    // ftyp major brands that are never a standalone playable video: DASH/CMAF
+    // pieces, still images (HEIF/AVIF) and audio-only files.
+    var NOT_VIDEO_BRANDS = {
+      'dash': 1, 'msdh': 1, 'msix': 1, 'cmfc': 1, 'cmf2': 1,
+      'avif': 1, 'avis': 1, 'heic': 1, 'heix': 1, 'mif1': 1, 'msf1': 1,
+      'M4A ': 1, 'M4B ': 1, 'M4P ': 1
+    };
+
+    // First bytes of a body -> media type, or null. Segments are deliberately
+    // null: a playing video fetches hundreds and each would push the playlist
+    // out of the bounded candidate list.
+    function classifyBytes(b) {
+      if (!b || b.length < 8) return null;
+      if (b[0] === 0x47 && (b.length < 189 || b[188] === 0x47)) return null;   // MPEG-TS
+      if (b[0] === 0x1A && b[1] === 0x45 && b[2] === 0xDF && b[3] === 0xA3) return WEBM;
+      var box = String.fromCharCode(b[4], b[5], b[6], b[7]);
+      if (box === 'ftyp') {
+        if (b.length < 12) return null;
+        var brand = String.fromCharCode(b[8], b[9], b[10], b[11]);
+        return NOT_VIDEO_BRANDS[brand] ? null : MP4;
+      }
+      if (box === 'moof' || box === 'styp' || box === 'sidx') return null;     // fMP4 segment
+      var i = 0;
+      if (b[0] === 0xEF && b[1] === 0xBB && b[2] === 0xBF) i = 3;              // UTF-8 BOM
+      while (i < b.length && (b[i] === 0x20 || b[i] === 0x09 || b[i] === 0x0D || b[i] === 0x0A)) i++;
+      // '#EXTM3U'
+      if (b.length - i >= 7 && b[i] === 0x23 && b[i + 1] === 0x45 && b[i + 2] === 0x58 &&
+          b[i + 3] === 0x54 && b[i + 4] === 0x4D && b[i + 5] === 0x33 && b[i + 6] === 0x55) return HLS;
+      return null;
+    }
+
+    function classifyText(t) {
+      if (typeof t !== 'string') return null;
+      var s = t.slice(0, HEAD).replace(/^﻿/, '').replace(/^\s+/, '');
+      return s.indexOf('#EXTM3U') === 0 ? HLS : null;
+    }
+
+    // Content-Type that already names the thing: no need to read the body.
+    function mimeFromType(ct) {
+      ct = String(ct || '').toLowerCase();
+      if (ct.indexOf('mpegurl') >= 0) return HLS;
+      if (ct.indexOf('video/mp4') === 0) return MP4;
+      if (ct.indexOf('video/webm') === 0) return WEBM;
+      return null;
+    }
+
+    function skipType(ct) {
+      ct = String(ct || '').toLowerCase();
+      if (ct.indexOf('mpegurl') >= 0) return false;
+      return /^(image\/|font\/|audio\/|text\/css|text\/vtt|application\/(x-)?javascript|text\/javascript|application\/json|video\/mp2t|video\/iso\.segment|audio\/iso\.segment)/.test(ct);
+    }
+
+    // Known total size of the resource, or -1. 206: the total after '/' in
+    // Content-Range (when the page may read it); 200: Content-Length.
+    function totalSize(status, contentLength, contentRange) {
+      if (status === 206) {
+        var m = /\/(\d+)\s*$/.exec(String(contentRange || ''));
+        return m ? parseInt(m[1], 10) : -1;
+      }
+      var n = parseInt(contentLength, 10);
+      return isNaN(n) ? -1 : n;
+    }
+
+    function acceptable(mime, size) {
+      if (!mime) return false;
+      if (mime === HLS) return true;
+      return size < 0 || size >= MIN_FILE;
+    }
+
+    function sniffResponse(fallbackUrl, res) {
+      try {
+        if (!res || !res.ok || res.type === 'opaque') return;
+        var h = res.headers;
+        var get = function (n) { try { return h && h.get ? h.get(n) : null; } catch (e) { return null; } };
+        var ct = get('content-type');
+        if (skipType(ct)) return;
+        var url = absUrl(res.url) || fallbackUrl;
+        if (!url || seen[url] || skipUrl(url)) return;
+        var size = totalSize(res.status, get('content-length'), get('content-range'));
+        var byType = mimeFromType(ct);
+        if (byType) {
+          if (acceptable(byType, size)) deliver(url, byType);
+          return;
+        }
+        var c = res.clone();
+        if (c.body && c.body.getReader) {
+          var reader = c.body.getReader();
+          reader.read().then(function (r) {
+            try { var cp = reader.cancel(); if (cp && cp.catch) cp.catch(function () {}); } catch (e) {}
+            try {
+              if (r && r.value) {
+                var m = classifyBytes(r.value);
+                if (acceptable(m, size)) deliver(url, m);
+              }
+            } catch (e) {}
+          }, function () {});
+        }
+      } catch (e) {}
+    }
+
+    // Wrappers are Proxies so name/length/toString stay the native ones, and
+    // the original always runs first with the caller's own this/arguments.
+    try {
+      var origFetch = window.fetch;
+      if (typeof origFetch === 'function') {
+        window.fetch = new Proxy(origFetch, {
+          apply: function (target, thisArg, args) {
+            var p = Reflect.apply(target, thisArg == null ? window : thisArg, args);
+            try {
+              var input = args[0];
+              var init = args[1];
+              var isReq = input && typeof input === 'object' && typeof input.url === 'string';
+              var method = (init && init.method) || (isReq && input.method) || 'GET';
+              var url = absUrl(isReq ? input.url : input);
+              if (url && !skipUrl(url) && String(method).toUpperCase() === 'GET' && p && p.then) {
+                p.then(function (res) { sniffResponse(url, res); }, function () {});
+              }
+            } catch (e) {}
+            return p;
+          }
+        });
+      }
+    } catch (e) {}
+
+    // XMLHttpRequest. Per-request state lives in WeakMaps, not on the object.
+    var xhrUrl = new WeakMap();    // xhr -> absolute URL of its current GET, or null
+    var xhrHooked = new WeakMap(); // xhr -> true once our load listener is on
+    function sniffXhr(x) {
+      try {
+        var reqUrl = xhrUrl.get(x);
+        if (!reqUrl) return;       // current request isn't a GET we looked at
+        if (x.status < 200 || x.status >= 300) return;
+        var ct = x.getResponseHeader ? x.getResponseHeader('content-type') : null;
+        if (skipType(ct)) return;
+        var url = absUrl(x.responseURL) || reqUrl;
+        if (!url || seen[url] || skipUrl(url)) return;
+        var rt = x.responseType || '';
+        // Content-Range isn't CORS-safelisted; asking for it cross-origin only
+        // logs a console error, so only ask when it matters.
+        var hdrSize = totalSize(x.status, x.getResponseHeader('content-length'),
+          x.status === 206 ? x.getResponseHeader('content-range') : null);
+        var byType = mimeFromType(ct);
+        if (byType) {
+          if (acceptable(byType, hdrSize)) deliver(url, byType);
+          return;
+        }
+        if (rt === '' || rt === 'text') {
+          var mt = classifyText(x.responseText);
+          if (mt) deliver(url, mt);
+        } else if (rt === 'arraybuffer' && x.response && x.response.byteLength) {
+          var ab = x.response;
+          var ma = classifyBytes(new Uint8Array(ab, 0, Math.min(HEAD, ab.byteLength)));
+          if (acceptable(ma, x.status === 206 ? hdrSize : ab.byteLength)) deliver(url, ma);
+        } else if (rt === 'blob' && x.response && x.response.slice) {
+          var bl = x.response;
+          var blSize = x.status === 206 ? hdrSize : bl.size;
+          var fr = new FileReader();
+          fr.onload = function () {
+            try {
+              var mb = classifyBytes(new Uint8Array(fr.result));
+              if (acceptable(mb, blSize)) deliver(url, mb);
+            } catch (e) {}
+          };
+          fr.readAsArrayBuffer(bl.slice(0, HEAD));
+        }
+      } catch (e) {}
+    }
+    try {
+      var XP = window.XMLHttpRequest && window.XMLHttpRequest.prototype;
+      if (XP && typeof XP.open === 'function' && typeof XP.send === 'function') {
+        XP.open = new Proxy(XP.open, {
+          apply: function (target, thisArg, args) {
+            try {
+              var u = (String(args[0]).toUpperCase() === 'GET') ? absUrl(args[1]) : null;
+              if (thisArg && typeof thisArg === 'object') xhrUrl.set(thisArg, (u && !skipUrl(u)) ? u : null);
+            } catch (e) {}
+            return Reflect.apply(target, thisArg, args);
+          }
+        });
+        XP.send = new Proxy(XP.send, {
+          apply: function (target, thisArg, args) {
+            try {
+              var x = thisArg;
+              if (x && typeof x === 'object' && xhrUrl.get(x) && !xhrHooked.get(x)) {
+                xhrHooked.set(x, true);
+                x.addEventListener('load', function () { sniffXhr(x); });
+              }
+            } catch (e) {}
+            return Reflect.apply(target, thisArg, args);
+          }
+        });
+      }
+    } catch (e) {}
+
+    // Cross-frame relay: child -> parent -> ... -> top (which owns the bridge).
+    // Only direct child frames are listened to, and everything in the message
+    // is page input: shape, scheme and mime are checked here, Kotlin checks again.
+    function fromChildFrame(src) {
+      try {
+        for (var i = 0; i < window.frames.length; i++) {
+          if (window.frames[i] === src) return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+    window.addEventListener('message', function (ev) {
+      var d = ev && ev.data;
+      if (!d || typeof d !== 'object') return;
+      var m = d.__pbStreamBody;
+      if (!m || typeof m !== 'object') return;
+      if (!fromChildFrame(ev.source)) return;
+      if (typeof m.url !== 'string' || typeof m.mime !== 'string') return;
+      if (m.mime !== HLS && m.mime !== MP4 && m.mime !== WEBM) return;
+      if (!/^https?:\/\//i.test(m.url) || m.url.length > MAX_URL) return;
+      deliver(m.url, m.mime);
+    }, false);
+  })();
 })();

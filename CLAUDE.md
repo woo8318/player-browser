@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 내장 Media3 플레이어(스트림 추출 후 네이티브 재생, 스트림 감지 시 화면에 재생 버튼 자동 표시, 영상 롱프레스로 그 영상 메뉴→외부 플레이어 연결) + 영상 오프라인 다운로드(HLS 포함, 받아두면 재생 중 네트워크 미사용, 받으면서 바로 보기) + 동영상 이어보기 + 즐겨찾기/방문기록 + 도메인 숫자 무관 방문 링크 표시 + 멀티탭(썸네일 갤러리/그룹/그룹 내 새 탭/그룹순서변경/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 이동·탭 사이 재정렬/그룹 헤더 드래그 순서변경/바 스와이프 탭 전환/탭별 히스토리 영속화) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 자동/수동 복구 + 링크 항상 새 탭 열기 + 링크 롱프레스 컨텍스트 메뉴 + 캡차 흐름 보호 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.90.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 컨트롤 + 내장 Media3 플레이어(스트림 추출 후 네이티브 재생, 스트림 감지 시 화면에 재생 버튼 자동 표시, 영상 롱프레스로 그 영상 메뉴→외부 플레이어 연결) + 영상 오프라인 다운로드(HLS 포함, 받아두면 재생 중 네트워크 미사용, 받으면서 바로 보기) + 동영상 이어보기 + 즐겨찾기/방문기록 + 도메인 숫자 무관 방문 링크 표시 + 멀티탭(썸네일 갤러리/그룹/그룹 내 새 탭/그룹순서변경/멀티선택/부모복귀/카드메뉴 그룹 이동/드래그 그룹 이동·탭 사이 재정렬/그룹 헤더 드래그 순서변경/바 스와이프 탭 전환/탭별 히스토리 영속화) + 광고 차단 + 쿠키 동의 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 자동/수동 복구 + 링크 항상 새 탭 열기 + 링크 롱프레스 컨텍스트 메뉴 + 캡차 흐름 보호 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.91.
 
 ## 빌드 / 배포
 
@@ -16,7 +16,7 @@ Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 �
 
 ```
 app/src/main/
-  assets/video_gestures.js              # WebView에 주입되는 제스처 JS + initInlinePlayer(사이트 <video> 재생/rect 감시 → PBInline, take/release 커맨드 수신, cross-origin iframe 릴레이)
+  assets/video_gestures.js              # WebView에 주입되는 제스처 JS + initInlinePlayer(사이트 <video> 재생/rect 감시 → PBInline, take/release 커맨드 수신, cross-origin iframe 릴레이) + initBodySniff(fetch/XHR 응답 앞 512바이트 매직바이트 판별 → PBPlayer.onStreamBody, 자식 프레임은 postMessage 릴레이, v1.3.91)
   assets/visited_links.js               # 도메인 숫자 무관 방문 링크 표시 JS (함수 표현식 — VisitedLinkMarker가 `(<js>)(hashes, siteKey)`로 호출, 'use strict' 클로저)
   res/layout/inline_player_view.xml     # 인라인 오버레이용 PlayerView (surface_type=texture_view 는 XML 전용 — SurfaceView 는 Compose clipToBounds 에 안 잘린다)
   java/com/playerbrowser/app/
@@ -25,7 +25,7 @@ app/src/main/
     cast/                               # Chromecast (mediarouter + play-services-cast)
       CastOptionsProvider.kt
       CastSessionBridge.kt              # 세션 lifecycle + castNow(연결된 리시버로 지금 보내기) / CastResult
-      VideoStreamSniffer.kt             # 페이지 내 video URL 추출 (.m3u8 / .mp4 / .webm) — 호스트별 다중 후보 보관 (current=단일 최선, all=전체, matching=DOM src 대응, observeResponseMime=응답 Content-Type 으로 2차 인식, dumpMisses=못 알아본 요청 + 요청 집계 진단 덤프)
+      VideoStreamSniffer.kt             # 페이지 내 video URL 추출 (.m3u8 / .mp4 / .webm) — 호스트별 다중 후보 보관 (current=단일 최선, all=전체, matching=DOM src 대응, observeResponseMime=응답 Content-Type 으로 2차 인식, observeContent=페이지 JS 가 본 응답 내용으로 3차 인식, dumpMisses=못 알아본 요청 + 요청 집계 진단 덤프)
     data/                               # Room DB + 세션 영속화
       AppDatabase.kt
       Bookmark.kt / BookmarkDao.kt
@@ -44,6 +44,7 @@ app/src/main/
       EnvSpoofSwitch.kt                 # JS 환경 위장 토글 (BrowserEnvPatch 주입 on/off, A/B 비교용)
       VisitedLinkSwitch.kt              # 방문한 링크 표시 토글 (volatile, onPageFinished hot path)
       InlinePlayerSwitch.kt             # 영상 재생 방식 토글 — 우리 플레이어로 자동 교체 (volatile, PBInline 브리지 hot path)
+      BodySniffSwitch.kt                # 스트림 내용 감지 토글 — fetch/XHR 응답 앞부분 판별 on/off (volatile, PBPlayer 브리지 hot path)
       FragmentingSocketFactory.kt       # TLS ClientHello 조각화
       SniBypassClient.kt / SniBypassSwitch.kt
       ProxyManager.kt                   # HTTP/HTTPS 프록시 (WebView Proxy API)
@@ -88,10 +89,10 @@ app/src/main/
     web/
       UrlUtils.kt                       # URL/검색어 판별 + 정규화
       WebAssetLoader.kt                 # assets/JS 로딩
-      IframeScriptInjector.kt           # cross-origin iframe HTML에 JS prepend
+      IframeScriptInjector.kt           # cross-origin iframe HTML에 JS prepend (스트림 내용 감지가 꺼져 있으면 `__pbBodySniffOff` 플래그를 함께 실음)
       BrowserEnvPatch.kt                # document-start 주입 — WebView JS 환경 표식 제거(window.chrome / Notification) + 환경 진단 프로브
       ResumeBridge.kt                   # `window.PBResume` @JavascriptInterface — 이어보기 위치 save/load/clear
-      PlayerBridge.kt                   # `window.PBPlayer` @JavascriptInterface — 영상 롱프레스 → 외부 플레이어 openVideo(domSrc), 메인스레드 마샬 후 콜백
+      PlayerBridge.kt                   # `window.PBPlayer` @JavascriptInterface — 영상 롱프레스 → 외부 플레이어 openVideo(domSrc), 메인스레드 마샬 후 콜백 + onStreamBody/bodySniffEnabled(응답 내용 감지 보고 — 스킴·길이·mime 재검증 + 페이지당 8개, 스위치·챌린지·격리가 최종 게이트) + pageHost/challengePage(onPageStarted/onPageFinished 가 넣음)
       InlinePlayerBridge.kt             # `window.PBInline` @JavascriptInterface — 사이트 영상 play/rect/gone 보고(id 검증·rect 클램프, 페이지 입력은 전부 불신) + InlinePlayerCommands(take/pressed/release) JS 생성
       VisitedLinkMarker.kt              # 방문 기록 → 사이트별 페이지 키 해시 페이로드 사전 계산(백그라운드) + 현재 사이트 계열 해시로 visited_links.js 주입 + `ready` (콜드 스타트 재적용)
       VisitedLinkKeys.kt                # 사이트 키(마지막 숫자 묶음 → #, 숫자 라벨에 글자 없으면 null) / 페이지 키 / cyrb53식 64비트 해시 — visited_links.js와 비트 단위 대응, android.* 무의존(JVM 검증 가능)
@@ -167,6 +168,13 @@ app/src/main/
   - **큐잉과 인덱스 사이의 틈(`pendingRequests`).** `DownloadService.sendAddDownload` 는 인텐트 왕복이라 `onResult(true, …)` 직후에도 `downloadIndex.getDownload(url)` 이 아직 null 일 수 있다 — 그 한 박자 때문에 "받으면서 바로 보기" 의 **첫 재생만** 스트림 키를 잃으면 위의 렌디션 불일치가 그대로 재현된다. 그래서 `send()` 가 성공 시 `DownloadRequest` 를 메모리 맵에 남기고 `mediaItemFor` 가 인덱스 → 펜딩 순으로 본다(인덱스에 뜨면 펜딩 엔트리 제거, 16개 넘으면 통째로 비움). 재생 자체는 `enqueue` 의 **콜백에서** 띄운다 — HLS 는 `DownloadHelper.prepare()` 가 비동기라 콜백 이전엔 `DownloadRequest` 가 존재조차 안 한다. 큐잉 실패/중복이어도 재생은 띄운다(볼 수 있는 걸 안 틀어줄 이유가 없다).
   - **목록에서 트는 항목은 헤더를 다시 실어야 한다.** 아직 안 받은 뒷부분은 여전히 네트워크로 나가는데 그 CDN 들은 Referer/UA 를 본다. `DownloadCenter.rememberedHeaders(url)` 가 큐잉 때 저장해둔 Referer/UA 를 돌려주고(원래 탭은 이미 사라졌을 수 있다) Cookie 만 `CookieManager` 에서 그때그때 읽는다 — 세션이 갱신됐으면 새 값이 쓰인다.
   - **트레이드오프(솔직히):** 보면서 받으면 앞부분은 재생과 다운로드가 **같은 구간을 두 번** 받는다. 회선이 아주 느리면 다 받고 보는 쪽보다 오히려 더 끊긴다. 다운로더가 앞서 나가고 나면 사라지는 문제이지만, "언제나 이쪽이 낫다" 는 아니다.
+- **주소도 Content-Type 도 못 알아볼 때 — 응답 앞 512바이트를 본다 (`observeContent`/`initBodySniff`, v1.3.91, 실험):** "mp4/m3u8 이 아니여도 영상 플레이가 되는데.. 앱에서 네트워크로 들어오는 영상 정보를 케치해서 사용할순 없나?" 에 대한 판. 지금까지 인식 경로는 둘뿐이었다 — `detectMime`(URL 문자열)과 `observeResponseMime`(v1.3.81, **우리 OkHttp 를 탄 요청만**, 즉 SNI 우회나 프라이빗 DNS 가 켜졌을 때만). 둘 다 못 잡는 구멍이 정확히 tvmon1 류다: 주소가 `every9.poorcdn.com/v/e/<id>/c.html?token=…` 이고 네이티브 로더가 가져가므로 우리는 응답을 볼 방법이 없다. **세 번째 경로는 페이지 안에서 연다** — `video_gestures.js` 의 `initBodySniff` 가 `window.fetch` 와 `XMLHttpRequest` 를 감싸 GET 응답의 **앞 512바이트**만 들여다보고 `#EXTM3U`/`ftyp`/EBML 이면 `window.PBPlayer.onStreamBody(url, mime)` 로 보고한다 → `PlayerBridge` 가 스위치·스킴·길이·mime 을 다시 검사하고 `VideoStreamSniffer.observeContent` 가 후보로 넣는다(주소만으로 이미 알아본 URL 은 건너뛰고, `body:<url>` 키라 Content-Type 경로와 서로를 가리지 않는다). cross-origin iframe 플레이어는 브리지를 못 보므로 `postMessage({__pbStreamBody})` 로 최상위까지 릴레이한다(다른 브리지와 같은 패턴).
+  - **로그 없이 A/B 하려고 토글을 단다.** 사용자는 로그를 줄 수 없다("테스트 해볼수있는 방법으로 배포를 하면서 테스트") — 그래서 설정 → "스트림 내용 감지 (실험)"(기본 켬) → `BodySniffSwitch`. 켜고/끄고 같은 영상에서 "▶ 플레이어로 재생" 버튼·롱프레스 메뉴가 뜨는지만 비교하면 된다. **토글이 정의상의 게이트다 — 모든 프레임에서:** `PBPlayer` 가 보이는 프레임(최상위 포함, `addJavascriptInterface` 는 자식 프레임에도 보인다)은 설치 전에 `bodySniffEnabled()` 를 묻고, false 면 래퍼를 **아예 설치하지 않는다**. 브리지가 안 보이는 자식 프레임은 `IframeScriptInjector.injectScript` 가 설정이 꺼져 있으면 스크립트 앞에 `window.__pbBodySniffOff=true;` 를 붙여 준다. 브리지가 없는 최상위 프레임은 설치하지 않는다. 최종 결정은 여전히 브리지(`onStreamBody` 가 `bodySniffEnabled()` 를 먼저 본다)가 한다 — 설정을 끄면 다음 페이지부터 래퍼가 사라진다.
+  - **페이지 JS 를 깨면 안 된다.** 래퍼는 `Proxy`(apply 트랩)라 `name`/`length`/`toString` 이 네이티브 그대로이고, 원래 함수를 **먼저** 호출자의 `this`/인자 그대로 부른 뒤 결과를 그대로 돌려준다(관찰은 그 뒤). 요청별 상태는 XHR 객체에 expando 를 달지 않고 `WeakMap` 에 둔다. Content-Type 이 이미 `mpegurl`/`video/mp4`/`video/webm` 이면 본문을 읽지 않고 그걸로 판정한다. 아니면 fetch 는 `clone()` 한 쪽을 `getReader()` 로 첫 청크만 읽고 `cancel()`(거부도 삼킴) 하므로 원본 본문은 손대지 않는다. XHR 은 `load` 리스너로만 붙고 `responseType` 이 `''`/`text`/`arraybuffer`/`blob` 일 때만 앞부분을 본다. 이미지·폰트·오디오·CSS·JS·JSON·VTT·조각(`video/mp2t`, `iso.segment`) Content-Type 과, 경로가 `.m3u8/.mp4/.webm`(주소 경로 몫)·조각·자막·정적 자산 확장자로 끝나는 요청은 clone 전에 건너뛴다. 어느 단계든 던지면 조용히 포기한다. 문서당 16개(JS)·페이지당 8개(`PlayerBridge`, `onPageStarted` 의 `pageHost` 설정 때 초기화)까지만 보고한다.
+  - **조각·부속은 일부러 보고하지 않는다.** `classifyBytes` 가 MPEG-TS(`0x47` @0 & @188)와 `moof`/`styp`/`sidx` 를 null 로 떨군다 — 재생이 시작되면 조각이 수백 개 쏟아지는데 그걸 후보에 넣으면 12칸짜리 목록에서 정작 재생목록이 밀려난다(v1.3.80·v1.3.81 에서 같은 실수를 두 번 고쳤다). `ftyp` 도 major brand 를 보고 단독 영상이 아닌 것(`dash`/`msdh`/`msix`/`cmfc`/`cmf2` DASH·CMAF 조각, `avif`/`heic`/`mif1` 류 이미지, `M4A `/`M4B ` 오디오)은 버리고, mp4/webm 은 알려진 전체 크기(200 이면 Content-Length, 206 이면 Content-Range 의 총량)가 256KB 미만이면 버린다(fMP4 init 조각·미리보기·효과음). `iso5`/`iso6` 는 통째로 받는 fragmented mp4 도 쓰므로 크기로만 거른다.
+  - **페이지 입력은 전부 불신한다.** 보고되는 URL·mime 은 페이지(또는 임의 iframe)가 지어낼 수 있다. 릴레이 리스너는 **직계 자식 프레임**(`window.frames` 에 있는 `ev.source`)의 메시지만 받고 모양·스킴·mime·길이를 거르며, Kotlin 이 다시 거른다(http/https + 호스트 있음, 공백·제어문자 없음, 4096자, 세 mime 만, 페이지당 8개). 후보는 스니퍼 전역의 "마지막 호스트" 가 아니라 **보고한 WebView 의 `pageHost`** 로 들어간다(다른 탭이 방금 뭔가를 로드했어도 섞이지 않는다). 지어낸 URL 이 들어가도 결과는 "후보 목록에 항목 하나" 이고, 재생은 사용자가 고를 때만 일어난다.
+  - **챌린지 페이지·격리 사이트에서는 돌지 않는다.** 이 모듈은 `video_gestures.js` 안에 있으므로 `onPageFinished` 의 `!onChallenge` 블록에서만 평가된다. 그런데 그 게이트는 60초 챌린지 창만 봤고, 창은 **이번** 로드를 probe 가 판정한 뒤에야 열려서 콜드 스타트 1라운드 챌린지 문서에는 주입이 들어갔다 — 그래서 `onChallenge` 에 `isChallengeTitle(view.title)`(Kotlin 신호, JS 없음)을 합치고 결과를 `PlayerBridge.challengePage` 에도 넣는다(이 게이트는 제스처·광고차단 CSS·쿠키배너·방문 링크 주입에도 똑같이 걸린다). `bodySniffEnabled()` 는 `challengePage`·챌린지 창·**격리 호스트(계열)** 중 하나라도 참이면 false 다. `IframeScriptInjector` 도 챌린지 요청·격리 호스트는 건너뛴다. `fetch` 를 감싸는 것은 안티봇이 쉽게 알아채는 짓이라 **그 경계를 넘기면 v1.3.87 의 루프가 되살아난다.** 대가(솔직히): 격리된 사이트(tvwiki308 류)에서는 이 경로가 꺼져 있다 — 챌린지를 통과한 뒤의 평범한 페이지에도 Cloudflare JS 가 돌며 패치된 fetch 를 볼 수 있고, 거기서 떨어지면 통과 토큰을 잃는다.
+  - **한계(솔직히):** (1) 스크립트는 `onPageFinished` 에 얹히므로 그 **전에** 나간 요청은 못 본다 — 영상을 한 번 다시 재생하거나 탐색(seek)해야 잡히는 경우가 있다. (2) 재생목록을 JS 로 복호화해 `blob:`/MSE 로 넘기는 사이트(tvmon1 `mode=obfuscated` 가 그럴 가능성)는 앞부분이 `#EXTM3U` 가 아니라 여전히 못 잡는다 — 다음 칸은 MSE `SourceBuffer.appendBuffer` 캡처다. (3) `<video src>` 를 브라우저 미디어 스택이 직접 받는 경우는 JS 를 거치지 않으므로 이 경로에 안 보인다(주소/Content-Type 경로 몫). (4) Web Worker·Service Worker 안의 fetch 는 감싸지 않는다. (5) `Range` 로 중간부터 받는 응답은 앞부분이 헤더가 아니라 인식되지 않는다. (6) 격리 사이트·챌린지 페이지에서는 꺼져 있다(위). (7) 페이지 스크립트가 우리보다 먼저 `fetch` 참조를 잡아 두었으면 그 호출은 안 보인다.
 - **주소를 보지 말고 응답을 봐야 했다 (`observeResponseMime`, v1.3.81):** tvmon1 두 번째 로그도 후보 0개 · 미인식 15개였고, 미디어 요청은 여전히 하나도 없었다. 그런데 미인식 목록이 말해주는 것은 따로 있었다 — `player.bunny-frame.online/v/<id>?t=…&sig=…`(플레이어 iframe) → `every9.poorcdn.com/v/e/<id>/c.html?token=…&expires=…` → `every9.poorcdn.com/v/key7?c=<id>&token=…&mode=obfuscated` 세 쌍이 방문할 때마다 정확히 같은 모양으로 반복된다. **`c.html` 이 HLS 재생목록이고 `key7` 이 AES-128 키일 가능성이 매우 높다** — 그리고 그 둘은 **어떤 URL 패턴을 넣어도 영영 못 잡는다.** `.html` 과 확장자 없는 경로이기 때문이다. 여기서 패턴을 하나 더 추측해 넣는 것이 캡차 v1.3.58~73 에서 열 번 반복한 실수다.
   - **서버는 이미 답을 말하고 있었다.** `detectMime` 이 URL 문자열만 보는 이유는 `shouldInterceptRequest` 가 **요청만** 주기 때문인데, 우리에겐 응답을 손에 쥔 지점이 정확히 한 곳 있다 — `SniBypassClient.intercept` 의 `resp.header("Content-Type")`. 이제 그 자리에서 `VideoStreamSniffer.observeResponseMime(url, contentType)` 을 불러 **서버가 스스로 밝힌 종류**로 2차 인식을 한다. `application/vnd.apple.mpegurl`·`application/x-mpegURL` 이면 주소가 `c.html` 이든 뭐든 후보로 잡힌다. **한계는 분명하다** — 이 경로는 SNI 우회나 프라이빗 DNS 가 켜져 우리 OkHttp 를 타는 요청에만 닿는다(네이티브 로더는 응답을 우리에게 안 준다). tvmon1 은 `intercept[sni]` 가 찍히므로 해당된다.
   - **조각 MIME 은 일부러 뺀다.** `mediaMimeOf` 가 `video/mp2t`·`iso.segment` 를 `null` 로 떨군다 — 재생이 시작되면 조각이 수백 개 쏟아지는데 그걸 다 후보로 넣으면 **12칸짜리 후보 목록에서 정작 재생목록이 밀려난다**(v1.3.80 에서 고친 것과 정확히 같은 실수를 다른 자리에서 반복하는 셈). DASH(`application/dash+xml`)는 후보로 잡지 않고 로그만 남긴다 — `media3-exoplayer-dash` 의존성이 없어 **재생도 다운로드도 못 하므로**, 잡아봐야 열리지 않는 후보를 쥐여주는 꼴이다.

@@ -164,6 +164,31 @@ object VideoStreamSniffer {
     }
 
     /**
+     * Third recognition path (v1.3.91): the page's fetch/XHR wrapper looked at
+     * the first bytes of a response and they were a playlist (`#EXTM3U`), an
+     * mp4 (`ftyp`) or webm (EBML), whatever the URL or Content-Type said. This
+     * reaches requests the native loader made - the gap observeResponseMime
+     * cannot close - but only for requests the page's JS issued after our
+     * script landed. [host] is the reporting WebView's page host; [url] and
+     * [mime] are already validated, allow-listed and rate-limited by
+     * [com.playerbrowser.app.web.PlayerBridge].
+     */
+    fun observeContent(host: String, url: String, mime: String) {
+        if (detectMime(url) != null) return
+        if (responseTypes.size > MAX_TYPES) responseTypes.clear()
+        // Keyed apart from Content-Type sightings so one path doesn't hide the
+        // other; first sighting only either way.
+        if (responseTypes.put("body:$url", mime) != null) return
+        val list = candidates.getOrPut(host) { CopyOnWriteArrayList() }
+        if (list.none { it.url == url }) {
+            list.add(StreamCandidate(url, mime, System.currentTimeMillis()))
+            while (list.size > MAX_PER_HOST) list.removeAt(0)
+            _revision.update { it + 1 }
+            DebugLog.d(TAG, "captured by body sniff $mime for $host -> $url")
+        }
+    }
+
+    /**
      * Media types worth offering as a candidate. Segment types are deliberately
      * excluded: a playing video fetches hundreds of them, and each one added
      * here would push the playlist straight out of the bounded list.

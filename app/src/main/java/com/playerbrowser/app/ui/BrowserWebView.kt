@@ -251,6 +251,7 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                     }
                 }
                 resumeBridge.currentUrl = url
+                playerBridge.pageHost = host
                 url?.let { callbacks.onStarted(it) }
             }
             override fun onPageFinished(view: WebView?, url: String?) {
@@ -261,7 +262,14 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 // 있고, 쿠키배너 킬러는 버튼을 눌러댄다 — 안티봇 입장에선 전부
                 // 자동화 신호이고 챌린지엔 어차피 쓸모가 없다.
                 val finishedHost = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
-                val onChallenge = ChallengeDetector.isChallengeActive(finishedHost)
+                // 챌린지 창(60초)은 아래 probe/probeTitle 이 **이번** 로드를 판정한
+                // 뒤에야 열린다 — 콜드 스타트의 1라운드 챌린지 문서는 창이 비어
+                // 있어 여기서 걸러지지 않았다. 제목도 같이 본다(Kotlin 신호라 JS
+                // 없음). fetch/XHR 를 감싸는 스크립트가 들어간 뒤로는 1라운드도
+                // 안 된다(v1.3.91).
+                val onChallenge = ChallengeDetector.isChallengeActive(finishedHost) ||
+                    ChallengeDetector.isChallengeTitle(view?.title)
+                playerBridge.challengePage = onChallenge
                 if (!onChallenge) {
                     // 이 기기의 WebView에 실제로 뭐가 빠져 있는지 1회 진단 (v1.3.61).
                     view?.let { BrowserEnvPatch.probeEnvironment(it) }

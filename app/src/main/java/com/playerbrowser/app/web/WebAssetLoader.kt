@@ -7,6 +7,7 @@ object WebAssetLoader {
     @Volatile private var cachedGestureJs: String? = null
     @Volatile private var cachedVisitedJs: String? = null
     @Volatile private var cachedImageOrderJs: String? = null
+    @Volatile private var cachedPickerJs: String? = null
 
     fun gestureScript(context: Context): String {
         cachedGestureJs?.let { return it }
@@ -28,6 +29,14 @@ object WebAssetLoader {
         cachedImageOrderJs?.let { return it }
         return synchronized(this) {
             cachedImageOrderJs ?: read(context, "image_order.js").also { cachedImageOrderJs = it }
+        }
+    }
+
+    /** `element_picker.js` — defines `window.__pbPicker`, see [ElementPickerCommands]. */
+    fun elementPickerScript(context: Context): String {
+        cachedPickerJs?.let { return it }
+        return synchronized(this) {
+            cachedPickerJs ?: read(context, "element_picker.js").also { cachedPickerJs = it }
         }
     }
 

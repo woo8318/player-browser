@@ -477,6 +477,8 @@
     // In native fullscreen the Kotlin GestureCapturingFrame drives gestures via
     // window.__pb.* hooks; skip the in-document path to avoid double seeking.
     if (window.__pb && window.__pb.fsActive) { touchState = null; return; }
+    // Element picker (요소 숨기기) owns every touch while it is up.
+    if (window.__pbPickerActive) { touchState = null; return; }
     if (!e.touches || e.touches.length === 0) return;
     var t0 = e.touches[0];
     var v = videoAtPoint(t0.clientX, t0.clientY);
@@ -658,6 +660,9 @@
     // BEFORE any `document` listener, so our cancel always runs first and the
     // double-tap correctly cancels the pending long-press.
     window.addEventListener('touchstart', function (e) {
+      // Registered before the element picker's own window-capture listener,
+      // so its stopImmediatePropagation can't stop us — bail on the flag.
+      if (window.__pbPickerActive) { clearLp(); return; }
       if (!e.touches || e.touches.length !== 1) { clearLp(); return; }
       var t0 = e.touches[0];
       // Strict on-video test (no active-video fallback) so a long-press on page

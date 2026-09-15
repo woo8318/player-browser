@@ -53,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.playerbrowser.app.web.BrowserEnvPatch
+import com.playerbrowser.app.web.ElementHider
 import com.playerbrowser.app.web.IframeScriptInjector
 import com.playerbrowser.app.web.ImageOrderFixer
 import com.playerbrowser.app.web.InlinePlayerBridge
@@ -287,6 +288,8 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                     view?.let { VisitedLinkMarker.apply(it, url) }
                     // 자동 정렬을 켠 사이트면 웹툰 이미지를 파일명 번호순으로 (v1.3.99).
                     view?.let { ImageOrderFixer.applyIfRemembered(it, url) }
+                    // 사용자가 이 사이트에서 숨긴 요소를 계속 숨김 (v1.3.100).
+                    view?.let { ElementHider.apply(it, url) }
                 }
                 // "사람인지 확인" 위젯이 떠 있는지 살펴 디버그 로그에 기록
                 // (어떤 사이트가 어떤 캡차를 쓰는지 / 루프에 빠졌는지 추적용).

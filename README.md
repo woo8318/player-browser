@@ -11,6 +11,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 - **검색어/URL 자동 인식** — URL이 아니면 Google 검색으로 폴백
 - **즐겨찾기 / 방문 기록** — 방문한 URL은 즐겨찾기 목록에서 ✓ 표시
 - **도메인 숫자가 바뀌어도 방문한 링크 표시 (설정 토글, 기본 켜짐)** — 사이트 주소 숫자가 바뀌면(newtoki123 → newtoki124) 브라우저 기본 방문 표시(`:visited`)는 주소가 달라져 전부 사라집니다. 방문 기록을 도메인 숫자와 무관하게 비교해서 예전에 열었던 글의 링크를 보라색으로 표시합니다(썸네일은 그대로). 무한 스크롤로 나중에 추가되는 링크와 방금 누른 링크도 반영. 페이지에는 방문 기록 주소가 아니라 해시만 넘겨 사이트가 기록을 읽어갈 수 없게 했습니다. 주소에 숫자가 없는 사이트(`163.com`처럼 숫자만 있는 이름 포함)는 기본 방문 표시를 그대로 사용
+- **요소 숨기기 (영역 선택, v1.3.100)** — ⋮ 메뉴 → "요소 숨기기 (영역 선택)"을 누르면 페이지 위에 선택 화면이 뜹니다. 손가락으로 **영역을 끌면** 그 안에 들어오는 요소가, **탭하면** 그 요소가 선택되고(다시 탭하면 해제), 두 손가락으로는 페이지를 스크롤할 수 있습니다. 하단 바의 **넓게/좁게**로 선택을 바깥 상자/안쪽 상자로 옮기고 **숨기기**를 누르면 사라집니다. 숨긴 요소는 **그 사이트에서 계속 숨겨지고**(도메인 숫자가 바뀐 미러 주소 포함, 앱을 껐다 켜도 유지) 나중에 다시 생기는 같은 요소도 가려집니다. 방금 숨긴 것은 **되돌리기**, 예전에 숨긴 것은 ⋮ → "숨긴 요소 관리 (N)"에서 골라 해제하거나 모두 해제. 보안 확인(캡차) 화면에서는 동작하지 않습니다
 - **새 창 링크 → 부모 탭 복귀 (Opera 스타일)** — `target="_blank"` / `window.open()`이 띄운 자식 탭에서 뒤로가기 누르면 자식 탭을 닫고 원래 부모 탭으로 복귀
 - **링크를 항상 새 탭에서 열기 (설정 토글, 기본 꺼짐)** — 켜면 새 창/팝업 링크가 아니어도 페이지 안의 일반 링크 탭이 현재 탭을 바꾸지 않고 새 탭(현재 탭의 자식)에서 열림. 뒤로 가기를 하면 원래 탭으로 복귀. 주소창 입력·리다이렉트에는 영향 없음
 - **링크 롱프레스 메뉴** — 페이지의 링크를 길게 누르면 "새 탭에서 열기 / 백그라운드 탭으로 열기 / 링크 주소 복사" 메뉴가 뜸. 전역 토글을 켜고 끌 필요 없이 원하는 링크만 새 탭에서 열 수 있음. "백그라운드 탭"은 현재 페이지에 머문 채 새 탭을 뒤에 쌓음 (탭이 열릴 때 페이지 제목을 미리 가져와 탭 목록에서 뭐가 열렸는지 바로 구분 가능)
@@ -142,6 +143,7 @@ app/src/main/
   assets/video_gestures.js              # WebView에 주입되는 제스처 JS
   assets/visited_links.js               # 도메인 숫자와 무관한 방문 링크 표시 JS
   assets/image_order.js                 # 웹툰 이미지 파일명 번호순 정렬/되돌리기 JS
+  assets/element_picker.js              # 요소 숨기기 — 영역/탭 선택 오버레이
   java/com/playerbrowser/app/
     MainActivity.kt                     # 단일 액티비티 + Compose
     PlayerBrowserApp.kt                 # Application — CrashRecorder / 프록시 / SNI / AdBlock 초기화
@@ -154,6 +156,7 @@ app/src/main/
       TabPersistence.kt
       TabWebStateStore.kt               # 탭별 WebView 뒤로/앞으로 히스토리 저장 (saveState/restoreState Bundle)
       WatchProgressStore.kt             # 동영상 이어보기 위치 저장 (SharedPreferences JSON)
+      ElementHideStore.kt               # 사이트별 숨길 요소 선택자 저장 (SharedPreferences JSON)
     network/                            # 네트워크 인터셉트 / 프록시 / 진단
       AdBlocker.kt / AdBlockSwitch.kt   # 광고 차단
       CookieBannerKiller.kt / CookieBannerSwitch.kt  # 쿠키 동의 배너 자동 거부
@@ -175,6 +178,7 @@ app/src/main/
       BookmarksScreen.kt / HistoryScreen.kt
       SettingsScreen.kt / SettingsViewModel.kt
       DebugLogScreen.kt                 # 로그 + 충돌 기록 뷰어
+      ElementHideUi.kt                  # 요소 숨기기 하단 바 + 숨긴 요소 관리 대화상자
       UpdateDialog.kt / ErrorPage.kt
     update/                             # 자체 업데이트 (GitHub Releases)
       UpdateClient.kt / UpdateInstaller.kt / UpdateModels.kt / Version.kt
@@ -184,6 +188,7 @@ app/src/main/
       VisitedLinkMarker.kt              # 방문 기록을 사이트별 페이지 키 해시로 묶어 visited_links.js 주입
       VisitedLinkKeys.kt                # 사이트 키(도메인 숫자 → #) / 페이지 키 / 해시 — visited_links.js와 1:1 대응
       ImageOrderFixer.kt                # 웹툰 이미지 번호순 정렬 — ⋮ 메뉴 정렬/되돌리기 + 사이트별 기억 + 페이지 로드 시 자동 적용
+      ElementHider.kt                   # 저장된 선택자를 display:none 스타일시트로 주입 + 피커 명령
 .github/workflows/android.yml           # APK 빌드 + 릴리스 + 오래된 릴리스 정리
 ```
 

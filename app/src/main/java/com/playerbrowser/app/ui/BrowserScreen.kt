@@ -9,6 +9,7 @@ import android.os.SystemClock
 import android.content.Intent
 import android.net.Uri
 import android.webkit.CookieManager
+import android.webkit.WebView
 import androidx.activity.compose.BackHandler
 import androidx.appcompat.view.ContextThemeWrapper
 import androidx.core.app.ActivityCompat
@@ -55,6 +56,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
@@ -65,6 +67,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -93,6 +96,7 @@ import com.playerbrowser.app.cast.CastResult
 import com.playerbrowser.app.cast.CastSessionBridge
 import com.playerbrowser.app.cast.StreamCandidate
 import com.playerbrowser.app.cast.VideoStreamSniffer
+import com.playerbrowser.app.data.ElementHideStore
 import com.playerbrowser.app.data.TabWebStateStore
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
@@ -105,10 +109,13 @@ import com.playerbrowser.app.network.CookieFlusher
 import com.playerbrowser.app.network.UrlRecovery
 import com.playerbrowser.app.player.DownloadCenter
 import com.playerbrowser.app.player.VideoPlayerActivity
+import com.playerbrowser.app.web.ElementHider
+import com.playerbrowser.app.web.ElementPickerCommands
 import com.playerbrowser.app.web.ImageOrderFixer
 import com.playerbrowser.app.web.InlinePlayerCommands
 import com.playerbrowser.app.web.InlineRect
 import com.playerbrowser.app.web.UrlUtils
+import com.playerbrowser.app.web.VisitedLinkKeys
 import com.playerbrowser.app.web.VisitedLinkMarker
 
 @OptIn(UnstableApi::class)
@@ -230,6 +237,26 @@ fun BrowserScreen(
         }
     }
 
+    // 요소 숨기기 피커 (v1.3.100) — the WebView the picker overlay is on, and
+    // the selectors the last "숨기기" added (what 되돌리기 removes).
+    var pickView by remember { mutableStateOf<WebView?>(null) }
+    var lastBatch by remember { mutableStateOf<List<String>>(emptyList()) }
+    fun exitPick(runJs: Boolean) {
+        val v = pickView
+        // Page JS only when the document there is not a challenge (v1.3.87).
+        if (runJs && v != null) {
+            runCatching {
+                if (ElementHider.pickBlockedReason(v.url, v.title) == null) {
+                    v.evaluateJavascript(ElementPickerCommands.EXIT, null)
+                }
+            }
+        }
+        pickView = null
+        lastBatch = emptyList()
+    }
+    // Leaving the screen (settings, bookmarks …) would strand the overlay with no bar.
+    DisposableEffect(Unit) { onDispose { exitPick(true) } }
+
     val hasParent = activeTabState.parentTabId?.let { pid -> tabs.any { it.id == pid } } == true
     BackHandler(enabled = state.canGoBack || hasParent) {
         if (state.canGoBack) {
@@ -238,9 +265,18 @@ fun BrowserScreen(
             viewModel.tryReturnToParent()
         }
     }
+    // Registered later → wins while the picker is up: back closes the picker first.
+    BackHandler(enabled = pickView != null) { exitPick(true) }
 
     var urlInput by remember { mutableStateOf(state.currentUrl) }
-    LaunchedEffect(state.currentUrl) { urlInput = state.currentUrl }
+    LaunchedEffect(state.currentUrl) {
+        urlInput = state.currentUrl
+        // loading = onPageStarted: a new document took the overlay with it and
+        // may be a challenge page, so no JS — only the Kotlin side is dropped.
+        // Not loading = the URL changed without a new document (same-document
+        // navigation reported by onPageFinished): the overlay is still there.
+        if (pickView != null) exitPick(runJs = !state.loading)
+    }
 
     val focusManager = LocalFocusManager.current
     val haptics = LocalHapticFeedback.current
@@ -279,6 +315,11 @@ fun BrowserScreen(
         // yet the page it opened is now in history — refresh the visited marks.
         val webView = activeWebState.webView
         VisitedLinkMarker.apply(webView, webView.url)
+        // Rules changed from another tab of the same site land here too (all of
+        // them released → no JS here; the old sheet goes with the next load).
+        ElementHider.apply(webView, webView.url)
+        // The picker bar only shows over its own tab — close it on the one we left.
+        pickView?.let { if (it !== webView) exitPick(true) }
         webView.focusPageUnlessTyping()
     }
     // Cold start: the restored tab can finish loading before the history index
@@ -769,6 +810,50 @@ fun BrowserScreen(
                                 }
                             )
                             DropdownMenuItem(
+                                text = { Text("요소 숨기기 (영역 선택)") },
+                                leadingIcon = { Icon(Icons.Filled.VisibilityOff, contentDescription = null) },
+                                onClick = {
+                                    menuOpen = false
+                                    val wv = activeWebState.webView
+                                    val app = context.applicationContext
+                                    // 챌린지 페이지 위에서는 JS 금지 (v1.3.87) — Kotlin 신호로만 판정.
+                                    val reason = ElementHider.pickBlockedReason(wv.url, wv.title)
+                                    if (reason != null) {
+                                        Toast.makeText(context, reason, Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        wv.evaluateJavascript(ElementPickerCommands.start(app)) { r ->
+                                            val status = ElementPickerCommands.parseStatus(r)
+                                            if (status == "ok" || status == "already") {
+                                                pickView = wv
+                                                lastBatch = emptyList()
+                                                Toast.makeText(
+                                                    app,
+                                                    "끌어서 영역 선택 · 탭으로 요소 선택 · 두 손가락 스크롤",
+                                                    Toast.LENGTH_LONG
+                                                ).show()
+                                            } else {
+                                                Toast.makeText(app, "선택 화면을 열 수 없어요 [$status]", Toast.LENGTH_SHORT).show()
+                                            }
+                                        }
+                                    }
+                                }
+                            )
+                            val hideHost = VisitedLinkKeys.hostOf(state.currentUrl)
+                            val hideCount = hideHost?.let { ElementHideStore.get(context).count(it) } ?: 0
+                            if (hideHost != null && hideCount > 0) {
+                                DropdownMenuItem(
+                                    text = { Text("숨긴 요소 관리 ($hideCount)") },
+                                    leadingIcon = { Icon(Icons.Filled.VisibilityOff, contentDescription = null) },
+                                    onClick = {
+                                        menuOpen = false
+                                        showHiddenElementsDialog(context, hideHost) {
+                                            val w = activeWebState.webView
+                                            ElementHider.apply(w, w.url, force = true)
+                                        }
+                                    }
+                                )
+                            }
+                            DropdownMenuItem(
                                 text = { Text("이 사이트 데이터 지우고 새로고침") },
                                 leadingIcon = { Icon(Icons.Filled.DeleteSweep, contentDescription = null) },
                                 onClick = {
@@ -982,7 +1067,8 @@ fun BrowserScreen(
             // without opening the ⋮ menu. Dismissible so it never blocks content.
             // Hidden while our in-place player is showing (it has its own ⛶).
             androidx.compose.animation.AnimatedVisibility(
-                visible = hasPlayableStream && !playerButtonDismissed && !inlineActive,
+                visible = hasPlayableStream && !playerButtonDismissed && !inlineActive &&
+                    pickView == null,
                 enter = androidx.compose.animation.fadeIn() +
                     androidx.compose.animation.scaleIn(initialScale = 0.8f),
                 exit = androidx.compose.animation.fadeOut() +
@@ -994,6 +1080,73 @@ fun BrowserScreen(
                 PlayerFab(
                     onPlay = launchPlayer,
                     onDismiss = { playerButtonDismissed = true }
+                )
+            }
+            // 요소 숨기기 피커 하단 바 — only over the tab the picker is on.
+            val picking = pickView
+            if (picking != null && picking === activeWebState.webView) {
+                val app = context.applicationContext
+                // Every command re-checks the page first: the document under the
+                // overlay may have turned into a challenge page (v1.3.87).
+                fun pickerOr(block: (WebView) -> Unit) {
+                    val v = pickView ?: return
+                    val reason = ElementHider.pickBlockedReason(v.url, v.title)
+                    if (reason != null) {
+                        Toast.makeText(app, reason, Toast.LENGTH_SHORT).show()
+                        exitPick(false)
+                    } else {
+                        block(v)
+                    }
+                }
+                fun step(js: String) = pickerOr { v ->
+                    v.evaluateJavascript(js) { r ->
+                        val n = ElementPickerCommands.parseCount(r)
+                        // -1 = the overlay is gone (page replaced it) — drop our side too.
+                        if (n < 0 && pickView === v) exitPick(false)
+                        if (n == 0) Toast.makeText(app, "선택된 영역이 없어요", Toast.LENGTH_SHORT).show()
+                    }
+                }
+                ElementPickBar(
+                    canUndo = lastBatch.isNotEmpty(),
+                    onWiden = { step(ElementPickerCommands.WIDEN) },
+                    onNarrow = { step(ElementPickerCommands.NARROW) },
+                    onHide = {
+                        pickerOr { v ->
+                            v.evaluateJavascript(ElementPickerCommands.CONFIRM) { r ->
+                                val picked = ElementPickerCommands.parsePicked(r)
+                                val h = v.url?.let(VisitedLinkKeys::hostOf)
+                                if (picked.isEmpty() || h == null) {
+                                    Toast.makeText(app, "먼저 숨길 영역을 선택하세요", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    val added = ElementHideStore.get(app).add(h, picked)
+                                    if (added.isNotEmpty()) {
+                                        if (pickView === v) lastBatch = added
+                                        ElementHider.apply(v, v.url, force = true)
+                                        Toast.makeText(
+                                            app,
+                                            "${added.size}개 요소를 숨겼어요 — 이 사이트에서 계속 숨겨집니다",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                    } else {
+                                        Toast.makeText(app, "이미 숨긴 요소예요", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    onUndo = {
+                        pickerOr { v ->
+                            val h = v.url?.let(VisitedLinkKeys::hostOf)
+                            if (h != null && lastBatch.isNotEmpty()) {
+                                ElementHideStore.get(app).remove(h, lastBatch)
+                                ElementHider.apply(v, v.url, force = true)
+                                Toast.makeText(app, "되돌렸어요", Toast.LENGTH_SHORT).show()
+                            }
+                            lastBatch = emptyList()
+                        }
+                    },
+                    onDone = { exitPick(true) },
+                    modifier = Modifier.align(Alignment.BottomCenter)
                 )
             }
         }

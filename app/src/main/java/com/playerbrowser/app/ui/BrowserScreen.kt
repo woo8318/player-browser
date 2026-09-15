@@ -93,7 +93,9 @@ import com.playerbrowser.app.cast.CastSessionBridge
 import com.playerbrowser.app.cast.StreamCandidate
 import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.data.TabWebStateStore
+import androidx.media3.common.PlaybackException
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource
 import com.playerbrowser.app.network.ChallengeCookies
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.InlinePlayerSwitch
@@ -262,6 +264,13 @@ fun BrowserScreen(
                         InlinePlayerCommands.release(s.videoId, -1.0), null
                     )
                 }
+                // Every way the overlay disappears says why (v1.3.97).
+                DebugLog.d("InlinePlayer", "탭 전환으로 우리 플레이어 종료 (${s.videoId})")
+                Toast.makeText(
+                    context.applicationContext,
+                    "다른 탭으로 옮겨 우리 플레이어를 닫았어요 [tabswitch]",
+                    Toast.LENGTH_SHORT
+                ).show()
             }
         }
         // Coming back from a child/background tab fires no onPageFinished here,
@@ -489,15 +498,21 @@ fun BrowserScreen(
                 )
             }
         }
-        // A manual take that the controller ends on its own would otherwise
-        // look like "it did nothing" (v1.3.95).
-        inlinePlayer.onAutoEnded = { _, why ->
+        // A take that the controller ends on its own would otherwise look
+        // like "it did nothing" / "it reverted" (v1.3.95 manual, v1.3.97 all).
+        // Application context: the controller outlives this composition.
+        inlinePlayer.onAutoEnded = { s, why ->
             val message = when (why) {
                 "hidden" -> "사이트가 영상 영역을 숨겨서 사이트 플레이어로 되돌렸어요 [hidden]"
                 "gone" -> "영상이 페이지에서 사라져 되돌렸어요 [gone]"
+                "nav" -> "페이지가 바뀌어 우리 플레이어를 닫았어요 [nav]"
+                "notrack" -> "페이지가 영상 위치를 알려주지 않아 사이트 플레이어로 되돌렸어요 [notrack]"
                 else -> "우리 플레이어를 닫았어요 [$why]"
             }
-            Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            DebugLog.d("InlinePlayer", "우리 플레이어 자동 종료 [$why] (${s.videoId})")
+            // Navigating away is usually the user's own doing: short is enough.
+            val length = if (why == "nav") Toast.LENGTH_SHORT else Toast.LENGTH_LONG
+            Toast.makeText(context.applicationContext, message, length).show()
         }
     }
     // Resolve a "video started playing" report to a sniffed stream and take
@@ -531,6 +546,14 @@ fun BrowserScreen(
             // Auto: keep the request pending; the next sniffed stream re-runs this.
             return@LaunchedEffect
         }
+        // Our player already failed on this stream in this document: taking it
+        // again on the site's autoplay retry would only fail again and stack
+        // error toasts. A manual pick still gets to try (v1.3.97).
+        if (!req.manual && inlinePlayer.hasFailed(req.tabId, candidate.url)) {
+            DebugLog.d("InlinePlayer", "이미 실패한 스트림이라 자동 교체 생략 (${req.videoId})")
+            inlinePlayer.consumeRequest()
+            return@LaunchedEffect
+        }
         if (!req.rect.isUsable) {
             // Too small to host a player (thumbnail / hidden). A manual pick
             // still deserves an answer; auto stays quiet.
@@ -545,7 +568,13 @@ fun BrowserScreen(
             }
             return@LaunchedEffect
         }
-        // Replacing another taken video on the same page: give that one back first.
+        // Replacing another taken video on the same page: give that one back
+        // first. Only a manual pick gets here with a live session on this tab
+        // (the controller parks same-tab automatic reports while one is
+        // showing and promotes them when it ends, v1.3.97).
+        inlinePlayer.session?.let { old ->
+            DebugLog.d("InlinePlayer", "기존 세션(${old.videoId})을 새 영상(${req.videoId})으로 교체")
+        }
         endInline(true, -1.0)
         val ua = runCatching { activeWebState.webView.settings.userAgentString }.getOrNull()
         val cookie = runCatching { CookieManager.getInstance().getCookie(candidate.url) }.getOrNull()
@@ -561,8 +590,7 @@ fun BrowserScreen(
                 userAgent = ua,
                 title = state.currentTitle
             ),
-            req.rect,
-            req.manual
+            req.rect
         )
         activeWebState.webView.evaluateJavascript(InlinePlayerCommands.take(req.videoId), null)
         if (req.manual) Toast.makeText(context, "우리 플레이어로 교체했어요", Toast.LENGTH_SHORT).show()
@@ -829,9 +857,34 @@ fun BrowserScreen(
                                 )
                                 endInline(true, pos)
                             },
-                            onError = { e ->
-                                DebugLog.w("InlinePlayer", "우리 플레이어 재생 실패 — 사이트 플레이어로 복귀: ${e.errorCodeName}", e)
-                                Toast.makeText(context, "우리 플레이어로 재생 실패 — 사이트 플레이어로 돌아갑니다", Toast.LENGTH_SHORT).show()
+                            onError = onError@{ e ->
+                                // The controller may already have ended this
+                                // session (hidden/gone/nav toast shown); a late
+                                // player error must not toast a second reason.
+                                // Equality, not identity: the overlay's listener
+                                // keeps the lambda of the composition that built
+                                // its player (remember(session) is equals-keyed).
+                                if (inlinePlayer.session != inlineSession) return@onError
+                                // The code is what the user reads back to us —
+                                // they cannot send logs (v1.3.97).
+                                val code = inlineErrorCode(e)
+                                inlinePlayer.noteFailed(inlineSession.tabId, inlineSession.candidate.url)
+                                val streamHost = runCatching {
+                                    Uri.parse(inlineSession.candidate.url).host
+                                }.getOrNull() ?: "?"
+                                DebugLog.w(
+                                    "InlinePlayer",
+                                    "우리 플레이어 재생 실패 — 사이트 플레이어로 복귀 [$code] " +
+                                        "url=${inlineSession.candidate.url.take(160)} " +
+                                        "mime=${inlineSession.candidate.mime} " +
+                                        "referer=${inlineSession.referer?.take(120)}",
+                                    e
+                                )
+                                Toast.makeText(
+                                    context.applicationContext,
+                                    "우리 플레이어로 재생 실패 — 사이트 플레이어로 돌아갑니다 [$code] ($streamHost)",
+                                    Toast.LENGTH_LONG
+                                ).show()
                                 endInline(true, -1.0)
                             }
                         )
@@ -1100,4 +1153,26 @@ private fun manualPressedFailure(status: String): String? = when (status) {
     "tiny" -> "영상 영역이 너무 작아요 [tiny]"
     "throttled" -> "잠시 후 다시 시도해 주세요 [throttled]"
     else -> "알 수 없는 응답 [$status]"
+}
+
+/**
+ * "error:<Media3 code name>" plus the HTTP status when the failure was a bad
+ * response (403 = token/Referer/hotlink, 404 = stale candidate URL, …) —
+ * Media3 wraps `InvalidResponseCodeException` a level or two down, so walk
+ * the cause chain (v1.3.97).
+ */
+@OptIn(UnstableApi::class)
+private fun inlineErrorCode(e: PlaybackException): String {
+    var t: Throwable? = e
+    var http: Int? = null
+    var depth = 0
+    while (t != null && depth < 5) {
+        if (t is HttpDataSource.InvalidResponseCodeException) {
+            http = t.responseCode
+            break
+        }
+        t = t.cause
+        depth++
+    }
+    return "error:${e.errorCodeName}" + (http?.let { " http=$it" } ?: "")
 }

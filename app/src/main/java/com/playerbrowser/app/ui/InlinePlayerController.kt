@@ -6,6 +6,7 @@ import android.os.SystemClock
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.InlinePlayerSwitch
 import com.playerbrowser.app.web.InlineRect
 import kotlin.math.abs
@@ -71,10 +72,12 @@ class InlinePlayerController {
     var releaseHandler: ((InlineSession) -> Unit)? = null
 
     /**
-     * Called after the controller ended a session that the user started from
-     * the long-press menu, with why ("hidden" = box collapsed, "gone" = video
-     * left the DOM). A manual pick that silently vanishes looks exactly like
-     * "it did nothing", so BrowserScreen toasts the reason (v1.3.95).
+     * Called after the controller ended a session on its own, with why
+     * ("hidden" = box collapsed, "gone" = video left the DOM, "nav" = the
+     * tab loaded a new document). An overlay that silently vanishes looks
+     * exactly like "our player reverted", so BrowserScreen toasts the reason —
+     * manual sessions since v1.3.95, automatic ones too since v1.3.97 (the
+     * user saw the overlay appear, so its disappearance deserves a word).
      */
     var onAutoEnded: ((InlineSession, String) -> Unit)? = null
 
@@ -85,8 +88,6 @@ class InlinePlayerController {
      */
     var manualReports = 0
         private set
-
-    private var sessionManual = false
 
     /**
      * `manual=true` comes from page JS, and any page can call `PBInline.onPlay`
@@ -102,6 +103,26 @@ class InlinePlayerController {
     private val flushRect = Runnable { applyPendingRect() }
     private val unusableGrace = Runnable { endUnusable() }
     private var unusableArmed = false
+
+    /**
+     * A take on a video that no longer exists (element swapped between the
+     * play report and our `take`) gets no rect and no gone from JS — the
+     * overlay would sit over nothing forever. A live take always reports a
+     * rect on its first rAF tick, so silence means "not tracked".
+     */
+    private val noTrack = Runnable { endNoTrack() }
+
+    /** Auto report for another video that arrived while a session was live. */
+    private var deferred: InlinePlayRequest? = null
+
+    /** Uptime of the latest park; only a recent one is worth promoting. */
+    private var deferredAt = 0L
+
+    /** Video ids already logged as parked this session (keeps the ring buffer readable). */
+    private val ignoredLogged = HashSet<String>()
+
+    /** "tabId|streamUrl" our player already failed on (see [noteFailed]). */
+    private val failed = HashSet<String>()
 
     fun reportPlay(
         tabId: String,
@@ -120,6 +141,26 @@ class InlinePlayerController {
         // Already overlaid on this very video: the site retrying play() is
         // handled by JS (kept muted+paused); nothing to resolve again.
         if (s != null && s.tabId == tabId && s.videoId == videoId && !manual) return
+        // Another video on the same page started while ours is overlaid
+        // (preview loop, ad pre-roll, next-episode teaser): an automatic report
+        // used to replace the session silently, which looked like "our player
+        // reverted" (v1.3.97). Only a manual pick replaces a live session.
+        // The report is parked, not dropped: players that swap the <video>
+        // element report the new one before the old one's gone/0-box lands,
+        // and JS throttles the follow-up report — so the session's own end
+        // promotes it (see [promoteDeferred]).
+        if (s != null && s.tabId == tabId && !manual) {
+            if (ignoredLogged.add(videoId)) {
+                DebugLog.d("InlinePlayer", "교체 중 다른 영상 자동 보고 보류 ($videoId) — 현재 세션 유지")
+            }
+            val kept = deferred?.takeIf { it.tabId == tabId && it.videoId == videoId }
+            deferred = InlinePlayRequest(
+                tabId, videoId, domSrc, positionSec, rect, false,
+                kept?.createdAt ?: SystemClock.uptimeMillis()
+            )
+            deferredAt = SystemClock.uptimeMillis()
+            return
+        }
         val prev = request
         // A pending manual pick is answered on the next composition; an
         // autoplay report landing in between must not replace it.
@@ -141,6 +182,8 @@ class InlinePlayerController {
     fun reportRect(tabId: String, videoId: String, rect: InlineRect) {
         val s = session ?: return
         if (s.tabId != tabId || s.videoId != videoId) return
+        // Any rect (even a 0-box) proves JS is tracking the taken video.
+        main.removeCallbacks(noTrack)
         if (!rect.isUsable) {
             // Collapsed to nothing (display:none, scrolled into a 0-height
             // container, …): give the page a moment — a layout thrash often
@@ -178,20 +221,60 @@ class InlinePlayerController {
 
     private fun endUnusable() {
         unusableArmed = false
-        val manual = sessionManual
+        val parked = deferred
         val s = end() ?: return
         releaseHandler?.invoke(s)
-        if (manual) onAutoEnded?.invoke(s, "hidden")
+        onAutoEnded?.invoke(s, "hidden")
+        promoteDeferred(parked, s)
     }
 
     /** The taken video left the DOM: drop the overlay (JS already stopped tracking). */
     fun reportGone(tabId: String, videoId: String) {
         val s = session ?: return
         if (s.tabId != tabId || s.videoId != videoId) return
-        val manual = sessionManual
+        val parked = deferred
         end()
-        if (manual) onAutoEnded?.invoke(s, "gone")
+        onAutoEnded?.invoke(s, "gone")
+        promoteDeferred(parked, s)
     }
+
+    private fun endNoTrack() {
+        val parked = deferred
+        val s = end() ?: return
+        DebugLog.d("InlinePlayer", "교체 뒤 ${NO_TRACK_MS}ms 동안 영상 위치 보고 없음 (${s.videoId})")
+        releaseHandler?.invoke(s)
+        onAutoEnded?.invoke(s, "notrack")
+        promoteDeferred(parked, s)
+    }
+
+    /**
+     * The session ended because its video collapsed, left the DOM or was
+     * never tracked; if the page reported another video just before
+     * (element swap), resolve that one now. A park older than
+     * [PROMOTE_WINDOW_MS] is a video that played long ago (a preview loop
+     * that has since stopped) — promoting it would lay a ghost overlay over
+     * whatever sits there now. BrowserScreen still applies the setting gate
+     * and the 30 s deadline.
+     */
+    private fun promoteDeferred(parked: InlinePlayRequest?, ended: InlineSession) {
+        if (parked == null || parked.tabId != ended.tabId || parked.videoId == ended.videoId) return
+        if (SystemClock.uptimeMillis() - deferredAt > PROMOTE_WINDOW_MS) return
+        if (request?.manual == true) return
+        DebugLog.d("InlinePlayer", "보류했던 영상(${parked.videoId})으로 이어서 교체 시도")
+        request = parked
+    }
+
+    /**
+     * Our player failed on this stream: an automatic report for the same
+     * stream would take it again and fail again (site autoplay retry → loop of
+     * error toasts). Remembered until the tab loads a new document.
+     */
+    fun noteFailed(tabId: String, url: String) {
+        if (failed.size >= MAX_FAILED) failed.clear()
+        failed.add("$tabId|$url")
+    }
+
+    fun hasFailed(tabId: String, url: String): Boolean = "$tabId|$url" in failed
 
     /** A manual report from a tab that is not in front: counted, nothing else. */
     fun noteManualIgnored() { manualReports++ }
@@ -216,34 +299,41 @@ class InlinePlayerController {
 
     fun consumeRequest() { request = null }
 
-    fun start(session: InlineSession, rect: InlineRect, manual: Boolean = false) {
+    fun start(session: InlineSession, rect: InlineRect) {
         clearTimers()
+        deferred = null
+        ignoredLogged.clear()
         this.session = session
         this.rect = rect
-        sessionManual = manual
         lastRectAppliedAt = SystemClock.uptimeMillis()
         request = null
+        main.postDelayed(noTrack, NO_TRACK_MS)
     }
 
     /** Clears the overlay and returns what was showing (for the JS release). */
     fun end(): InlineSession? {
         clearTimers()
+        deferred = null
         val s = session
         session = null
         rect = null
-        sessionManual = false
         return s
     }
 
     /** Tab navigated away or closed: forget anything belonging to it. */
     fun dropTab(tabId: String) {
         if (request?.tabId == tabId) request = null
-        if (session?.tabId == tabId) end()
+        failed.removeAll { it.startsWith("$tabId|") }
+        val s = session ?: return
+        if (s.tabId != tabId) return
+        end()
+        onAutoEnded?.invoke(s, "nav")
     }
 
     private fun clearTimers() {
         main.removeCallbacks(flushRect)
         main.removeCallbacks(unusableGrace)
+        main.removeCallbacks(noTrack)
         pendingRect = null
         unusableArmed = false
     }
@@ -257,5 +347,8 @@ class InlinePlayerController {
         const val RECT_COALESCE_MS = 16L
         const val UNUSABLE_GRACE_MS = 400L
         const val MANUAL_ARM_MS = 3_000L
+        const val MAX_FAILED = 32
+        const val NO_TRACK_MS = 1_500L
+        const val PROMOTE_WINDOW_MS = 2_000L
     }
 }

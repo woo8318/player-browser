@@ -776,6 +776,184 @@
     } catch (e) {}
   })();
 
+  // ---- 풀스크린 영상 최대 크기 맞춤 (v1.3.94) ----
+  //
+  // In native fullscreen the fullscreen element fills the screen, but the
+  // <video> inside it is sized by the SITE's CSS — a fixed-size box, a
+  // max-height, or object-fit:cover can leave it small or cropped. Here we
+  // measure the picture actually on screen against the largest size that fits
+  // the video's aspect ratio (contain — never crop) and only step in when it
+  // falls short. Sites that already get it right are left untouched.
+  //
+  // Styles come from a stylesheet keyed on an attribute, not inline styles:
+  // author !important beats the site's inline style (which a player's resize
+  // handler rewrites constantly), and exit is just removing the attribute.
+  // Each frame running this script handles its own document (a cross-origin
+  // iframe player gets its own fullscreenchange); same-origin frames are
+  // reached from here through reachableDocuments().
+  (function initFullscreenFit() {
+    var ATTR = 'data-pbfit';
+    var STYLE_ID = '__pb_fsfit_css';
+    var GOOD = 0.97; // fraction of the max contain size that counts as full size
+    // Two :not(#id) push specificity past typical `#player video {…!important}`.
+    var SEL = 'video[' + ATTR + ']:not(#__pbfit_a):not(#__pbfit_b)';
+    var CSS =
+      SEL + '{object-fit:contain!important;width:100%!important;height:100%!important;' +
+      'max-width:none!important;max-height:none!important;min-width:0!important;min-height:0!important}' +
+      SEL.replace('[' + ATTR + ']', '[' + ATTR + '="2"]') +
+      '{position:fixed!important;left:0!important;top:0!important;right:auto!important;' +
+      'bottom:auto!important;margin:0!important;transform:none!important;' +
+      'translate:none!important;scale:none!important}';
+
+    var fitted = null;
+    var timers = [];
+
+    function fullscreenDocs() {
+      var out = [];
+      var docs = reachableDocuments();
+      for (var i = 0; i < docs.length; i++) {
+        var fe = docs[i].fullscreenElement || docs[i].webkitFullscreenElement;
+        if (fe) out.push(fe);
+      }
+      return out;
+    }
+
+    // The main video of the fullscreen element(s): playing beats paused, then
+    // bigger intrinsic size — so a seek-bar preview <video> never wins.
+    function pickVideo(fsEls) {
+      var best = null, bestKey = -1;
+      for (var i = 0; i < fsEls.length; i++) {
+        var fe = fsEls[i];
+        var list;
+        if (fe.tagName === 'VIDEO') list = [fe];
+        else {
+          try { list = fe.querySelectorAll('video'); } catch (e) { continue; }
+        }
+        for (var j = 0; j < list.length; j++) {
+          var v = list[j];
+          var area = (v.videoWidth || 0) * (v.videoHeight || 0);
+          var key = (!v.paused && v.readyState >= 2 ? 1e12 : 0) + area;
+          if (key > bestKey) { best = v; bestKey = key; }
+        }
+      }
+      return best;
+    }
+
+    // Displayed picture size ÷ max uncropped size. -1 = cropped / stretched /
+    // off-screen, null = can't tell yet (no metadata, hidden, no viewport).
+    function fitScore(v) {
+      var win = (v.ownerDocument && v.ownerDocument.defaultView) || window;
+      var W = win.innerWidth, H = win.innerHeight;
+      var vw = v.videoWidth, vh = v.videoHeight;
+      if (!W || !H || !vw || !vh) return null;
+      var r = v.getBoundingClientRect();
+      if (r.width < 2 || r.height < 2) return null;
+      var fit = 'contain';
+      try { fit = win.getComputedStyle(v).objectFit || 'contain'; } catch (e) {}
+      var sx = r.width / vw, sy = r.height / vh;
+      var ps;
+      if (fit === 'cover') ps = Math.max(sx, sy);
+      else if (fit === 'none') ps = 1;
+      else if (fit === 'scale-down') ps = Math.min(1, sx, sy);
+      else ps = Math.min(sx, sy);
+      if (fit === 'fill' && Math.abs(sx - sy) > 0.02 * Math.max(sx, sy)) return -1;
+      var pw = ps * vw, ph = ps * vh;
+      if (pw > r.width + 2 || ph > r.height + 2) return -1;
+      var px = r.left + (r.width - pw) / 2, py = r.top + (r.height - ph) / 2;
+      if (px < -2 || py < -2 || px + pw > W + 2 || py + ph > H + 2) return -1;
+      return ps / Math.min(W / vw, H / vh);
+    }
+
+    function ensureStyle(doc) {
+      try {
+        if (doc.getElementById(STYLE_ID)) return;
+        var s = doc.createElement('style');
+        s.id = STYLE_ID;
+        s.textContent = CSS;
+        (doc.head || doc.documentElement).appendChild(s);
+      } catch (e) {}
+    }
+
+    function unfit() {
+      if (fitted) { try { fitted.removeAttribute(ATTR); } catch (e) {} }
+      fitted = null;
+    }
+
+    function hook(v) {
+      if (v.__pbFitHooked) return;
+      v.__pbFitHooked = true;
+      var again = function () { schedule(0); };
+      v.addEventListener('loadedmetadata', again);
+      v.addEventListener('resize', again); // intrinsic size changed
+    }
+
+    // Measure with the site's own layout first; only if that isn't full size
+    // try level 1 (fill the parent, contain) then level 2 (pin to the
+    // viewport). getBoundingClientRect forces layout synchronously, so every
+    // trial is measured inside this one task — nothing paints in between.
+    function refit() {
+      var fsEls = fullscreenDocs();
+      var v = fsEls.length ? pickVideo(fsEls) : null;
+      if (fitted && fitted !== v) unfit();
+      if (!v) return;
+      hook(v);
+      ensureStyle(v.ownerDocument);
+      v.removeAttribute(ATTR);
+      fitted = null;
+      var s0 = fitScore(v);
+      if (s0 === null || s0 >= GOOD) return;
+      var best = 0, bestScore = s0;
+      for (var lvl = 1; lvl <= 2; lvl++) {
+        v.setAttribute(ATTR, String(lvl));
+        var s = fitScore(v);
+        if (s !== null && s > bestScore + 0.01) { best = lvl; bestScore = s; }
+        if (s !== null && s >= GOOD) break;
+      }
+      if (best === 0) { v.removeAttribute(ATTR); return; }
+      v.setAttribute(ATTR, String(best));
+      fitted = v;
+    }
+
+    function schedule(delay) {
+      timers.push(setTimeout(function () {
+        try { refit(); } catch (e) {}
+      }, delay));
+    }
+
+    function clearTimers() {
+      for (var i = 0; i < timers.length; i++) clearTimeout(timers[i]);
+      timers = [];
+    }
+
+    function onFullscreenChange() {
+      clearTimers();
+      if (!fullscreenDocs().length) { unfit(); return; }
+      // The viewport only grows to the fullscreen view (and rotates) a little
+      // after the event, so look again as it settles.
+      try { refit(); } catch (e) {}
+      schedule(250);
+      schedule(800);
+      schedule(2000);
+    }
+
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+    var resizeTimer = null;
+    window.addEventListener('resize', function () {
+      if (!fitted && !fullscreenDocs().length) return;
+      clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(function () {
+        try { refit(); } catch (e) {}
+      }, 120);
+    });
+
+    // An ad finishing and the real video starting swaps which <video> plays.
+    document.addEventListener('playing', function () {
+      if (fullscreenDocs().length) schedule(0);
+    }, true);
+  })();
+
   // ---- 우리 플레이어로 자동 교체 (in-place native player, v1.3.89) ----
   //
   // Observes <video> playback and reports "started playing" + the video's box

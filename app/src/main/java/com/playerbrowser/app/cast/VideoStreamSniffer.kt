@@ -13,7 +13,14 @@ import kotlinx.coroutines.flow.update
 data class StreamCandidate(
     val url: String,
     val mime: String,
-    val capturedAt: Long
+    val capturedAt: Long,
+    // The Referer / Origin the page itself sent when it fetched this URL
+    // (v1.3.98). The player usually lives in a cross-origin iframe, so the CDN
+    // sees the iframe's origin - not the top page URL we used to send, which a
+    // CDN that whitelists its player's origin answers with 403. Null when the
+    // request carried none or we never saw it.
+    val referer: String? = null,
+    val origin: String? = null
 ) {
     val isHls: Boolean get() = mime.contains("mpegurl", ignoreCase = true) ||
         url.contains(".m3u8", ignoreCase = true)
@@ -86,6 +93,16 @@ object VideoStreamSniffer {
         ".webm" to "video/webm"
     )
 
+    private class SentHeaders(val referer: String?, val origin: String?)
+
+    // Referer/Origin of requests we saw, for the host being browsed. By URL for
+    // the exact request, and by request host as a fallback for a URL recognised
+    // later (body sniff, DOM src) whose request went by before we knew what it
+    // was, or fell out of the URL map in a flood of segments.
+    private const val MAX_HEADERS = 200
+    private val urlHeaders = ConcurrentHashMap<String, SentHeaders>()
+    private val hostHeaders = ConcurrentHashMap<String, SentHeaders>()
+
     fun observe(request: WebResourceRequest, mainFrameHost: String?) {
         if (mainFrameHost.isNullOrBlank()) return
         val method = request.method?.uppercase() ?: "GET"
@@ -93,21 +110,85 @@ object VideoStreamSniffer {
         val url = request.url?.toString() ?: return
         rememberHost(mainFrameHost)
         noteTally(url)
+        val sent = sentHeaders(request.requestHeaders)
+        if (sent != null && !isFurniture(url)) noteHeaders(url, sent)
         val mime = detectMime(url)
         if (mime == null) {
             noteMiss(url)
             return
         }
-        val list = candidates.getOrPut(mainFrameHost) { CopyOnWriteArrayList() }
-        // Keep every distinct stream (by URL) so a multi-video page can offer a
-        // per-stream fallback; bound the list so a long session doesn't grow it
-        // unbounded (drop the oldest).
-        if (list.none { it.url == url }) {
-            list.add(StreamCandidate(url, mime, System.currentTimeMillis()))
+        store(mainFrameHost, candidateOf(url, mime, sent), "")
+    }
+
+    /**
+     * Keep every distinct stream (by URL) so a multi-video page can offer a
+     * per-stream fallback; bound the list so a long session doesn't grow it
+     * unbounded (drop the oldest). The three recognition paths all land here
+     * from the WebView's network threads, hence the lock.
+     */
+    private fun store(host: String, candidate: StreamCandidate, how: String) {
+        val list = candidates.getOrPut(host) { CopyOnWriteArrayList() }
+        synchronized(list) {
+            val i = list.indexOfFirst { it.url == candidate.url }
+            if (i >= 0) {
+                // Recognised first by a path that had no headers to hand; the
+                // page's own request has turned up since, so fill them in.
+                val old = list[i]
+                if (old.referer == null && old.origin == null &&
+                    (candidate.referer != null || candidate.origin != null)
+                ) {
+                    list[i] = old.copy(referer = candidate.referer, origin = candidate.origin)
+                }
+                return
+            }
+            list.add(candidate)
             while (list.size > MAX_PER_HOST) list.removeAt(0)
-            _revision.update { it + 1 }
-            DebugLog.d(TAG, "captured $mime for $mainFrameHost -> $url")
         }
+        _revision.update { it + 1 }
+        DebugLog.d(
+            TAG,
+            "captured $how${candidate.mime} for $host -> ${candidate.url} " +
+                "(referer=${originOf(candidate.referer) ?: "-"}, origin=${candidate.origin ?: "-"})"
+        )
+    }
+
+    private fun candidateOf(url: String, mime: String, sent: SentHeaders?): StreamCandidate {
+        val h = sent ?: headersFor(url)
+        return StreamCandidate(url, mime, System.currentTimeMillis(), h?.referer, h?.origin)
+    }
+
+    private fun sentHeaders(headers: Map<String, String>?): SentHeaders? {
+        val referer = headerOf(headers, "Referer")
+        val origin = headerOf(headers, "Origin")?.takeIf { it != "null" }
+        return if (referer == null && origin == null) null else SentHeaders(referer, origin)
+    }
+
+    private fun headerOf(headers: Map<String, String>?, name: String): String? =
+        headers?.entries?.firstOrNull { it.key.equals(name, ignoreCase = true) }
+            ?.value?.trim()?.takeIf { it.isNotEmpty() && it.length <= 2048 }
+
+    private fun noteHeaders(url: String, sent: SentHeaders) {
+        // Clear rather than evict: the entries that matter were written moments
+        // before they are read, and the host map still covers the rest.
+        if (urlHeaders.size >= MAX_HEADERS) urlHeaders.clear()
+        urlHeaders[url] = sent
+        val reqHost = hostOf(url) ?: return
+        if (hostHeaders.size >= MAX_HEADERS) hostHeaders.clear()
+        hostHeaders[reqHost] = sent
+    }
+
+    private fun headersFor(url: String): SentHeaders? =
+        urlHeaders[url] ?: hostOf(url)?.let { hostHeaders[it] }
+
+    private fun hostOf(url: String): String? =
+        url.substringAfter("//", "").substringBefore('/').substringBefore('?')
+            .substringBefore('#').substringAfterLast('@').substringBefore(':')
+            .lowercase().takeIf { it.isNotEmpty() }
+
+    /** Scheme + host of a Referer, for logs: enough to tell which frame sent it. */
+    fun originOf(url: String?): String? {
+        val u = url?.takeIf { it.contains("//") } ?: return url
+        return u.substringBefore("//") + "//" + u.substringAfter("//").substringBefore('/')
     }
 
     /**
@@ -138,7 +219,11 @@ object VideoStreamSniffer {
      * when SNI bypass or Private DNS is on; the native loader keeps its
      * responses to itself.
      */
-    fun observeResponseMime(url: String, contentType: String?) {
+    fun observeResponseMime(
+        url: String,
+        contentType: String?,
+        requestHeaders: Map<String, String>? = null
+    ) {
         val host = missHost ?: return
         // Already recognised from the URL - nothing to add.
         if (detectMime(url) != null) return
@@ -154,13 +239,7 @@ object VideoStreamSniffer {
             return
         }
         val mime = mediaMimeOf(type) ?: return
-        val list = candidates.getOrPut(host) { CopyOnWriteArrayList() }
-        if (list.none { it.url == url }) {
-            list.add(StreamCandidate(url, mime, System.currentTimeMillis()))
-            while (list.size > MAX_PER_HOST) list.removeAt(0)
-            _revision.update { it + 1 }
-            DebugLog.d(TAG, "captured by content-type $mime ($type) for $host -> $url")
-        }
+        store(host, candidateOf(url, mime, sentHeaders(requestHeaders)), "by content-type ($type) ")
     }
 
     /**
@@ -179,13 +258,7 @@ object VideoStreamSniffer {
         // Keyed apart from Content-Type sightings so one path doesn't hide the
         // other; first sighting only either way.
         if (responseTypes.put("body:$url", mime) != null) return
-        val list = candidates.getOrPut(host) { CopyOnWriteArrayList() }
-        if (list.none { it.url == url }) {
-            list.add(StreamCandidate(url, mime, System.currentTimeMillis()))
-            while (list.size > MAX_PER_HOST) list.removeAt(0)
-            _revision.update { it + 1 }
-            DebugLog.d(TAG, "captured by body sniff $mime for $host -> $url")
-        }
+        store(host, candidateOf(url, mime, null), "by body sniff ")
     }
 
     /**
@@ -210,6 +283,8 @@ object VideoStreamSniffer {
         misses.clear()
         responseTypes.clear()
         tally.clear()
+        urlHeaders.clear()
+        hostHeaders.clear()
     }
 
     private fun noteTally(url: String) {
@@ -230,11 +305,15 @@ object VideoStreamSniffer {
         tally.computeIfAbsent(key) { AtomicInteger(0) }.incrementAndGet()
     }
 
+    private fun isFurniture(url: String): Boolean {
+        val path = url.lowercase().substringBefore('?').substringBefore('#')
+        return IGNORED_EXTS.any { path.endsWith(it) }
+    }
+
     private fun noteMiss(url: String) {
         val lower = url.lowercase()
         if (!lower.startsWith("http")) return
-        val path = lower.substringBefore('?').substringBefore('#')
-        if (IGNORED_EXTS.any { path.endsWith(it) }) return
+        if (isFurniture(url)) return
         if (misses.contains(url)) return
         // Drop from the middle, never the head: keep the page's opening moves
         // and the most recent activity, and let the repetitive middle go.
@@ -303,7 +382,7 @@ object VideoStreamSniffer {
         // synthesize one straight from the DOM URL.
         all(host).firstOrNull { it.url == src }?.let { return it }
         val mime = detectMime(src) ?: "video/mp4"
-        return StreamCandidate(src, mime, System.currentTimeMillis())
+        return candidateOf(src, mime, null)
     }
 
     fun clear(host: String?) {

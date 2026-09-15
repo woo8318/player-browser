@@ -578,6 +578,9 @@ fun BrowserScreen(
         endInline(true, -1.0)
         val ua = runCatching { activeWebState.webView.settings.userAgentString }.getOrNull()
         val cookie = runCatching { CookieManager.getInstance().getCookie(candidate.url) }.getOrNull()
+        // Replay the captured pair as-is — a captured Origin with the top page
+        // as Referer is a combination the page never sent.
+        val captured = candidate.referer != null || candidate.origin != null
         inlinePlayer.start(
             InlineSession(
                 tabId = req.tabId,
@@ -585,10 +588,14 @@ fun BrowserScreen(
                 candidate = candidate,
                 startPositionSec = req.positionSec,
                 pageUrl = state.currentUrl,
-                referer = state.currentUrl,
+                // What the page's own player sent for this stream (usually the
+                // iframe player's origin, not the top page) — a hotlink-guarded
+                // CDN 403s the top page URL (v1.3.98).
+                referer = if (captured) candidate.referer else state.currentUrl,
                 cookie = cookie,
                 userAgent = ua,
-                title = state.currentTitle
+                title = state.currentTitle,
+                origin = candidate.origin
             ),
             req.rect
         )
@@ -848,7 +855,10 @@ fun BrowserScreen(
                                 VideoPlayerActivity.start(
                                     context = context,
                                     url = inlineSession.candidate.url,
-                                    referer = inlineSession.referer,
+                                    // pageUrl, not the captured Referer: the
+                                    // full-screen player also keys resume
+                                    // progress by this value (v1.3.98).
+                                    referer = inlineSession.pageUrl,
                                     cookie = inlineSession.cookie,
                                     userAgent = inlineSession.userAgent,
                                     mime = inlineSession.candidate.mime,
@@ -857,7 +867,7 @@ fun BrowserScreen(
                                 )
                                 endInline(true, pos)
                             },
-                            onError = onError@{ e ->
+                            onError = onError@{ e, reachedReady ->
                                 // The controller may already have ended this
                                 // session (hidden/gone/nav toast shown); a late
                                 // player error must not toast a second reason.
@@ -865,24 +875,62 @@ fun BrowserScreen(
                                 // keeps the lambda of the composition that built
                                 // its player (remember(session) is equals-keyed).
                                 if (inlinePlayer.session != inlineSession) return@onError
+                                val streamHost = runCatching {
+                                    Uri.parse(inlineSession.candidate.url).host
+                                }.getOrNull() ?: "?"
+                                val refOrigin = VideoStreamSniffer.originOf(inlineSession.referer) ?: "없음"
+                                // One retry with no Referer/Origin at all before
+                                // giving up — some CDNs refuse a foreign Referer
+                                // but accept none, and the top page URL is the
+                                // pre-v1.3.98 set already known to 403. Only
+                                // before first frame: a 403 mid-playback is an
+                                // expired token, and the retry would restart from
+                                // the old start point (v1.3.98). Not start(): see
+                                // replaceSession.
+                                val http = inlineHttpCode(e)
+                                if (http != null && http in RETRY_HTTP_CODES &&
+                                    inlineSession.attempt == 0 && !reachedReady
+                                ) {
+                                    val retried = inlinePlayer.replaceSession(
+                                        inlineSession.copy(referer = null, origin = null, attempt = 1)
+                                    )
+                                    if (retried) {
+                                        DebugLog.w(
+                                            "InlinePlayer",
+                                            "HTTP $http — Referer/Origin 빼고 한 번 더 시도 " +
+                                                "(ref=$refOrigin → 없음) $streamHost"
+                                        )
+                                        // If this retry plays, this toast is the only
+                                        // trace that the first headers were refused.
+                                        Toast.makeText(
+                                            context.applicationContext,
+                                            "HTTP $http — 다른 헤더로 다시 시도합니다 [retry] ref=$refOrigin→없음",
+                                            Toast.LENGTH_SHORT
+                                        ).show()
+                                        return@onError
+                                    }
+                                }
                                 // The code is what the user reads back to us —
                                 // they cannot send logs (v1.3.97).
                                 val code = inlineErrorCode(e)
                                 inlinePlayer.noteFailed(inlineSession.tabId, inlineSession.candidate.url)
-                                val streamHost = runCatching {
-                                    Uri.parse(inlineSession.candidate.url).host
-                                }.getOrNull() ?: "?"
+                                val refTag = (if (http != null) " ref=$refOrigin" else "") +
+                                    (if (inlineSession.attempt > 0) " 재시도함" else "")
+                                // Origin only: a captured Referer can be a signed
+                                // iframe URL (?t=…&sig=…).
                                 DebugLog.w(
                                     "InlinePlayer",
                                     "우리 플레이어 재생 실패 — 사이트 플레이어로 복귀 [$code] " +
                                         "url=${inlineSession.candidate.url.take(160)} " +
                                         "mime=${inlineSession.candidate.mime} " +
-                                        "referer=${inlineSession.referer?.take(120)}",
+                                        "referer=$refOrigin " +
+                                        "origin=${inlineSession.origin ?: "-"} #${inlineSession.attempt}" +
+                                        (if (reachedReady) " (재생 중)" else ""),
                                     e
                                 )
                                 Toast.makeText(
                                     context.applicationContext,
-                                    "우리 플레이어로 재생 실패 — 사이트 플레이어로 돌아갑니다 [$code] ($streamHost)",
+                                    "우리 플레이어로 재생 실패 — 사이트 플레이어로 돌아갑니다 [$code] ($streamHost)$refTag",
                                     Toast.LENGTH_LONG
                                 ).show()
                                 endInline(true, -1.0)
@@ -1162,17 +1210,22 @@ private fun manualPressedFailure(status: String): String? = when (status) {
  * the cause chain (v1.3.97).
  */
 @OptIn(UnstableApi::class)
-private fun inlineErrorCode(e: PlaybackException): String {
+private fun inlineErrorCode(e: PlaybackException): String =
+    "error:${e.errorCodeName}" + (inlineHttpCode(e)?.let { " http=$it" } ?: "")
+
+/** The HTTP status buried in [e]'s cause chain, or null if it was not a bad response. */
+@OptIn(UnstableApi::class)
+private fun inlineHttpCode(e: PlaybackException): Int? {
     var t: Throwable? = e
-    var http: Int? = null
     var depth = 0
     while (t != null && depth < 5) {
-        if (t is HttpDataSource.InvalidResponseCodeException) {
-            http = t.responseCode
-            break
-        }
+        if (t is HttpDataSource.InvalidResponseCodeException) return t.responseCode
         t = t.cause
         depth++
     }
-    return "error:${e.errorCodeName}" + (http?.let { " http=$it" } ?: "")
+    return null
 }
+
+// Refusals that the other Referer/Origin might turn around (hotlink guards
+// answer 403, some 401/410) — one retry per session (v1.3.98).
+private val RETRY_HTTP_CODES = setOf(401, 403, 410)

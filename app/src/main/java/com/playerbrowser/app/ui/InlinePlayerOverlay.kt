@@ -58,6 +58,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import com.playerbrowser.app.R
 import com.playerbrowser.app.cast.StreamCandidate
+import com.playerbrowser.app.cast.VideoStreamSniffer
 import com.playerbrowser.app.data.WatchProgressStore
 import com.playerbrowser.app.network.DebugLog
 import com.playerbrowser.app.network.ResumeSwitch
@@ -83,7 +84,11 @@ data class InlineSession(
     val referer: String?,
     val cookie: String?,
     val userAgent: String?,
-    val title: String
+    val title: String,
+    /** The `Origin` the page's own player sent for this stream, if any (v1.3.98). */
+    val origin: String? = null,
+    /** 0 = first try with the captured headers, 1 = the one retry after a 401/403/410. */
+    val attempt: Int = 0
 )
 
 /**
@@ -115,7 +120,7 @@ fun InlinePlayerOverlay(
     rect: () -> InlineRect,
     onClose: (positionSec: Double) -> Unit,
     onFullscreen: (positionSec: Double) -> Unit,
-    onError: (PlaybackException) -> Unit
+    onError: (error: PlaybackException, reachedReady: Boolean) -> Unit
 ) {
     val context = LocalContext.current
     val density = LocalDensity.current
@@ -126,6 +131,9 @@ fun InlinePlayerOverlay(
     var ended by remember(session) { mutableStateOf(false) }
     var positionMs by remember(session) { mutableLongStateOf(0L) }
     var durationMs by remember(session) { mutableLongStateOf(0L) }
+    // Once the stream has played, a later 403 is an expired token, not a
+    // header mismatch — the caller must not retry from the old start point.
+    var reachedReady by remember(session) { mutableStateOf(false) }
 
     // Progress is keyed by the page URL — the same key the WebView's resume
     // bridge and the full-screen player use, so the three stay in step.
@@ -150,12 +158,13 @@ fun InlinePlayerOverlay(
                     runCatching { WatchProgressStore.get(context).delete(session.pageUrl) }
                 } else if (state == Player.STATE_READY) {
                     ended = false
+                    reachedReady = true
                     durationMs = player.duration.coerceAtLeast(0L)
                 }
             }
             override fun onPlayerError(error: PlaybackException) {
                 DebugLog.e(TAG, "인라인 재생 실패 [${error.errorCodeName}] ${error.message} — ${session.candidate.url}")
-                onError(error)
+                onError(error, reachedReady)
             }
         }
         player.addListener(listener)
@@ -334,6 +343,9 @@ private fun buildInlinePlayer(context: Context, s: InlineSession): ExoPlayer {
     val headers = HashMap<String, String>()
     s.referer?.takeIf { it.isNotBlank() }?.let { headers["Referer"] = it }
     s.cookie?.takeIf { it.isNotBlank() }?.let { headers["Cookie"] = it }
+    // Only ever the value the page itself sent — an invented Origin is a
+    // stronger mismatch than none.
+    s.origin?.takeIf { it.isNotBlank() }?.let { headers["Origin"] = it }
     val httpFactory = DefaultHttpDataSource.Factory()
         .setAllowCrossProtocolRedirects(true)
         .setDefaultRequestProperties(headers)
@@ -357,7 +369,11 @@ private fun buildInlinePlayer(context: Context, s: InlineSession): ExoPlayer {
         ResumeSwitch.enabled -> runCatching { WatchProgressStore.get(context).position(s.pageUrl) }.getOrDefault(0.0)
         else -> 0.0
     }
-    DebugLog.d(TAG, "인라인 재생 시작 — ${url.take(120)} (mime=${mimeTypeFor(s.candidate.mime, url) ?: "-"}, ${"%.1f".format(startSec)}초부터)")
+    DebugLog.d(
+        TAG,
+        "인라인 재생 시작 #${s.attempt} — ${url.take(120)} (mime=${mimeTypeFor(s.candidate.mime, url) ?: "-"}, " +
+            "${"%.1f".format(startSec)}초부터, referer=${VideoStreamSniffer.originOf(s.referer) ?: "-"}, origin=${s.origin ?: "-"})"
+    )
 
     return ExoPlayer.Builder(context)
         .setSeekBackIncrementMs(SEEK_MS)

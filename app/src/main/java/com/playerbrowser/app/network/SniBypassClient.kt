@@ -203,7 +203,7 @@ object SniBypassClient {
             // The response is the only place the server says what a URL really
             // is, and this is the one path where we hold one. A playlist served
             // from `/v/e/<id>/c.html` can never be recognised from its URL.
-            VideoStreamSniffer.observeResponseMime(urlString, contentType)
+            VideoStreamSniffer.observeResponseMime(urlString, contentType, request.requestHeaders)
             val mime = contentType?.substringBefore(';')?.trim()?.ifBlank { null }
                 ?: "application/octet-stream"
             // Only pass an encoding when the server actually declared one. If we

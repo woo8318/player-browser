@@ -310,6 +310,21 @@ class InlinePlayerController {
         main.postDelayed(noTrack, NO_TRACK_MS)
     }
 
+    /**
+     * Swaps the live session for [next] on the same video — the overlay
+     * rebuilds its player (it is keyed by session value) while the rect,
+     * timers and the parked report stay as they are. Used for the one
+     * header retry after a 401/403 (v1.3.98). Deliberately not [start]:
+     * that re-arms [noTrack], and JS only re-emits a rect after `take()` or
+     * when the box moves, so a still video would be ended as "notrack".
+     */
+    fun replaceSession(next: InlineSession): Boolean {
+        val s = session ?: return false
+        if (s.tabId != next.tabId || s.videoId != next.videoId) return false
+        session = next
+        return true
+    }
+
     /** Clears the overlay and returns what was showing (for the JS release). */
     fun end(): InlineSession? {
         clearTimers()

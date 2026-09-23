@@ -8,6 +8,8 @@
 //   한 손가락 탭    → 그 지점 요소(48px 미만이면 부모로)를 추가, 이미 선택된
 //                     영역 안이면 그 선택을 해제
 //   두 손가락       → 스크롤
+//   startAt(x, y)   → 링크 롱프레스용: 그 지점의 a[href] 를 확대 없이 그대로 선택
+//                     (링크가 없으면 탭 규칙) (v1.3.102)
 //
 // confirm() 은 고른 요소의 CSS 선택자만 돌려준다 — 저장/적용은 Kotlin
 // (ElementHideStore / ElementHider) 몫이고, 페이지로 넘기는 데이터는 없다.
@@ -535,13 +537,37 @@
     return 'ok';
   }
 
-  /** start() then select the element under (x, y) in CSS px — link long-press "요소 숨기기". */
+  /**
+   * The link under (x, y): the nearest a[href] ancestor of whatever is hit
+   * there, looking through overlays stacked at that point. Null when none.
+   */
+  function linkAt(x, y) {
+    var list = document.elementsFromPoint ? document.elementsFromPoint(x, y) : [];
+    for (var i = 0; i < list.length; i++) {
+      var el = list[i];
+      if (isOurs(el) || isPageRoot(el)) continue;
+      var a = null;
+      try { a = el.closest ? el.closest('a[href]') : null; } catch (e) { a = null; }
+      if (a && !isPageRoot(a) && !isOurs(a)) return a;
+    }
+    return null;
+  }
+
+  /**
+   * start() then select what is under (x, y) in CSS px — link long-press "요소 숨기기".
+   * The link itself when there is one (no 48px growth — that pulled in the whole
+   * list item / card around a one-line link, v1.3.102); otherwise the tap rule.
+   */
   function startAt(x, y) {
     var r = start();
     if (r !== 'ok' && r !== 'already') return r;
     try {
       x = +x; y = +y;
-      if (isFinite(x) && isFinite(y)) { tapAt(x, y); render(); }
+      if (isFinite(x) && isFinite(y)) {
+        var a = linkAt(x, y);
+        if (a) add([a]); else tapAt(x, y);
+        render();
+      }
     } catch (e) {}
     return r;
   }

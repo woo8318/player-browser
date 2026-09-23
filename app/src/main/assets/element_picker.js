@@ -7,6 +7,9 @@
 //   한 손가락 끌기  → 사각형 안에 (면적 85% 이상) 들어온 요소를 선택에 추가
 //   한 손가락 탭    → 그 지점 요소(48px 미만이면 부모로)를 추가, 이미 선택된
 //                     영역 안이면 그 선택을 해제
+//   한 손가락 길게  → 그 지점의 a[href] 를 확대 없이 그대로 선택, 링크가 없으면
+//                     닿은 요소 그대로(확대 없음) — 피커가 모든 터치를 삼키므로
+//                     WebView 의 링크 롱프레스 메뉴는 여기서 뜨지 않는다 (v1.3.103)
 //   두 손가락       → 스크롤
 //   startAt(x, y)   → 링크 롱프레스용: 그 지점의 a[href] 를 확대 없이 그대로 선택
 //                     (링크가 없으면 탭 규칙) (v1.3.102)
@@ -21,6 +24,8 @@
   var MAX_SCAN = 20000;
   var MIN_TAP_PX = 48;
   var TAP_SLOP = 10;
+  var LONG_PRESS_MS = 500;
+  var FLASH_MS = 1400;
   var COVER = 0.85;
   var MAX_SELECTOR = 480;
   var MAX_DEPTH = 20;
@@ -330,9 +335,10 @@
         hide(st.boxes[i]);
       }
     }
+    if (st.flashT) return;
     st.label.textContent = st.sel.length
       ? st.sel.length + '개 선택됨'
-      : '끌어서 영역 선택 · 탭해서 요소 선택 · 두 손가락으로 스크롤';
+      : '끌어서 영역 선택 · 탭해서 요소 선택 · 길게 눌러 링크 선택 · 두 손가락으로 스크롤';
   }
 
   function scheduleRender() {
@@ -381,6 +387,7 @@
     st.ptrs[e.pointerId] = { x: e.clientX, y: e.clientY };
     if (pointerCount() >= 2) {
       st.drag = null;
+      clearLongPress();
       hide(st.rect);
       st.pan = centroid();
       st.panTarget = scrollerAt(st.pan.x, st.pan.y);
@@ -388,7 +395,8 @@
       return;
     }
     if (st.panned) return;
-    st.drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false };
+    st.drag = { id: e.pointerId, x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY, moved: false, held: false };
+    armLongPress(st.drag);
   }
 
   function onMove(e) {
@@ -406,7 +414,11 @@
     if (!d || d.id !== e.pointerId) return;
     d.x1 = e.clientX;
     d.y1 = e.clientY;
-    if (!d.moved && (Math.abs(d.x1 - d.x0) > TAP_SLOP || Math.abs(d.y1 - d.y0) > TAP_SLOP)) d.moved = true;
+    if (!d.moved && (Math.abs(d.x1 - d.x0) > TAP_SLOP || Math.abs(d.y1 - d.y0) > TAP_SLOP)) {
+      d.moved = true;
+      clearLongPress();
+    }
+    if (d.held) return;
     if (d.moved) drawRect(d);
   }
 
@@ -420,8 +432,10 @@
     }
     var d = st.drag;
     st.drag = null;
+    clearLongPress();
     hide(st.rect);
     if (!d || d.id !== e.pointerId) return;
+    if (d.held) return;
     if (d.moved) {
       add(collect(Math.min(d.x0, d.x1), Math.min(d.y0, d.y1), Math.max(d.x0, d.x1), Math.max(d.y0, d.y1)));
     } else {
@@ -433,8 +447,53 @@
   function onCancel(e) {
     delete st.ptrs[e.pointerId];
     st.drag = null;
+    clearLongPress();
     hide(st.rect);
     if (pointerCount() === 0) { st.pan = null; st.panned = false; }
+  }
+
+  // ---- long press (v1.3.103) ----
+  //
+  // The overlay swallows every touch, so WebView's own link long-press menu can
+  // never appear while the picker is up — and the tap rule grows a one-line link
+  // into its list item / card. Holding a finger still picks the exact a[href]
+  // under it (or, with no link, the exact element hit, no growth).
+
+  function armLongPress(d) {
+    clearLongPress();
+    st.lp = setTimeout(function () {
+      if (!st) return;
+      st.lp = 0;
+      if (st.drag !== d || d.moved || st.pan || pointerCount() !== 1) return;
+      d.held = true;
+      try {
+        var a = linkAt(d.x0, d.y0);
+        var el = a || hitAt(d.x0, d.y0);
+        if (el) {
+          add([el]);
+          render();
+          flash(a ? '링크 선택됨' : '요소 그대로 선택됨');
+        } else {
+          flash('여기엔 요소가 없어요');
+        }
+      } catch (e) { /* a broken page must not wedge the picker */ }
+    }, LONG_PRESS_MS);
+  }
+
+  function clearLongPress() {
+    if (st && st.lp) { clearTimeout(st.lp); st.lp = 0; }
+  }
+
+  /** Overrides the label for a moment, then render() writes the normal text back. */
+  function flash(text) {
+    if (!st) return;
+    if (st.flashT) clearTimeout(st.flashT);
+    st.label.textContent = text;
+    st.flashT = setTimeout(function () {
+      if (!st) return;
+      st.flashT = 0;
+      render();
+    }, FLASH_MS);
   }
 
   function onEvent(e) {
@@ -464,7 +523,7 @@
     docEl.appendChild(root);
     st = {
       root: root, rect: rect, label: label, boxes: [], sel: [], stack: [],
-      ptrs: {}, drag: null, pan: null, panTarget: null, panned: false, raf: 0
+      ptrs: {}, drag: null, pan: null, panTarget: null, panned: false, raf: 0, lp: 0, flashT: 0
     };
     for (var i = 0; i < BLOCKED.length; i++) {
       window.addEventListener(BLOCKED[i], onEvent, { capture: true, passive: false });
@@ -532,6 +591,8 @@
     window.removeEventListener('scroll', scheduleRender, true);
     window.removeEventListener('resize', scheduleRender, true);
     if (st.raf) cancelAnimationFrame(st.raf);
+    if (st.lp) clearTimeout(st.lp);
+    if (st.flashT) clearTimeout(st.flashT);
     if (st.root.parentNode) st.root.parentNode.removeChild(st.root);
     st = null;
     return 'ok';

@@ -160,6 +160,10 @@ fun BrowserScreen(
         tabWebStates.retain(liveIds)
     }
 
+    // Link long-press → "요소 숨기기" (v1.3.101): (tab id, CSS x, CSS y). Declared before the
+    // callbacks object below so its lambda can write it; consumed by a LaunchedEffect after
+    // the picker state (pickView/lastBatch) is declared.
+    var hideAtRequest by remember { mutableStateOf<Triple<String, Float, Float>?>(null) }
     val tabIdForCreation: String = activeTabId
     val activeWebState = webStates.getOrPut(tabIdForCreation) {
         // Capture the tab id by value so this WebView's callbacks always
@@ -195,6 +199,11 @@ fun BrowserScreen(
             // Video long-press → open THAT video in the external player. Only the
             // active tab is interactable, so resolving against the active page's
             // context below is correct. Marshalled onto the main thread already.
+            override fun onHideElementAt(cssX: Float, cssY: Float) {
+                if (ownerId == viewModel.activeTabId.value) {
+                    hideAtRequest = Triple(ownerId, cssX, cssY)
+                }
+            }
             override fun onPlayVideoExternally(domSrc: String) {
                 inlinePlayer.externalPlayRequest = domSrc
             }
@@ -256,6 +265,32 @@ fun BrowserScreen(
     }
     // Leaving the screen (settings, bookmarks …) would strand the overlay with no bar.
     DisposableEffect(Unit) { onDispose { exitPick(true) } }
+
+    // Link long-press menu "요소 숨기기" → picker with the long-pressed element pre-selected.
+    // Same gates as the ⋮ menu entry: active tab only, no JS on a challenge page (v1.3.87).
+    LaunchedEffect(hideAtRequest) {
+        val req = hideAtRequest ?: return@LaunchedEffect
+        hideAtRequest = null
+        if (req.first != activeTabId) return@LaunchedEffect
+        val wv = activeWebState.webView
+        val app = context.applicationContext
+        val reason = ElementHider.pickBlockedReason(wv.url, wv.title)
+        if (reason != null) {
+            Toast.makeText(app, reason, Toast.LENGTH_SHORT).show()
+            return@LaunchedEffect
+        }
+        val js = ElementPickerCommands.startAt(app, req.second.toInt(), req.third.toInt())
+        wv.evaluateJavascript(js) { r ->
+            val status = ElementPickerCommands.parseStatus(r)
+            if (status == "ok" || status == "already") {
+                pickView = wv
+                lastBatch = emptyList()
+                Toast.makeText(app, "요소를 선택했어요 — 넓게/좁게로 조정한 뒤 숨기기", Toast.LENGTH_LONG).show()
+            } else {
+                Toast.makeText(app, "선택 화면을 열 수 없어요 [$status]", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     val hasParent = activeTabState.parentTabId?.let { pid -> tabs.any { it.id == pid } } == true
     BackHandler(enabled = state.canGoBack || hasParent) {

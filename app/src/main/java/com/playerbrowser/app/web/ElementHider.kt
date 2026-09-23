@@ -95,6 +95,10 @@ object ElementPickerCommands {
     fun start(context: Context): String =
         WebAssetLoader.elementPickerScript(context) + "\n" + call("start")
 
+    /** Picker + pre-select the element under (cssX, cssY) — link long-press "요소 숨기기" (v1.3.101). */
+    fun startAt(context: Context, cssX: Int, cssY: Int): String =
+        WebAssetLoader.elementPickerScript(context) + "\n" + call("startAt", "$cssX,$cssY")
+
     /** Selection count after the step, 0 = nothing selected, -1 = picker not running. */
     val WIDEN: String = call("widen")
     val NARROW: String = call("narrow")
@@ -105,8 +109,8 @@ object ElementPickerCommands {
     /** Removes the overlay and every listener: `"ok"` / `"idle"`. */
     val EXIT: String = call("exit")
 
-    private fun call(name: String): String =
-        ";(function(){try{return window.__pbPicker?window.__pbPicker.$name():'nomodule'}" +
+    private fun call(name: String, args: String = ""): String =
+        ";(function(){try{return window.__pbPicker?window.__pbPicker.$name($args):'nomodule'}" +
             "catch(e){return 'error'}})();"
 
     /** A string result (`"ok"` → `ok`), or null. */

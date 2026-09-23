@@ -87,6 +87,12 @@ interface WebViewCallbacks {
     // A <video> was long-pressed; open it in the external player. `domSrc` is the
     // element's source URL ("" when unresolvable — caller falls back to sniffer).
     fun onPlayVideoExternally(domSrc: String) {}
+
+    /**
+     * Link long-press menu → "요소 숨기기": open the element picker with the element under the
+     * long-pressed point pre-selected. Coordinates are CSS px of the top document (v1.3.101).
+     */
+    fun onHideElementAt(cssX: Float, cssY: Float) {}
     // In-place player (v1.3.89): a <video> started playing / its box moved /
     // it left the DOM. Rects are device px relative to the WebView.
     fun onInlineVideoPlay(id: String, domSrc: String, positionSec: Double, rect: InlineRect, manual: Boolean) {}
@@ -444,6 +450,22 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
         // Long-press a link → context menu ("새 탭에서 열기" / "백그라운드 탭으로
         // 열기" / "링크 주소 복사"). Standard browser affordance so the user no
         // longer has to flip the global "always open in new tab" setting.
+        // Last touch-down point in view px — HitTestResult only tells us the href, and the
+        // "요소 숨기기" menu item needs a point to pre-select the element under the finger.
+        // Returning false keeps the WebView's own touch handling intact (v1.3.101).
+        var lastDownX = 0f
+        var lastDownY = 0f
+        @SuppressLint("ClickableViewAccessibility")
+        fun installTouchCapture(target: WebView) {
+            target.setOnTouchListener { _, ev ->
+                if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+                    lastDownX = ev.x
+                    lastDownY = ev.y
+                }
+                false
+            }
+        }
+        installTouchCapture(this)
         setOnLongClickListener { v ->
             val wv = v as? WebView ?: return@setOnLongClickListener false
             val result = wv.hitTestResult
@@ -458,7 +480,9 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
             val handler = android.os.Handler(android.os.Looper.getMainLooper()) { msg ->
                 val href = msg.data?.getString("url")?.takeIf { it.isNotBlank() }
                     ?: result.extra
-                showLinkContextMenu(wv.context, href, callbacks)
+                // View px → CSS px: divide by the page scale (zoom × density).
+                val scale = wv.scale.takeIf { it > 0f } ?: 1f
+                showLinkContextMenu(wv.context, href, callbacks, lastDownX / scale, lastDownY / scale)
                 true
             }
             wv.requestFocusNodeHref(handler.obtainMessage())
@@ -472,12 +496,18 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
  * Shows the link long-press context menu. Only surfaces for http(s) links —
  * anything else (javascript:, mailto:, relative fragments) is ignored.
  */
-private fun showLinkContextMenu(context: Context, url: String?, callbacks: WebViewCallbacks) {
+private fun showLinkContextMenu(
+    context: Context,
+    url: String?,
+    callbacks: WebViewCallbacks,
+    cssX: Float,
+    cssY: Float
+) {
     val href = url?.trim().orEmpty()
     val scheme = runCatching { Uri.parse(href).scheme?.lowercase() }.getOrNull()
     if (scheme != "http" && scheme != "https") return
 
-    val items = arrayOf("새 탭에서 열기", "백그라운드 탭으로 열기", "링크 주소 복사")
+    val items = arrayOf("새 탭에서 열기", "백그라운드 탭으로 열기", "링크 주소 복사", "요소 숨기기")
     androidx.appcompat.app.AlertDialog.Builder(context)
         .setTitle(href)
         .setItems(items) { _, which ->
@@ -493,6 +523,7 @@ private fun showLinkContextMenu(context: Context, url: String?, callbacks: WebVi
                     clipboard?.setPrimaryClip(android.content.ClipData.newPlainText("link", href))
                     Toast.makeText(context, "링크 주소를 복사했어요", Toast.LENGTH_SHORT).show()
                 }
+                3 -> callbacks.onHideElementAt(cssX, cssY)
             }
         }
         .show()

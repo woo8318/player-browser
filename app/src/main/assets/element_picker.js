@@ -535,7 +535,18 @@
     return 'ok';
   }
 
-  var api = { start: start, widen: widen, narrow: narrow, confirm: confirm, exit: exit };
+  /** start() then select the element under (x, y) in CSS px — link long-press "요소 숨기기". */
+  function startAt(x, y) {
+    var r = start();
+    if (r !== 'ok' && r !== 'already') return r;
+    try {
+      x = +x; y = +y;
+      if (isFinite(x) && isFinite(y)) { tapAt(x, y); render(); }
+    } catch (e) {}
+    return r;
+  }
+
+  var api = { start: start, startAt: startAt, widen: widen, narrow: narrow, confirm: confirm, exit: exit };
   try {
     Object.defineProperty(window, '__pbPicker', { value: api, configurable: true, enumerable: false, writable: false });
   } catch (e) {

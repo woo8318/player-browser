@@ -199,7 +199,16 @@
     return (h > 0 ? h + ':' + pad2(m) : '' + m) + ':' + pad2(s);
   }
 
-  function showToast(msg) {
+  function showToast(msg, ms) {
+    // In native fullscreen only the fullscreen element's subtree is drawn, so
+    // the toast has to live inside it (v1.3.107). A fullscreen <video>/<iframe>
+    // does not render child elements — nothing we add can show there, so keep
+    // the toast out of it rather than polluting the player's element.
+    var host = document.documentElement;
+    try {
+      var fe = document.fullscreenElement || document.webkitFullscreenElement;
+      if (fe && !/^(VIDEO|AUDIO|IFRAME|FRAME|OBJECT|EMBED|CANVAS|IMG)$/i.test(fe.tagName || '')) host = fe;
+    } catch (e) {}
     var el = document.getElementById('__pb_toast');
     if (!el) {
       el = document.createElement('div');
@@ -209,12 +218,13 @@
         'background:rgba(0,0,0,0.75);color:#fff;font:600 16px/1.2 sans-serif;' +
         'padding:10px 16px;border-radius:8px;z-index:2147483647;' +
         'pointer-events:none;transition:opacity .2s;opacity:0;';
-      document.documentElement.appendChild(el);
+      try { host.appendChild(el); } catch (e) { document.documentElement.appendChild(el); }
     }
+    if (el.parentNode !== host) { try { host.appendChild(el); } catch (e) {} }
     el.textContent = msg;
     el.style.opacity = '1';
     clearTimeout(el.__t);
-    el.__t = setTimeout(function () { el.style.opacity = '0'; }, 700);
+    el.__t = setTimeout(function () { el.style.opacity = '0'; }, ms || 700);
   }
 
   function showScrub(currentSec, totalSec, deltaSec) {
@@ -243,11 +253,12 @@
     if (el) el.style.display = 'none';
   }
 
-  function seekBy(video, delta) {
+  // quiet: the caller reports the result itself (native fullscreen HUD).
+  function seekBy(video, delta, quiet) {
     try {
       var t = Math.max(0, Math.min((video.duration || 0) - 0.1, (video.currentTime || 0) + delta));
       video.currentTime = t;
-      showToast((delta > 0 ? '+' : '') + delta + 's');
+      if (!quiet) showToast((delta > 0 ? '+' : '') + delta + 's');
     } catch (e) {}
   }
 
@@ -305,7 +316,7 @@
     if (video && (!forwarded || !looksInteractive(top))) togglePlay(video);
   }
 
-  function switchVideo(direction) {
+  function switchVideo(direction, quiet) {
     var vids = allVideos();
     // A lone video has nothing to switch to — say so (the native fullscreen
     // HUD reports the result) instead of pausing and replaying the same one.
@@ -320,7 +331,7 @@
     try {
       vids[next].scrollIntoView({ behavior: 'smooth', block: 'center' });
       vids[next].play();
-      showToast(direction > 0 ? '다음 영상' : '이전 영상');
+      if (!quiet) showToast(direction > 0 ? '다음 영상' : '이전 영상');
     } catch (e) {}
     return true;
   }
@@ -377,7 +388,9 @@
     var v = fullscreenVideo() || activeVideo();
     if (!v) { broadcastFsGesture(p); return 'relay'; }
     switch (p.kind) {
-      case 'seek': seekBy(v, p.delta); return 'seek';
+      // seek / switch come only from Kotlin's fullscreen frame, whose HUD shows
+      // the result — a DOM toast (now visible in fullscreen) would repeat it.
+      case 'seek': seekBy(v, p.delta, true); return 'seek';
       case 'doubletap': return applyDoubleTap(v, p.xRatio, p.yRatio);
       case 'tap': {
         // Single tap: show the site's control layer — do NOT toggle play (that's
@@ -392,7 +405,7 @@
         return 'tap';
       }
       case 'toggle': togglePlay(v); return 'toggle';
-      case 'switch': return switchVideo(p.dir) ? 'switch' : 'switch-none';
+      case 'switch': return switchVideo(p.dir, true) ? 'switch' : 'switch-none';
     }
     return 'noop';
   }
@@ -976,6 +989,119 @@
       var existing = allVideosRaw();
       for (var k = 0; k < existing.length; k++) attach(existing[k]);
     } catch (e) {}
+  })();
+
+  // ---- 재생 멈춤 감시 (stall watchdog, v1.3.107) ----
+  //
+  // A site player that waits forever on one HLS segment shows an endless
+  // spinner; dragging its scrubber "fixes" it because a seek makes the player
+  // drop the stuck request and fetch afresh. This does that seek for the user.
+  // When the active video is playing but its time has not moved for STALL_MS,
+  // it is nudged: a tiny seek when data is buffered ahead (a decoder hole) or a
+  // forward jump when nothing is buffered (a stuck network fetch), escalating
+  // per attempt, then it gives up. Each action shows a bracket code — the
+  // device gives us no logs, so the code tells us which kind of stall it was.
+  // Runs in every frame the script reaches (the player iframe included).
+  (function initStallWatch() {
+    var TICK_MS = 1000;
+    var STALL_MS = 8000;          // no progress for this long = stalled
+    var PROGRESS_SEC = 0.25;      // time must move this much to count as playing
+    var JUMPS = [0.5, 3, 8];      // net stall: seconds to jump forward, per attempt
+    var HOLE_NUDGE_SEC = 0.1;     // buffered stall: tiny seek re-primes the decoder
+    var MAX_ATTEMPTS = JUMPS.length;
+    var TOAST_MS = 2500;          // long enough to read the bracket code
+    var watch = null; // { v, lastT, since, attempts, gaveUp }
+    var lastTick = Date.now();
+    var me = {};      // this frame's identity for the lease below
+
+    // A <video> in a same-origin child frame is reachable (reachableDocuments)
+    // from every frame above it, and the document-start injection runs this
+    // script in each of them. Two watchdogs on one element would each read the
+    // other's nudge as progress, reset their episode and never give up — the
+    // pair would keep jumping forward forever. The first frame to see a video
+    // holds a lease on it; the others stay out while the lease is fresh.
+    function claim(v, now) {
+      try {
+        var c = v.__pbStallLease;
+        if (c && c.by !== me && now - c.at < TICK_MS * 3) return false;
+        v.__pbStallLease = { by: me, at: now };
+      } catch (e) {}
+      return true;
+    }
+
+    // Seconds of data buffered past currentTime, or 0 when none / unknown.
+    function bufferedAhead(v) {
+      try {
+        var b = v.buffered, t = v.currentTime;
+        for (var i = 0; i < b.length; i++) {
+          if (b.start(i) <= t + 0.05 && b.end(i) > t) return b.end(i) - t;
+        }
+      } catch (e) {}
+      return 0;
+    }
+
+    // Only a video that is really trying to play, with a known length, and not
+    // at the tail. Seeking is judged separately in the tick.
+    function eligible(v) {
+      try {
+        return !!v && !v.paused && !v.ended && v.playbackRate > 0 &&
+          isFinite(v.duration) && v.duration > 0 && v.currentTime < v.duration - 2;
+      } catch (e) { return false; }
+    }
+
+    function nudge(v, w) {
+      var ahead = bufferedAhead(v);
+      var kind = ahead > 1 ? 'buf' : 'net';
+      var jump = kind === 'buf' ? HOLE_NUDGE_SEC : JUMPS[w.attempts];
+      w.attempts++;
+      var target = Math.min(v.currentTime + jump, v.duration - 1);
+      try { v.currentTime = target; } catch (e) { return; }
+      try { var p = v.play(); if (p && p.catch) p.catch(function () {}); } catch (e) {}
+      showToast('로딩 멈춤 → 다시 요청 [stall:' + kind + ' #' + w.attempts + ']', TOAST_MS);
+    }
+
+    setInterval(function () {
+      try {
+        var now = Date.now();
+        // A long gap between ticks means timers were throttled or paused
+        // (background tab, WebView pauseTimers, device sleep) and the video may
+        // have been suspended with them — restart the clock instead of firing
+        // on the first tick back.
+        var resumed = now - lastTick > TICK_MS * 3;
+        lastTick = now;
+        if (document.hidden || resumed) { watch = null; return; }
+        var v = activeVideo();
+        if (!eligible(v) || !claim(v, now)) { watch = null; return; }
+        // A seek the page started (site scrubber, our drag seek, resume) is not
+        // a stall to start on. A seek WE started that never lands is the stuck
+        // fetch itself (MSE keeps `seeking` true until data arrives) — keep the
+        // episode so the next attempt can jump further past it.
+        if (v.seeking && !(watch && watch.v === v && watch.attempts > 0)) { watch = null; return; }
+        if (!watch || watch.v !== v) {
+          watch = { v: v, lastT: v.currentTime, since: now, attempts: 0, gaveUp: false };
+          return;
+        }
+        if (Math.abs(v.currentTime - watch.lastT) >= PROGRESS_SEC) {
+          // Playing again — forget the episode (attempts reset for the next one).
+          watch.lastT = v.currentTime;
+          watch.since = now;
+          watch.attempts = 0;
+          watch.gaveUp = false;
+          return;
+        }
+        if (now - watch.since < STALL_MS) return;
+        if (watch.attempts >= MAX_ATTEMPTS) {
+          if (!watch.gaveUp) {
+            watch.gaveUp = true;
+            showToast('로딩이 계속 멈춰 있어요 [stall:giveup]', TOAST_MS);
+          }
+          return;
+        }
+        nudge(v, watch);
+        watch.lastT = v.currentTime;
+        watch.since = now;
+      } catch (e) {}
+    }, TICK_MS);
   })();
 
   // ---- 풀스크린 영상 최대 크기 맞춤 (v1.3.94) ----

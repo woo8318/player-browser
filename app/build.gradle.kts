@@ -12,8 +12,8 @@ android {
         applicationId = "com.playerbrowser.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 113
-        versionName = "1.3.104"
+        versionCode = 114
+        versionName = "1.3.105"
         vectorDrawables { useSupportLibrary = true }
         buildConfigField("String", "GITHUB_OWNER", "\"woo8318\"")
         buildConfigField("String", "GITHUB_REPO", "\"player-browser\"")

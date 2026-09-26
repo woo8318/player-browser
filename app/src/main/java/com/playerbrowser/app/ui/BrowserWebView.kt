@@ -53,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.viewinterop.AndroidView
 import com.playerbrowser.app.web.BrowserEnvPatch
+import com.playerbrowser.app.web.ChildFrameGestureInjector
 import com.playerbrowser.app.web.ElementHider
 import com.playerbrowser.app.web.IframeScriptInjector
 import com.playerbrowser.app.web.ImageOrderFixer
@@ -162,6 +163,10 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
         addJavascriptInterface(inlineBridge, "PBInline")
         val gestureScript = WebAssetLoader.gestureScript(context)
         IframeScriptInjector.setScript(gestureScript)
+        // 격리 페이지는 iframe 재요청(IframeScriptInjector)을 하지 않아 플레이어
+        // iframe 에 제스처 JS 가 없었다 — ±10초가 안 먹는 원인. 네트워크를
+        // 건드리지 않는 document-start 주입으로 자식 프레임에 싣는다 (v1.3.105).
+        ChildFrameGestureInjector.install(this, gestureScript)
         webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView?,
@@ -264,39 +269,43 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                 playerBridge.pageHost = host
                 url?.let { callbacks.onStarted(it) }
             }
+            // 챌린지 페이지엔 아무것도 주입하지 않는다. 제스처 스크립트는
+            // document에 캡처 리스너를 걸고, 광고차단 CSS는 위젯을 가릴 수
+            // 있고, 쿠키배너 킬러는 버튼을 눌러댄다 — 안티봇 입장에선 전부
+            // 자동화 신호이고 챌린지엔 어차피 쓸모가 없다. onPageFinished 의
+            // `!onChallenge` 게이트와 "챌린지 통과 직후 첫 페이지" 두 경로가
+            // 공유하는 실제 주입 로직 (v1.3.105).
+            private fun injectPageScripts(view: WebView, url: String?) {
+                // 이 기기의 WebView에 실제로 뭐가 빠져 있는지 1회 진단 (v1.3.61).
+                BrowserEnvPatch.probeEnvironment(view)
+                view.evaluateJavascript(gestureScript, null)
+                if (AdBlockSwitch.enabled) {
+                    view.evaluateJavascript(AdBlocker.HIDE_CSS_JS, null)
+                }
+                if (CookieBannerSwitch.enabled) {
+                    view.evaluateJavascript(CookieBannerKiller.SCRIPT, null)
+                }
+                // 도메인 숫자가 바뀌어도 읽었던 글 링크를 표시 (v1.3.83).
+                VisitedLinkMarker.apply(view, url)
+                // 자동 정렬을 켠 사이트면 웹툰 이미지를 파일명 번호순으로 (v1.3.99).
+                ImageOrderFixer.applyIfRemembered(view, url)
+                // 사용자가 이 사이트에서 숨긴 요소를 계속 숨김 (v1.3.100).
+                ElementHider.apply(view, url)
+            }
+
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 if (url != null) resumeBridge.currentUrl = url
-                // 챌린지 페이지엔 아무것도 주입하지 않는다. 제스처 스크립트는
-                // document에 캡처 리스너를 걸고, 광고차단 CSS는 위젯을 가릴 수
-                // 있고, 쿠키배너 킬러는 버튼을 눌러댄다 — 안티봇 입장에선 전부
-                // 자동화 신호이고 챌린지엔 어차피 쓸모가 없다.
                 val finishedHost = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
                 // 챌린지 창(60초)은 아래 probe/probeTitle 이 **이번** 로드를 판정한
                 // 뒤에야 열린다 — 콜드 스타트의 1라운드 챌린지 문서는 창이 비어
                 // 있어 여기서 걸러지지 않았다. 제목도 같이 본다(Kotlin 신호라 JS
                 // 없음). fetch/XHR 를 감싸는 스크립트가 들어간 뒤로는 1라운드도
                 // 안 된다(v1.3.91).
-                val onChallenge = ChallengeDetector.isChallengeActive(finishedHost) ||
-                    ChallengeDetector.isChallengeTitle(view?.title)
+                val titleChallenge = ChallengeDetector.isChallengeTitle(view?.title)
+                val onChallenge = ChallengeDetector.isChallengeActive(finishedHost) || titleChallenge
                 playerBridge.challengePage = onChallenge
-                if (!onChallenge) {
-                    // 이 기기의 WebView에 실제로 뭐가 빠져 있는지 1회 진단 (v1.3.61).
-                    view?.let { BrowserEnvPatch.probeEnvironment(it) }
-                    view?.evaluateJavascript(gestureScript, null)
-                    if (AdBlockSwitch.enabled) {
-                        view?.evaluateJavascript(AdBlocker.HIDE_CSS_JS, null)
-                    }
-                    if (CookieBannerSwitch.enabled) {
-                        view?.evaluateJavascript(CookieBannerKiller.SCRIPT, null)
-                    }
-                    // 도메인 숫자가 바뀌어도 읽었던 글 링크를 표시 (v1.3.83).
-                    view?.let { VisitedLinkMarker.apply(it, url) }
-                    // 자동 정렬을 켠 사이트면 웹툰 이미지를 파일명 번호순으로 (v1.3.99).
-                    view?.let { ImageOrderFixer.applyIfRemembered(it, url) }
-                    // 사용자가 이 사이트에서 숨긴 요소를 계속 숨김 (v1.3.100).
-                    view?.let { ElementHider.apply(it, url) }
-                }
+                if (!onChallenge) view?.let { injectPageScripts(it, url) }
                 // "사람인지 확인" 위젯이 떠 있는지 살펴 디버그 로그에 기록
                 // (어떤 사이트가 어떤 캡차를 쓰는지 / 루프에 빠졌는지 추적용).
                 // 수정 사다리 2/4 (v1.3.87): 격리 호스트·챌린지 창이 열린 호스트·
@@ -311,6 +320,17 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                     ChallengeDetector.probeTitle(view, url, title)
                 } else {
                     ChallengeDetector.probe(view, url)
+                }
+                // 챌린지 통과 직후 첫 페이지 (v1.3.105): 위 게이트는 60초 챌린지 창만 보고
+                // 건너뛰었는데(제목은 평범), 방금 probeTitle 이 "챌린지 사라짐(통과)" 으로
+                // 창을 닫았다면 이 문서는 실제 페이지다. 판정은 Kotlin 신호(제목·창)뿐이다.
+                if (onChallenge && !titleChallenge && view != null &&
+                    !view.title.isNullOrBlank() &&
+                    !ChallengeDetector.isChallengeActive(finishedHost)
+                ) {
+                    DebugLog.d("Captcha", "챌린지 통과 직후 첫 페이지 — 페이지 스크립트 주입: $finishedHost")
+                    playerBridge.challengePage = false
+                    injectPageScripts(view, url)
                 }
                 if (view != null && url != null) {
                     callbacks.onFinished(

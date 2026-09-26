@@ -113,6 +113,15 @@
     return false;
   }
 
+  // Is *this* document itself the one in fullscreen? Kotlin's fsActive flag is
+  // only ever set in the top frame (a single evaluateJavascript call), so a
+  // player iframe's own document never hears it. In WebView every fullscreen
+  // element is the native one regardless of which frame requested it, so this
+  // document's own fullscreenElement is an equally reliable signal (v1.3.105).
+  function docInFullscreen() {
+    try { return !!(document.fullscreenElement || document.webkitFullscreenElement); } catch (e) { return false; }
+  }
+
   // Topmost element at a point, piercing open shadow roots (custom video players
   // often render their chrome inside a shadow DOM).
   function deepElementFromPoint(x, y) {
@@ -485,6 +494,13 @@
     if (!v) { touchState = null; return; }
     touchState = {
       video: v,
+      // Kotlin sets fsActive only in the top frame — an iframe player's own
+      // document never hears it, so in native fullscreen its drags were scrubbed
+      // here AND swiped ±10s by Kotlin (minutes of jump). Its own fullscreen
+      // element is the same signal (every WebView element fullscreen is the
+      // native one): keep taps / double-taps (±10s, play/pause) but leave every
+      // drag to Kotlin and the site (v1.3.105).
+      tapOnly: docInFullscreen(),
       // Own the tap only if it's on the video surface AND not on a small control
       // overlaid on it (close button, control-bar button…). Those pass through
       // like off-video taps so the user can actually press them.
@@ -507,6 +523,7 @@
     var dx = t0.clientX - touchState.startX;
     var dy = t0.clientY - touchState.startY;
     if (Math.abs(dx) > 8 || Math.abs(dy) > 8) touchState.moved = true;
+    if (touchState.tapOnly) return;
     if (touchState.pointers >= 2) return;
 
     if (!touchState.scrubbing &&
@@ -544,6 +561,11 @@
       e.stopPropagation();
       if (e.stopImmediatePropagation) e.stopImmediatePropagation();
     }
+
+    // Fullscreen iframe player (see tapOnly): drags and 2-finger gestures are
+    // Kotlin's and the site's — don't switch videos and don't swallow the
+    // touchend (a site scrubber would never see its drag end).
+    if (s.tapOnly && (s.pointers >= 2 || s.moved)) return;
 
     // 2-finger horizontal swipe → switch video.
     if (s.pointers >= 2 && s.moved && dt <= SWIPE_TIME_LIMIT_MS &&
@@ -1367,6 +1389,9 @@
   // can't see it gets window.__pbBodySniffOff from IframeScriptInjector when
   // the setting is off. This script itself only runs from the !onChallenge
   // block, and IframeScriptInjector skips challenge/quarantined documents.
+  // Child frames reached only by ChildFrameGestureInjector (document-start,
+  // v1.3.105) always get __pbBodySniffOff: the bridge judges the TOP page
+  // host, not a quarantined iframe host.
   (function initBodySniff() {
     if (window.__pbSniff || window.__pbBodySniffOff) return;
     var isTop = true;

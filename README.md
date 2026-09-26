@@ -44,6 +44,7 @@ URL 입력으로 웹을 탐색하고, 동영상 제스처 컨트롤·광고 차�
 - **풀스크린 가로/세로 자동 회전** — 영상 비율 감지로 결정
 - **이어보기 (보던 곳부터 재생)** — 페이지별로 동영상 재생 위치를 기록해 두고, 다음에 같은 페이지를 방문하면 그 지점부터 자동 재생 (진입 시 토스트로 안내). 90초 이상 영상만 대상이고 시작·끝 근처는 제외, 끝까지 본 영상은 기록 삭제. 설정에서 토글 가능.
 - **iframe / cross-origin 영상도 지원** — `IframeScriptInjector`가 자식 프레임 HTML에 제스처 JS 주입
+- **보안 확인을 거친 사이트의 iframe 플레이어에서도 제스처 (v1.3.105)** — "사람인지 확인"(Cloudflare)을 내려준 사이트는 통과 쿠키를 지키려고 앱이 iframe 을 다시 받지 않는데, 그 탓에 다른 도메인의 플레이어 iframe 안 영상에는 제스처 JS 가 없어 더블탭·스와이프 ±10초가 아무 반응이 없었다(tvroom35 등). 이제 네트워크를 건드리지 않고 WebView 가 문서를 만들 때 자식 프레임에 직접 싣는다(보안 확인 화면·캡차 위젯 프레임은 제외). 보안 확인을 통과한 직후 처음 뜬 페이지에서 제스처·광고 차단 등이 통째로 빠지던 문제와, iframe 플레이어 풀스크린에서 옆으로 밀면 수 분씩 튀던 문제도 함께 고쳤다(풀스크린에서도 더블탭 ±10초는 그대로)
 
 ### 내장 동영상 플레이어 (Media3 / ExoPlayer)
 - **플레이어로 재생** — 페이지에서 추출된 스트림(`.m3u8` / `.mp4` / `.webm`)을 **앱 내장 네이티브 플레이어**로 띄움. 사이트 플레이어 위 오버레이/레이아웃과의 제스처 충돌 없이 깔끔하게 재생/제어
@@ -186,6 +187,7 @@ app/src/main/
       UpdateClient.kt / UpdateInstaller.kt / UpdateModels.kt / Version.kt
     web/                                # WebView 유틸
       UrlUtils.kt / WebAssetLoader.kt / IframeScriptInjector.kt
+      ChildFrameGestureInjector.kt      # 자식 프레임에 제스처 JS — document-start 주입(네트워크 무관, 캡차 프레임 제외)
       ResumeBridge.kt                   # window.PBResume — 이어보기 JS↔Kotlin 브리지
       VisitedLinkMarker.kt              # 방문 기록을 사이트별 페이지 키 해시로 묶어 visited_links.js 주입
       VisitedLinkKeys.kt                # 사이트 키(도메인 숫자 → #) / 페이지 키 / 해시 — visited_links.js와 1:1 대응
@@ -200,7 +202,7 @@ app/src/main/
 - 페이지의 `<video>` 요소 위 터치 이벤트(`touchstart` / `touchmove` / `touchend`)를 가로채 손가락 개수·방향·시작 위치로 동작 분기.
 - 네이티브 풀스크린에서는 `GestureCapturingFrame`이 raw 터치를 사이트(WebView)로 다시 흘려 사이트 자체 컨트롤·탭·네이티브 컨트롤 바가 동작하게 하고, 앱은 사이트가 제공하지 않는 **세로 밝기/볼륨 + 2손가락 영상 전환 + 1손가락 스와이프 ±10초**만 얹고, 그 피드백(음량/밝기 바, 시킹·전환 메시지)은 페이지가 아니라 앱이 직접 그리는 HUD 로 표시합니다(v1.3.42; HUD 와 스와이프 시킹은 v1.3.90). 풀세트 제스처(±10초 더블탭 등)가 필요하면 메뉴 → "플레이어로 재생"의 **내장 Media3 플레이어**를 사용하세요.
 - 시킹/전환 시 화면 상단/측면에 토스트 또는 진행바 표시.
-- iframe (cross-origin 포함) 내부 `<video>`도 `IframeScriptInjector`가 HTML 응답에 `<script>`를 prepend해 지원.
+- iframe (cross-origin 포함) 내부 `<video>`도 `IframeScriptInjector`가 HTML 응답에 `<script>`를 prepend해 지원. 보안 확인으로 격리된 사이트는 재요청을 하지 않으므로 `ChildFrameGestureInjector`가 `addDocumentStartJavaScript`로 자식 프레임에 직접 주입(v1.3.105).
 
 YouTube 등 자체 제스처가 강한 사이트는 일부 동작이 충돌할 수 있어, 일반 `<video>`를 노출하는 사이트에서 가장 잘 작동합니다.
 

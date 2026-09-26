@@ -31,8 +31,12 @@ object ChallengeDetector {
 
     private const val TAG = "Captcha"
 
-    /** 호스트 suffix 매칭 (host == entry || host endsWith ".entry"). */
-    private val CHALLENGE_HOSTS: Set<String> = setOf(
+    /**
+     * 호스트 suffix 매칭 (host == entry || host endsWith ".entry").
+     * `internal` — [com.playerbrowser.app.web.ChildFrameGestureInjector] 가 같은
+     * 목록을 JS 리터럴로 그대로 미러링한다(단일 출처 유지, v1.3.105).
+     */
+    internal val CHALLENGE_HOSTS: Set<String> = setOf(
         "challenges.cloudflare.com",
         "hcaptcha.com",
         "recaptcha.net",
@@ -51,8 +55,10 @@ object ChallengeDetector {
      * 경로 substring. 호스트로 못 거르는 것들 — reCAPTCHA는 google.com /
      * gstatic.com에서 오고(호스트 전체를 뺄 순 없다), Cloudflare 챌린지는
      * 사이트 자기 도메인의 `/cdn-cgi/` 아래에서 돈다.
+     * `internal` — [com.playerbrowser.app.web.ChildFrameGestureInjector] 가 같은
+     * 목록을 JS 리터럴로 그대로 미러링한다(단일 출처 유지, v1.3.105).
      */
-    private val CHALLENGE_PATHS: List<String> = listOf(
+    internal val CHALLENGE_PATHS: List<String> = listOf(
         // Cloudflare 챌린지 전용 경로만 — `/cdn-cgi/` 전체를 빼면 이미지 리사이징
         // (`/cdn-cgi/image/`)까지 네이티브로 흘러 차단 사이트 이미지가 다시 깨진다.
         "/cdn-cgi/challenge-platform/",
@@ -244,7 +250,9 @@ object ChallengeDetector {
 
     // PROBE_JS 의 제목 정규식과 같은 규칙 — JS 를 돌릴 수 없는 곳(순정 WebView
     // 진단 창)에서 `WebView.getTitle()` 만으로 챌린지/통과를 판정한다 (v1.3.85).
-    private val CHALLENGE_TITLE = Regex(
+    // `internal` — [com.playerbrowser.app.web.ChildFrameGestureInjector] 가 이
+    // 패턴 소스(`.pattern`)를 JS 정규식 리터럴로 그대로 미러링한다 (v1.3.105).
+    internal val CHALLENGE_TITLE = Regex(
         "just a moment|checking your browser|attention required|verify you are human|" +
             "사람인지|잠시.{0,3}기다|확인 중",
         RegexOption.IGNORE_CASE

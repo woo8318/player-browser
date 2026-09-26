@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 + 내장 Media3 플레이어(스트림 추출 → 네이티브 재생, 인라인 교체, 플로팅 재생 버튼, 영상 롱프레스 메뉴) + 영상 오프라인 다운로드(HLS, 받으면서 보기) + 이어보기 + 즐겨찾기/방문기록 + 도메인 숫자 무관 방문 링크 표시 + 웹툰 이미지 번호순 정렬 + 요소 숨기기(사이트별 영속) + 멀티탭(썸네일 갤러리/그룹/드래그/스와이프 전환/탭별 히스토리) + 광고 차단 + 쿠키 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 복구 + 링크 롱프레스 메뉴 + 캡차 흐름 보호 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.104.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 + 내장 Media3 플레이어(스트림 추출 → 네이티브 재생, 인라인 교체, 플로팅 재생 버튼, 영상 롱프레스 메뉴) + 영상 오프라인 다운로드(HLS, 받으면서 보기) + 이어보기 + 즐겨찾기/방문기록 + 도메인 숫자 무관 방문 링크 표시 + 웹툰 이미지 번호순 정렬 + 요소 숨기기(사이트별 영속) + 멀티탭(썸네일 갤러리/그룹/드래그/스와이프 전환/탭별 히스토리) + 광고 차단 + 쿠키 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 복구 + 링크 롱프레스 메뉴 + 캡차 흐름 보호 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.105.
 
 **이 문서는 규칙과 구조만 담는다.** 판별 조사 서사(어떤 로그로 어떤 가설을 세웠는지)는 `docs/HISTORY.md` 에 있다 — 같은 증상이 재발하거나 예전 판단을 뒤집을 때만 그 항목을 찾아 읽는다.
 
@@ -54,6 +54,7 @@ app/src/main/
       DownloadCenter.kt / VideoDownloadService.kt # DownloadManager + SimpleCache(NoOpCacheEvictor), HLS 는 DownloadHelper, ResolvingDataSource 헤더 재부착, 포그라운드 서비스
     web/
       WebAssetLoader.kt / IframeScriptInjector.kt(cross-origin iframe HTML 에 JS prepend) / BrowserEnvPatch.kt(document-start 환경 정규화)
+      ChildFrameGestureInjector.kt  # 자식 프레임 제스처 JS — `addDocumentStartJavaScript` 등록(네트워크 무관). 최상위는 즉시 반환, 챌린지 호스트/경로/제목 제외, `DOMContentLoaded` 실행. 격리 페이지 iframe 의 유일한 경로 (v1.3.105)
       ResumeBridge.kt(PBResume) / PlayerBridge.kt(PBPlayer: openVideo, onStreamBody) / InlinePlayerBridge.kt(PBInline + InlinePlayerCommands)
       VisitedLinkMarker.kt / VisitedLinkKeys.kt(사이트 키·페이지 키·cyrb53 해시, JS 와 비트 단위 대응, android 무의존)
       ImageOrderFixer.kt / ElementHider.kt(+ ElementPickerCommands) / UrlUtils.kt
@@ -91,11 +92,12 @@ app/src/main/
 - 순서: 격리 게이트 둘 → `VideoStreamSniffer.observe` → `AdBlocker` → `SniBypassClient.intercept`(응답에서 `observeResponseMime`) → `IframeScriptInjector.process`.
 - 격리 게이트: 요청 호스트가 격리 계열이면 스니퍼 관찰만 하고 `null`; 페이지 호스트(`view.tag`)가 격리 계열이고 **메인 프레임이 아니면** 스니퍼 + AdBlocker 만 거치고 `null`. `view.tag` 는 `onPageStarted` 에서만 바뀌므로 메인 프레임 판정에는 쓰지 말 것(이전 페이지 호스트).
 - **스니퍼는 항상 AdBlock 앞** — 뒤에 두면 차단된 스트림 주소를 영영 못 본다. 격리 페이지에서도 `observe` 는 남길 것(빼면 재생 버튼/다운로드가 안 뜬다).
-- `onPageFinished` 주입(제스처 JS·광고 CSS·쿠키배너·방문 링크·이미지 정렬·요소 숨기기)은 전부 `!onChallenge` 블록 안. `onChallenge` = 챌린지 창 60초 ∨ `isChallengeTitle(view.title)`.
+- `onPageFinished` 주입(제스처 JS·광고 CSS·쿠키배너·방문 링크·이미지 정렬·요소 숨기기)은 전부 `!onChallenge` 블록 안. `onChallenge` = 챌린지 창 60초 ∨ `isChallengeTitle(view.title)`. 예외 하나: 창 때문에만 건너뛰었고(제목 평범·비어 있지 않음) 뒤이은 `probeTitle` 이 통과로 창을 닫았으면 같은 `injectPageScripts` 를 한 번 더 부른다(v1.3.105 — 통과 직후 첫 페이지가 통째로 빠졌다). 그 조건에서 `!titleChallenge`·창 재확인을 빼지 말 것.
 
 ### 캡차 / 안티봇 (가장 많이 되풀이된 회귀)
 - **챌린지 페이지 위에서 `evaluateJavascript` 를 한 줄도 돌리지 말 것** — 진단 목적이라도. v1.3.87 에서 이것이 무한 보안확인의 원인으로 확정됐다(관찰이 대상을 바꾼다). 챌린지 판정은 `WebView.getTitle()`(`isChallengeTitle`) 같은 Kotlin 신호만. `probeTitle` 이 그 경로.
 - **챌린지 요청은 절대 가로채지 말 것.** 챌린지 호스트는 `ChallengeDetector` 격리 셋(등록 도메인 계열, 7일, 디스크 영속)에 들어가 문서·서브리소스·iframe 전부 네이티브 전담. `SniBypassClient`/`IframeScriptInjector` 는 격리 여부만 묻고 자기 예외를 만들지 않는다. 새 서비스는 `CHALLENGE_HOSTS`/`CHALLENGE_PATHS` 에 추가만. `/cdn-cgi/` 통째로 넣지 말 것(`/cdn-cgi/image/` 는 콘텐츠).
+- **자식 프레임 제스처 JS(`ChildFrameGestureInjector`)는 챌린지 페이지 최상위에서도 실행된다** — `addDocumentStartJavaScript` 는 모든 프레임에 걸린다. 래퍼 첫 문장 `window.top === window` 반환 앞에 아무것도 넣지 말 것. 자식 프레임의 챌린지 판별은 `CHALLENGE_HOSTS`/`CHALLENGE_PATHS`/`CHALLENGE_TITLE`(`internal`)을 JSON 으로 옮긴 것 — JS 에 다시 타이핑하지 말 것. 격리 페이지 iframe 에 스크립트를 넣겠다고 `IframeScriptInjector` 재요청을 되살리지 말 것(TLS 지문이 달라 `cf_clearance` 가 무효가 된다, v1.3.88).
 - 접속 실패(`UrlRecovery.shouldProbe` 코드)면 `clearQuarantine` — 캡차 루프보다 접속 불가가 나쁘다.
 - `ChallengeCookies.resetAll` 은 챌린지 **시작 전**(`markChallengedHost(preflight=true)`) 한 곳에서만. 루프 중 `cf_clearance` 는 지우지 않는다(관찰만). 만료 문자열엔 `Secure` 필수.
 - **UA 는 `UserAgentSpoof.chromeLike()` 한 곳에서만.** 허용 방향은 표식 제거(비표준 → 표준)뿐 — 접미사·데스크톱 UA 는 TLS/UA-CH 지문과 어긋나 점수가 나빠지고 과거 `ERR_CONNECTION_RESET`. UA 문자열을 바꾸면 `applyClientHints` 로 `Sec-CH-UA` 도 짝을 맞출 것.
@@ -160,7 +162,8 @@ app/src/main/
 - 작은 인터랙티브 컨트롤(면적 < 영상 절반) 위 탭은 통과. 탭이 아닌 제스처 끝엔 `suppressClick`.
 - 롱프레스 취소 리스너는 **`window` 캡처**(document 의 `stopImmediatePropagation` 에 막히지 않게). 롱프레스는 이동 12px 에 취소.
 - cross-origin iframe 은 `postMessage` 릴레이(`__pbFs`/`__pbOpenVideo`/`__pbStreamBody`/`__pbPressedAway`) — 직계 자식 프레임 메시지만 받고 모양을 거른다.
-- 풀스크린에선 `window.__pb.fsActive` 로 in-document 경로가 빠진다.
+- 자식 프레임 주입 경로는 둘: 비격리 페이지는 `IframeScriptInjector`(HTML 재요청, `</body>` 앞), 모든 페이지는 `ChildFrameGestureInjector`(document-start, `DOMContentLoaded`). 겹치면 `__pbGestureInstalled` 로 뒤의 것이 no-op. document-start 경로로 실린 프레임은 브리지와 무관하게 `__pbBodySniffOff=true` — 브리지 `bodySniffEnabled()` 는 최상위 호스트만 보므로 격리 호스트 iframe 에서도 fetch 를 감싸게 된다. 래퍼에서 브리지 판단으로 다시 켜지 말 것.
+- 풀스크린에선 `window.__pb.fsActive` 로 in-document 경로가 빠진다. Kotlin 은 이 플래그를 최상위에만 넣으므로 자식 프레임은 자기 문서가 풀스크린이면(`docInFullscreen()`) `tapOnly` — 탭·더블탭만 우리 것, 드래그·2손가락은 Kotlin·사이트 몫이고 그 touchend 도 삼키지 않는다(v1.3.105 — 비례 스크럽과 Kotlin ±10초가 겹쳐 수 분씩 튀었다). 통째로 비키게 바꾸면 iframe 플레이어의 풀스크린 더블탭 ±10초가 사라진다.
 
 ### 방문 링크 표시 (프라이버시가 설계 중심)
 - 기록 URL 은 절대 페이지로 안 넘긴다 — **64비트 해시만**, `'use strict'` 클로저 안 `{ __proto__: null }` 리터럴. `window` 에 올리지 말 것.

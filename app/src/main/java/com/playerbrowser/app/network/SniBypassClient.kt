@@ -65,7 +65,13 @@ object SniBypassClient {
         // keep parallelism close to the native loader. Main-frame clients keep
         // the tiny 5s pool: a connection the middlebox silently RSTs can't sit
         // around long enough to poison the next page navigation.
-        val pool = if (followRedirects) ConnectionPool(8, 30, TimeUnit.SECONDS)
+        //
+        // 32 idle / 90s (v1.3.108): an HLS site that round-robins 2-second
+        // segments across 13 CDN hostnames (tvmon1) churned through an 8-slot
+        // pool every ~16s — every segment paid a fresh TCP + fragmented TLS
+        // handshake and playback sat in an endless spinner. A pool that holds
+        // every host of the rotation warm makes a segment cost one RTT again.
+        val pool = if (followRedirects) ConnectionPool(32, 90, TimeUnit.SECONDS)
                    else ConnectionPool(4, 5, TimeUnit.SECONDS)
         val builder = OkHttpClient.Builder()
             .dns(DohClient())
@@ -157,6 +163,12 @@ object SniBypassClient {
             if (k.equals("connection", ignoreCase = true)) return@forEach
             if (k.equals("cookie", ignoreCase = true)) return@forEach
             if (k.equals("accept-encoding", ignoreCase = true)) return@forEach
+            // Cache validators would make the server answer 304, and a 304 can't
+            // be handed to the WebView (WebResourceResponse rejects 3xx) — the
+            // request then threw, fell back to native and was fetched twice.
+            // Without them the server sends the full body, once (v1.3.108).
+            if (k.equals("if-none-match", ignoreCase = true)) return@forEach
+            if (k.equals("if-modified-since", ignoreCase = true)) return@forEach
             if (k.startsWith(":")) return@forEach
             runCatching { builder.header(k, v) }
         }
@@ -242,6 +254,18 @@ object SniBypassClient {
                 if (resp.code in 300..399) {
                     DebugLog.d("SniBypass", "  main-frame redirect → ${resp.header("Location")}")
                 }
+            }
+            // WebResourceResponse refuses 3xx outright (IllegalArgumentException).
+            // A main-frame redirect (we never follow those) or a subresource
+            // 3xx that OkHttp didn't resolve is handed back to the WebView, which
+            // re-requests natively and follows it itself — the same outcome the
+            // exception used to produce, minus the stack trace (v1.3.108).
+            if (resp.code in 300..399) {
+                if (!request.isForMainFrame) {
+                    DebugLog.d("SniBypass", "intercept 3xx → native: $host ${resp.code}")
+                }
+                resp.close()
+                return null
             }
             val reason = resp.message.ifBlank { reasonFor(resp.code) }
             // Stream the body through to the WebView instead of buffering the

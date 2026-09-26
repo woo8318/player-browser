@@ -449,7 +449,8 @@ fun BrowserScreen(
             val message = when (
                 CastSessionBridge.castNow(context, candidate, state.currentTitle)
             ) {
-                CastResult.LOADED -> "Chromecast로 보냈어요"
+                CastResult.LOADED ->
+                    "Chromecast로 보냈어요 (${Uri.parse(candidate.url).host ?: "?"})"
                 CastResult.NO_SESSION -> "먼저 상단 Cast 버튼으로 기기를 연결해 주세요"
                 CastResult.FAILED -> "Chromecast 전송에 실패했어요 (설정→디버그 로그 확인)"
             }

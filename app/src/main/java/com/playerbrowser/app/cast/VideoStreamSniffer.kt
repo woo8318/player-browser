@@ -93,6 +93,13 @@ object VideoStreamSniffer {
         ".webm" to "video/webm"
     )
 
+    // Leaves under a `/m3u8/` directory that are parts of a stream or page
+    // furniture, never the playlist itself (v1.3.104).
+    private val PLAYLIST_DIR_EXCLUDED = listOf(
+        ".ts", ".m4s", ".m4a", ".m4v", ".mp4", ".aac", ".key",
+        ".vtt", ".webvtt", ".html", ".json"
+    )
+
     private class SentHeaders(val referer: String?, val origin: String?)
 
     // Referer/Origin of requests we saw, for the host being browsed. By URL for
@@ -197,6 +204,8 @@ object VideoStreamSniffer {
      * falls back to the extension appearing mid-URL or inside a query param
      * (`/play?file=video.mp4`), which extension-at-end matching would miss —
      * a common reason a video plays in the WebView yet reports "no stream".
+     * Last, an HLS playlist named by its directory instead of an extension
+     * (`/stream/m3u8/<token>`, v1.3.104).
      */
     private fun detectMime(url: String): String? {
         val lower = url.lowercase()
@@ -208,6 +217,22 @@ object VideoStreamSniffer {
             // extension so ".mp4a"/".webmanifest" don't false-positive.
             i >= 0 && lower.getOrNull(i + ext.length)?.isLetterOrDigit() != true
         }?.let { return it.second }
+        // Observed on plaver.pongping.top as `/stream/m3u8/<JWT>` (player info
+        // said customHls): the directory says what it is, the leaf is a token.
+        // The parent directory must be exactly `m3u8` and the leaf must not look
+        // like a segment, key, subtitle or furniture. HLS only - segments must
+        // never become candidates (v1.3.80/81). JWT leaves contain dots, so never
+        // test for "no extension" here. (v1.3.104)
+        val dir = path.substringBeforeLast('/', "")
+        if (dir.endsWith("/m3u8")) {
+            val leaf = path.substringAfterLast('/')
+            if (leaf.isNotEmpty() &&
+                PLAYLIST_DIR_EXCLUDED.none { leaf.endsWith(it) } &&
+                IGNORED_EXTS.none { leaf.endsWith(it) }
+            ) {
+                return "application/vnd.apple.mpegurl"
+            }
+        }
         return null
     }
 

@@ -2,14 +2,21 @@ package com.playerbrowser.app.cast
 
 import android.content.Context
 import android.net.Uri
+import android.os.Handler
+import android.os.Looper
 import android.widget.Toast
+import com.google.android.gms.cast.CastStatusCodes
+import com.google.android.gms.cast.MediaError
 import com.google.android.gms.cast.MediaInfo
 import com.google.android.gms.cast.MediaLoadRequestData
 import com.google.android.gms.cast.MediaMetadata
+import com.google.android.gms.cast.MediaStatus
 import com.google.android.gms.cast.framework.CastContext
 import com.google.android.gms.cast.framework.CastSession
 import com.google.android.gms.cast.framework.SessionManagerListener
+import com.google.android.gms.cast.framework.media.RemoteMediaClient
 import com.playerbrowser.app.network.DebugLog
+import java.lang.ref.WeakReference
 
 /** Outcome of an explicit "send this stream to the receiver now" request. */
 enum class CastResult { LOADED, NO_SESSION, FAILED }
@@ -79,11 +86,21 @@ class CastSessionBridge(
             DebugLog.d(tag, "no candidate for host=$host")
             return
         }
-        loadOnRemote(session, candidate, title.orEmpty())
+        loadOnRemote(context, session, candidate, title.orEmpty())
     }
 
     companion object {
         private const val TAG = "Cast"
+
+        private val mainHandler by lazy { Handler(Looper.getMainLooper()) }
+
+        // Every remote load gets a number. Each number is reported at most once
+        // and only while it is still the latest load, so the load result and the
+        // receiver's error message for one failure give one toast, not two.
+        @Volatile private var loadSeq = 0
+        @Volatile private var acceptedSeq = -1
+        @Volatile private var reportedSeq = -1
+        @Volatile private var watched: WeakReference<RemoteMediaClient>? = null
 
         /**
          * Push a stream to an already-connected receiver.
@@ -106,7 +123,7 @@ class CastSessionBridge(
                 DebugLog.d(TAG, "cast requested but no connected session")
                 return CastResult.NO_SESSION
             }
-            return if (loadOnRemote(session, candidate, title)) {
+            return if (loadOnRemote(context, session, candidate, title)) {
                 CastResult.LOADED
             } else {
                 CastResult.FAILED
@@ -114,6 +131,7 @@ class CastSessionBridge(
         }
 
         private fun loadOnRemote(
+            context: Context,
             session: CastSession,
             candidate: StreamCandidate,
             title: String
@@ -122,6 +140,9 @@ class CastSessionBridge(
                 DebugLog.w(TAG, "session has no remoteMediaClient")
                 return false
             }
+            val app = context.applicationContext
+            val seq = ++loadSeq
+            watch(app, client)
             val metadata = MediaMetadata(MediaMetadata.MEDIA_TYPE_MOVIE).apply {
                 if (title.isNotBlank()) putString(MediaMetadata.KEY_TITLE, title)
             }
@@ -134,13 +155,103 @@ class CastSessionBridge(
                 .setMediaInfo(media)
                 .setAutoplay(true)
                 .build()
-            client.load(request)
             // The receiver fetches this URL itself, from its own IP, with none of
             // our cookies, Referer or User-Agent. A token- or hotlink-protected
             // CDN will answer it with 403 even though the address is correct -
             // worth knowing when the TV shows an error but the phone plays fine.
-            DebugLog.d(TAG, "loaded ${candidate.mime} on remote: ${candidate.url}")
+            client.load(request).setResultCallback { result ->
+                val status = result.status
+                when {
+                    status.isSuccess -> {
+                        acceptedSeq = seq
+                        DebugLog.d(TAG, "receiver accepted load #$seq")
+                    }
+                    // A newer load took over; that one reports for itself.
+                    status.statusCode == CastStatusCodes.REPLACED ->
+                        DebugLog.d(TAG, "load #$seq replaced by a newer load")
+                    else -> {
+                        val detail = result.mediaError?.detailedErrorCode ?: -1
+                        DebugLog.w(
+                            TAG,
+                            "receiver rejected load #$seq status=${status.statusCode} " +
+                                "detailed=$detail ${status.statusMessage.orEmpty()}"
+                        )
+                        report(
+                            app,
+                            seq,
+                            "TV 가 재생 요청을 거부했어요 [cast:load:${status.statusCode}:$detail] " +
+                                hintOf(detail)
+                        )
+                    }
+                }
+            }
+            DebugLog.d(TAG, "load #$seq ${candidate.mime} on remote: ${candidate.url}")
             return true
+        }
+
+        /**
+         * Until v1.3.104 the load was fire-and-forget: whatever the receiver said
+         * went nowhere, so "the TV shows nothing" came with no reason attached.
+         * Its answer now comes back as a bracket code the user can read out -
+         * they cannot send us logs.
+         */
+        private fun watch(app: Context, client: RemoteMediaClient) {
+            if (watched?.get() === client) return
+            watched = WeakReference(client)
+            client.registerCallback(object : RemoteMediaClient.Callback() {
+                override fun onMediaError(mediaError: MediaError) {
+                    val code = mediaError.detailedErrorCode ?: -1
+                    DebugLog.w(
+                        TAG,
+                        "receiver media error #$loadSeq type=${mediaError.type} " +
+                            "detailed=$code reason=${mediaError.reason}"
+                    )
+                    // Before the latest load is accepted, an error is either that
+                    // load failing - its result callback reports it - or the
+                    // previous media being cut off by it (LOAD_INTERRUPTED 904 on
+                    // a quick second cast), which must not be pinned on the new
+                    // load nor use up its one toast.
+                    if (acceptedSeq != loadSeq) return
+                    report(app, loadSeq, "TV 에서 재생 실패 [cast:error:$code] " + hintOf(code))
+                }
+
+                override fun onStatusUpdated() {
+                    // Until the receiver accepts the new load, an IDLE/ERROR status
+                    // may still describe the previous media.
+                    if (acceptedSeq != loadSeq) return
+                    val status = client.mediaStatus ?: return
+                    if (status.playerState == MediaStatus.PLAYER_STATE_IDLE &&
+                        status.idleReason == MediaStatus.IDLE_REASON_ERROR
+                    ) {
+                        DebugLog.w(TAG, "receiver went idle with an error #$loadSeq")
+                        report(app, loadSeq, "TV 에서 재생이 멈췄어요 [cast:idle:error]")
+                    }
+                }
+            })
+        }
+
+        /**
+         * Web Receiver detailed error codes, grouped by the stage that failed.
+         * A few codes are named first because their range says the wrong thing:
+         * 103/104 are what a 403 on a progressive file surfaces as, 316 is a
+         * parse failure inside the network range, 905 is the generic load failure.
+         */
+        private fun hintOf(code: Int): String = when (code) {
+            103, 104 -> "(TV 가 영상을 못 받아오거나 못 읽음)"
+            316 -> "(영상 조각 해석 실패)"
+            905 -> "(TV 가 영상을 불러오지 못함)"
+            in 100..199 -> "(TV 가 영상 형식을 못 읽음)"
+            in 200..299 -> "(DRM 보호 영상)"
+            in 300..399 -> "(TV 가 영상 주소를 못 받아옴)"
+            in 400..499 -> "(재생목록 해석 실패)"
+            in 500..599 -> "(영상 조각 해석 실패)"
+            else -> ""
+        }
+
+        private fun report(app: Context, seq: Int, message: String) {
+            if (seq != loadSeq || seq == reportedSeq) return
+            reportedSeq = seq
+            mainHandler.post { Toast.makeText(app, message.trim(), Toast.LENGTH_LONG).show() }
         }
     }
 }

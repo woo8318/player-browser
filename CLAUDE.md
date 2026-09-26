@@ -262,6 +262,17 @@ app/src/main/
 - 기능 검증은 사용자가 S24에 APK 설치 후 직접 진행
 - 충돌 진단: 메뉴 → 설정 → 디버그 로그 상단의 "충돌 기록" 섹션에서 스택트레이스 확인/복사 (`filesDir/crashes/`에 영구 저장)
 
+## 작업 방식 (모델 역할 분담)
+
+기능 단위 코드 변경은 아래 세 단계로 돈다. 메인 세션은 Fable(`/model claude-fable-5-1`)로 둔다.
+
+1. **메인(Fable) — 설계·판단.** 요구 분석, 설계, 건드릴 파일과 이 문서의 관련 "잡지 말 것" 항목까지 적은 **구체적 구현 계획**을 만든다. 서브에이전트는 넘겨준 프롬프트만 알고 시작하므로 맥락은 계획에 직접 써 준다.
+2. **`sonnet-dev` 에이전트 — 구현.** `.claude/agents/sonnet-dev.md`(model: sonnet). 계획대로만 구현, 버전/커밋/문서는 안 건드림.
+3. **`opus-reviewer` 에이전트 — 검토·수정.** `.claude/agents/opus-reviewer.md`(model: opus). diff 를 계획과 대조하고 "잡지 말 것" 체크리스트를 돌려 CRITICAL/HIGH 는 직접 고친다. 전역 `code-reviewer` 는 Edit 권한이 없으므로 이 흐름에서는 쓰지 않는다.
+4. **메인(Fable) — 마무리.** 결과 정리 → 버전 bump → README/CLAUDE.md 갱신 → 커밋 → `v1.3.x` 태그 푸시.
+
+한두 줄짜리 사소한 수정은 메인이 직접 해도 된다(세 단계는 기능 단위에만).
+
 ## 작업 시 주의사항
 
 - **버전 bump:** 기능 추가/수정 commit과 함께 `versionCode`/`versionName` 증가 — 자체 업데이트 동작에 필수

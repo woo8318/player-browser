@@ -12,4 +12,5 @@ captures/
 *.keystore
 *.jks
 !app/keystores/debug.keystore
-.claude/
+.claude/*
+!.claude/agents/

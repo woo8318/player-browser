@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 + 내장 Media3 플레이어(스트림 추출 → 네이티브 재생, 인라인 교체, 플로팅 재생 버튼, 영상 롱프레스 메뉴) + 영상 오프라인 다운로드(HLS, 받으면서 보기) + 이어보기 + 즐겨찾기/방문기록 + 도메인 숫자 무관 방문 링크 표시 + 웹툰 이미지 번호순 정렬 + 요소 숨기기(사이트별 영속) + 멀티탭(썸네일 갤러리/그룹/드래그/스와이프 전환/탭별 히스토리) + 광고 차단 + 쿠키 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 복구 + 링크 롱프레스 메뉴 + 캡차 흐름 보호 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.105.
+Player Browser — Android WebView 기반 브라우저. URL 탐색 + 동영상 제스처 + 내장 Media3 플레이어(스트림 추출 → 네이티브 재생, 인라인 교체, 플로팅 재생 버튼, 영상 롱프레스 메뉴) + 영상 오프라인 다운로드(HLS, 받으면서 보기) + 이어보기 + 즐겨찾기/방문기록 + 도메인 숫자 무관 방문 링크 표시 + 웹툰 이미지 번호순 정렬 + 요소 숨기기(사이트별 영속) + 멀티탭(썸네일 갤러리/그룹/드래그/스와이프 전환/탭별 히스토리) + 광고 차단 + 쿠키 배너 자동 거부 + SNI 우회 + 프라이빗 DNS(DoH) + URL 숫자 복구 + 링크 롱프레스 메뉴 + 캡차 흐름 보호 + Chromecast + 자체 업데이트 + 크래시 로깅. 현재 버전: v1.3.106.
 
 **이 문서는 규칙과 구조만 담는다.** 판별 조사 서사(어떤 로그로 어떤 가설을 세웠는지)는 `docs/HISTORY.md` 에 있다 — 같은 증상이 재발하거나 예전 판단을 뒤집을 때만 그 항목을 찾아 읽는다.
 
@@ -165,8 +165,9 @@ app/src/main/
 - 싱글탭은 앱이 가로채지 않고 사이트로(컨트롤 레이어). 재생/정지는 중앙 더블탭 → `playPauseAtPoint`(오버레이 요소면 합성 클릭, `looksInteractive` 면 사이트에 맡김). 좌/우 더블탭 ∓/±10초는 **영상 박스 기준**(`rel<0.35`/`>0.65`).
 - 작은 인터랙티브 컨트롤(면적 < 영상 절반) 위 탭은 통과. 탭이 아닌 제스처 끝엔 `suppressClick`.
 - 롱프레스 취소 리스너는 **`window` 캡처**(document 의 `stopImmediatePropagation` 에 막히지 않게). 롱프레스는 이동 12px 에 취소.
-- cross-origin iframe 은 `postMessage` 릴레이(`__pbFs`/`__pbOpenVideo`/`__pbStreamBody`/`__pbPressedAway`) — 직계 자식 프레임 메시지만 받고 모양을 거른다.
+- cross-origin iframe 은 `postMessage` 릴레이(`__pbFs`/`__pbOpenVideo`/`__pbStreamBody`/`__pbPressedAway`/`__pbResume`) — 직계 자식 프레임 메시지만 받고 모양을 거른다.
 - 자식 프레임 주입 경로는 둘: 비격리 페이지는 `IframeScriptInjector`(HTML 재요청, `</body>` 앞), 모든 페이지는 `ChildFrameGestureInjector`(document-start, `DOMContentLoaded`). 겹치면 `__pbGestureInstalled` 로 뒤의 것이 no-op. document-start 경로로 실린 프레임은 브리지와 무관하게 `__pbBodySniffOff=true` — 브리지 `bodySniffEnabled()` 는 최상위 호스트만 보므로 격리 호스트 iframe 에서도 fetch 를 감싸게 된다. 래퍼에서 브리지 판단으로 다시 켜지 말 것.
+- 이어보기(`initResume`)는 브리지가 없는 프레임이면 부모로 `__pbResume` 릴레이(save/load/clear), 부모는 직계 자식 메시지만 받고 `load` 답(`__pbResumePos`)은 `window.parent` 에서 온 것만 받는다(v1.3.106). 브리지 없이 빠지게 되돌리지 말 것(iframe 플레이어의 이어보기가 죽는다). 늦은 답은 `currentTime > 10초` 면 적용하지 않는다 — 이 가드를 빼면 보고 있던 영상이 뒤로 튄다.
 - 풀스크린에선 `window.__pb.fsActive` 로 in-document 경로가 빠진다. Kotlin 은 이 플래그를 최상위에만 넣으므로 자식 프레임은 자기 문서가 풀스크린이면(`docInFullscreen()`) `tapOnly` — 탭·더블탭만 우리 것, 드래그·2손가락은 Kotlin·사이트 몫이고 그 touchend 도 삼키지 않는다(v1.3.105 — 비례 스크럽과 Kotlin ±10초가 겹쳐 수 분씩 튀었다). 통째로 비키게 바꾸면 iframe 플레이어의 풀스크린 더블탭 ±10초가 사라진다.
 
 ### 방문 링크 표시 (프라이버시가 설계 중심)

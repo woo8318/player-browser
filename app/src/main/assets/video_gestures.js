@@ -739,37 +739,204 @@
   //
   // Records the active video's position via the Android PBResume bridge (keyed
   // by page URL on the native side) and, when the page is revisited, seeks back
-  // to where the user left off. No-ops outside the app WebView (no bridge) or
-  // when the user disabled it (bridge.load() returns -1).
+  // to where the user left off. The bridge (addJavascriptInterface) is only
+  // ever visible to the frame it was attached to - usually the top document -
+  // so a video sitting inside a cross-origin player iframe has no bridge of
+  // its own. A frame without the bridge relays save/load/clear up through
+  // window.parent (child -> parent -> ... -> whichever frame has the bridge,
+  // or the top frame with none at all) via postMessage (v1.3.106). Only
+  // direct child frames are trusted as message sources - everything in a
+  // message is otherwise-untrusted page input, same rule as every other
+  // cross-frame relay in this file. Positions are always keyed by the TOP
+  // page URL on the Kotlin side, so relaying up is correct no matter which
+  // frame actually holds the <video>. No-ops entirely outside the app WebView
+  // (no bridge anywhere in the chain) or when the user disabled resume
+  // (bridge.load() returns -1).
   (function initResume() {
-    var bridge = window.PBResume;
-    if (!bridge) return;
+    var bridge = null;
+    try { bridge = window.PBResume || null; } catch (e) { bridge = null; }
+    var hasParent = false;
+    try { hasParent = !!(window.parent && window.parent !== window); } catch (e) { hasParent = false; }
+    // Nothing to do here and nowhere to relay to (a bare top frame with no
+    // bridge - outside the app, or resume unsupported in this build).
+    if (!bridge && !hasParent) return;
 
     var MIN_RESUME_SEC = 10;   // ignore trivially-early positions
     var END_GUARD_SEC = 20;    // don't resume right at the end
     var MIN_DURATION_SEC = 90; // only real, long-ish media (skips short ad clips)
 
+    var LOAD_RETRY_MS = 1500;  // the top frame's copy of this script may not be
+    var LOAD_MAX_TRIES = 8;    // listening yet when a child frame's video is ready
+    var MAX_PENDING = 16;
+    // A forwarded request whose answer never came back (no bridge above us,
+    // or the top frame's copy isn't listening) is dead after the child's last
+    // retry - prune it then, so stale or flooded entries can't lock the
+    // forwarding map for the rest of the page's life.
+    var FWD_TTL_MS = LOAD_RETRY_MS * (LOAD_MAX_TRIES + 1);
+
     function resumable(v) {
       return v && isFinite(v.duration) && v.duration > MIN_DURATION_SEC;
     }
 
+    function post(m) {
+      try { window.parent.postMessage({ __pbResume: m }, '*'); } catch (e) {}
+    }
+
+    // pending: load requests THIS frame is waiting on an answer for (relay
+    // path, keyed by our own generated id). fwd: load requests a child frame
+    // asked us to forward, so the eventual reply can be routed back down to
+    // the right window (keyed by the child's original id).
+    var pending = Object.create(null);
+    var fwd = Object.create(null);
+    var seq = 0;
+
+    var port = bridge ? {
+      save: function (pos, dur, title) {
+        try { bridge.save(pos, dur, title); } catch (e) {}
+      },
+      load: function (v, cb) {
+        var pos = -1;
+        try { pos = bridge.load(); } catch (e) { pos = -1; }
+        cb(pos); // synchronous, same as calling the bridge directly
+      },
+      clear: function () {
+        try { bridge.clear(); } catch (e) {}
+      }
+    } : {
+      save: function (pos, dur, title) {
+        post({ op: 'save', pos: pos, dur: dur, title: title });
+      },
+      load: function (v, cb) {
+        if (Object.keys(pending).length >= MAX_PENDING) { cb(-1); return; }
+        var id = 'r' + (++seq) + '_' + Math.random().toString(36).slice(2, 8);
+        var entry = { cb: cb, tries: 0, timer: null };
+        pending[id] = entry;
+        (function attempt() {
+          entry.tries++;
+          if (entry.tries > LOAD_MAX_TRIES) {
+            delete pending[id];
+            cb(-1);
+            return;
+          }
+          post({ op: 'load', id: id });
+          entry.timer = setTimeout(attempt, LOAD_RETRY_MS);
+        })();
+      },
+      clear: function () {
+        post({ op: 'clear' });
+      }
+    };
+
+    var ID_RE = /^[A-Za-z0-9_-]{1,40}$/;
+
+    // Same "only my own direct child frames" rule as every other relay below.
+    function fromChildFrame(src) {
+      try {
+        for (var i = 0; i < window.frames.length; i++) {
+          if (window.frames[i] === src) return true;
+        }
+      } catch (e) {}
+      return false;
+    }
+
+    window.addEventListener('message', function (ev) {
+      var d = ev && ev.data;
+      if (!d || typeof d !== 'object') return;
+
+      var req = d.__pbResume;
+      if (req && typeof req === 'object') {
+        if (!fromChildFrame(ev.source)) return;
+        if (req.op === 'save') {
+          if (typeof req.pos !== 'number' || !isFinite(req.pos) || req.pos < 0) return;
+          if (typeof req.dur !== 'number' || !isFinite(req.dur) || req.dur < 0) return;
+          var title = typeof req.title === 'string' ? req.title.slice(0, 200) : '';
+          // The child's own document.title is usually blank (player iframe) -
+          // the page title recorded here is the meaningful one.
+          port.save(req.pos, req.dur, title || document.title || '');
+          return;
+        }
+        if (req.op === 'clear') {
+          port.clear();
+          return;
+        }
+        if (req.op === 'load') {
+          if (typeof req.id !== 'string' || !ID_RE.test(req.id)) return;
+          if (bridge) {
+            var pos = -1;
+            try { pos = bridge.load(); } catch (e) { pos = -1; }
+            try { ev.source.postMessage({ __pbResumePos: { id: req.id, pos: pos } }, '*'); } catch (e) {}
+          } else if (hasParent) {
+            // Not ours to answer - forward up, remembering who to reply to.
+            var now = Date.now();
+            if (!fwd[req.id]) {
+              var fk = Object.keys(fwd);
+              if (fk.length >= MAX_PENDING) {
+                for (var fi = 0; fi < fk.length; fi++) {
+                  if (now - fwd[fk[fi]].t > FWD_TTL_MS) delete fwd[fk[fi]];
+                }
+                if (Object.keys(fwd).length >= MAX_PENDING) return;
+              }
+            }
+            fwd[req.id] = { w: ev.source, t: now };
+            // Re-build the message: only the validated shape travels further up.
+            post({ op: 'load', id: req.id });
+          }
+          return;
+        }
+        return;
+      }
+
+      var reply = d.__pbResumePos;
+      if (reply && typeof reply === 'object') {
+        if (!hasParent) return;
+        var fromParent = false;
+        try { fromParent = (ev.source === window.parent); } catch (e) { fromParent = false; }
+        if (!fromParent) return;
+        if (typeof reply.id !== 'string' || !ID_RE.test(reply.id)) return;
+        var posVal = (typeof reply.pos === 'number' && isFinite(reply.pos)) ? reply.pos : -1;
+        var p = pending[reply.id];
+        if (p) {
+          if (p.timer) clearTimeout(p.timer);
+          delete pending[reply.id];
+          p.cb(posVal);
+          return;
+        }
+        var f = fwd[reply.id];
+        if (f) {
+          delete fwd[reply.id];
+          try { f.w.postMessage({ __pbResumePos: { id: reply.id, pos: posVal } }, '*'); } catch (e) {}
+        }
+      }
+    });
+
     function reportSave(v) {
       try {
         if (!resumable(v)) return;
-        bridge.save(v.currentTime || 0, v.duration || 0, document.title || '');
+        port.save(v.currentTime || 0, v.duration || 0, document.title || '');
       } catch (e) {}
     }
 
     function tryResume(v) {
       try {
-        if (!v || v.__pbResumed) return;
+        if (!v || v.__pbResumed || v.__pbResumeAsked) return;
         if (!resumable(v)) return;
-        v.__pbResumed = true; // attempt once per element
-        var pos = bridge.load();
-        if (pos > MIN_RESUME_SEC && pos < v.duration - END_GUARD_SEC) {
-          v.currentTime = pos;
-          showToast('이어보기 ' + formatTime(pos));
-        }
+        v.__pbResumeAsked = true;
+        port.load(v, function (pos) {
+          v.__pbResumeAsked = false;
+          if (v.__pbResumed) return;
+          if (typeof pos !== 'number' || !isFinite(pos) || pos < 0) {
+            v.__pbResumed = true; // nothing saved / disabled / gave up - don't ask again
+            return;
+          }
+          v.__pbResumed = true;
+          // A relayed answer can arrive seconds later: never yank a video the
+          // user (or the site) has already moved past the start.
+          if (v.currentTime > MIN_RESUME_SEC) return;
+          if (pos > MIN_RESUME_SEC && pos < v.duration - END_GUARD_SEC) {
+            v.currentTime = pos;
+            showToast('이어보기 ' + formatTime(pos));
+          }
+        });
       } catch (e) {}
     }
 
@@ -781,7 +948,7 @@
       v.addEventListener('pause', function () { reportSave(v); });
       v.addEventListener('seeked', function () { reportSave(v); });
       v.addEventListener('ended', function () {
-        try { bridge.clear(); } catch (e) {}
+        try { port.clear(); } catch (e) {}
       });
       if (v.readyState >= 1) tryResume(v); // metadata already present
     }

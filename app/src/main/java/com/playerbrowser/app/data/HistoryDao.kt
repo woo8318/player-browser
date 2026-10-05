@@ -32,6 +32,14 @@ interface HistoryDao {
     @Query("DELETE FROM history WHERE url = :url")
     suspend fun deleteByUrl(url: String)
 
+    /** One-shot snapshot of every visited URL — see `BrowserRepository.forgetVisited`. */
+    @Query("SELECT url FROM history")
+    suspend fun allUrls(): List<String>
+
+    /** Callers keep [urls] under SQLite's bound-variable limit (999). */
+    @Query("DELETE FROM history WHERE url IN (:urls)")
+    suspend fun deleteByUrls(urls: List<String>)
+
     @Query("DELETE FROM history")
     suspend fun clear()
 }

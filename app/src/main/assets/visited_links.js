@@ -7,7 +7,11 @@
 // and they live only in this closure. Strict mode matters — a page-patched
 // builtin called from sloppy code could reach our `arguments` via `.caller`.
 // siteKey / keyOf / hash mirror VisitedLinkKeys.kt bit for bit.
-(function (hashes, site) {
+//
+// `forget` (optional, v1.3.109): hashes the user un-marked from the link menu.
+// They are left out of the set and — unlike everything else — are NOT carried
+// over from the previous closure's tapped-link list, so the mark really goes.
+(function (hashes, site, forget) {
   'use strict';
   try {
     var CLS = '__pbv';
@@ -71,9 +75,14 @@
     // patched to record their arguments. Literal syntax only: the null-proto
     // literal calls nothing and has no setter or prototype getter to hit.
     var visited = { __proto__: null };
+    var dropped = { __proto__: null };
+    var gone = forget || [];
+    for (var g = 0; g < gone.length; g++) {
+      if (typeof gone[g] === 'string') dropped[gone[g]] = 1;
+    }
     var list = hashes || [];
     for (var i = 0; i < list.length; i++) {
-      if (typeof list[i] === 'string') visited[list[i]] = 1;
+      if (typeof list[i] === 'string' && dropped[list[i]] !== 1) visited[list[i]] = 1;
     }
 
     // Re-injection (tab re-activation) brings a fresher history. The previous
@@ -85,7 +94,7 @@
     if (prev && Array.isArray(prev.clicked)) {
       for (var j = 0; j < prev.clicked.length && j < 500; j++) {
         var c = prev.clicked[j];
-        if (typeof c === 'string') {
+        if (typeof c === 'string' && dropped[c] !== 1) {
           clicked.push(c);
           visited[c] = 1;
         }

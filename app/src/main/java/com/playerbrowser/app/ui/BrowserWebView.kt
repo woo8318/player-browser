@@ -94,6 +94,13 @@ interface WebViewCallbacks {
      * long-pressed point pre-selected. Coordinates are CSS px of the top document (v1.3.101).
      */
     fun onHideElementAt(cssX: Float, cssY: Float) {}
+
+    /**
+     * Link long-press menu → "방문 표시 지우기": forget the visits of the page [url] names
+     * (history rows, under every mirror number). The page's marks are refreshed by the
+     * menu itself (v1.3.109).
+     */
+    fun onForgetVisitedLink(url: String) {}
     // In-place player (v1.3.89): a <video> started playing / its box moved /
     // it left the DOM. Rects are device px relative to the WebView.
     fun onInlineVideoPlay(id: String, domSrc: String, positionSec: Double, rect: InlineRect, manual: Boolean) {}
@@ -502,7 +509,7 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
                     ?: result.extra
                 // View px → CSS px: divide by the page scale (zoom × density).
                 val scale = wv.scale.takeIf { it > 0f } ?: 1f
-                showLinkContextMenu(wv.context, href, callbacks, lastDownX / scale, lastDownY / scale)
+                showLinkContextMenu(wv, href, callbacks, lastDownX / scale, lastDownY / scale)
                 true
             }
             wv.requestFocusNodeHref(handler.obtainMessage())
@@ -517,17 +524,23 @@ fun buildBrowserWebView(context: Context, callbacks: WebViewCallbacks): BrowserW
  * anything else (javascript:, mailto:, relative fragments) is ignored.
  */
 private fun showLinkContextMenu(
-    context: Context,
+    webView: WebView,
     url: String?,
     callbacks: WebViewCallbacks,
     cssX: Float,
     cssY: Float
 ) {
+    val context = webView.context
     val href = url?.trim().orEmpty()
     val scheme = runCatching { Uri.parse(href).scheme?.lowercase() }.getOrNull()
     if (scheme != "http" && scheme != "https") return
 
-    val items = arrayOf("새 탭에서 열기", "백그라운드 탭으로 열기", "링크 주소 복사", "요소 숨기기")
+    // "방문 표시 지우기" only where the purple mark is ours to remove — numbered
+    // mirror hosts. Elsewhere the mark is Chromium's own `:visited`, which an app
+    // can't clear per link (v1.3.109).
+    val base = listOf("새 탭에서 열기", "백그라운드 탭으로 열기", "링크 주소 복사", "요소 숨기기")
+    val items = (if (VisitedLinkMarker.canForget(href)) base + "방문 표시 지우기" else base)
+        .toTypedArray()
     androidx.appcompat.app.AlertDialog.Builder(context)
         .setTitle(href)
         .setItems(items) { _, which ->
@@ -544,6 +557,18 @@ private fun showLinkContextMenu(
                     Toast.makeText(context, "링크 주소를 복사했어요", Toast.LENGTH_SHORT).show()
                 }
                 3 -> callbacks.onHideElementAt(cssX, cssY)
+                4 -> {
+                    // History rows go asynchronously; the index and the page are
+                    // updated now so the colour leaves at once. apply() keeps its
+                    // own challenge-page gate (no script there).
+                    callbacks.onForgetVisitedLink(href)
+                    VisitedLinkMarker.forget(href)?.let { hash ->
+                        runCatching { VisitedLinkMarker.apply(webView, webView.url, forget = hash) }
+                    }
+                    Toast.makeText(
+                        context, "방문 표시를 지웠어요 (방문 기록에서도 삭제)", Toast.LENGTH_SHORT
+                    ).show()
+                }
             }
         }
         .show()

@@ -204,6 +204,11 @@ fun BrowserScreen(
                     hideAtRequest = Triple(ownerId, cssX, cssY)
                 }
             }
+            // Link long-press "방문 표시 지우기" (v1.3.109): the menu refreshes the
+            // page itself; here the visits leave the history.
+            override fun onForgetVisitedLink(url: String) {
+                viewModel.forgetVisitedLink(url)
+            }
             override fun onPlayVideoExternally(domSrc: String) {
                 inlinePlayer.externalPlayRequest = domSrc
             }

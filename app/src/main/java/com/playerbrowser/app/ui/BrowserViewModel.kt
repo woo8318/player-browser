@@ -440,6 +440,8 @@ class BrowserViewModel(app: Application) : AndroidViewModel(app) {
 
     fun deleteBookmark(url: String) = viewModelScope.launch { repository.removeBookmark(url) }
     fun deleteHistory(url: String) = viewModelScope.launch { repository.removeHistory(url) }
+    /** Link menu → "방문 표시 지우기": forget the page under every mirror number (v1.3.109). */
+    fun forgetVisitedLink(url: String) = viewModelScope.launch { repository.forgetVisited(url) }
     fun clearHistory() = viewModelScope.launch { repository.clearHistory() }
 
     // ----- App update -----
